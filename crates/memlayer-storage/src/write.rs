@@ -734,7 +734,7 @@ mod tests {
     fn open_test_db() -> (TempDir, Connection) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("t.db");
-        let mut conn = crate::db::open_write(&path).unwrap();
+        let conn = crate::db::open_write(&path).unwrap();
         conn.execute(
             "INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')",
             [],

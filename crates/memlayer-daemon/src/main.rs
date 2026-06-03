@@ -55,6 +55,7 @@ async fn main() -> ExitCode {
     }
 }
 
+#[allow(dead_code)]
 enum Mode {
     DaemonStart { foreground: bool },
     DaemonStop,

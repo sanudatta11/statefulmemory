@@ -33,12 +33,12 @@ use memlayer_storage::{
     sessions as sessions_q,
     stats as stats_q,
     write::{
-        ObservationKey, ObservationPatch, PromptKey, SaveObservationInput, WriteRequest,
+        ObservationKey, ObservationPatch, SaveObservationInput, WriteRequest,
     },
     ProjectRegistry, ProjectState,
 };
 
-use crate::error_map::{map, to_status};
+use crate::error_map::map;
 use crate::tokens::TokenStore;
 
 /// Shared daemon state injected into the service.
@@ -102,6 +102,21 @@ impl Drop for RpcGuard {
     fn drop(&mut self) {
         self.counter.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+/// Await a write-thread reply and convert to `Status` in one shot.
+///
+/// The write thread sends `Result<T, memlayer_core::Error>` over a
+/// `oneshot` channel. Two failure modes need flattening:
+/// - `oneshot::RecvError` (channel closed → write thread panicked).
+/// - The domain `Error` returned by the handler.
+async fn await_write_reply<T>(
+    rx: tokio::sync::oneshot::Receiver<Result<T>>,
+) -> std::result::Result<T, Status> {
+    let inner = rx
+        .await
+        .map_err(|_| Status::internal("write thread crashed"))?;
+    map(inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +260,7 @@ impl Memlayer for MemlayerService {
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::UpdateObservation { key, patch, reply: tx }))?;
-        let obs = map(rx.await.map_err(|_| Error::internal("write thread crashed"))?)?;
+        let obs = await_write_reply(rx).await?;
         Ok(Response::new(UpdateObservationResponse {
             observation: Some(obs_to_proto(obs)),
         }))
@@ -272,7 +287,7 @@ impl Memlayer for MemlayerService {
             WriteRequest::SoftDeleteObservation { key, reply: tx }
         };
         map(project.write.send(req))?;
-        map(rx.await.map_err(|_| Error::internal("write thread crashed"))?)?;
+        await_write_reply(rx).await?;
         Ok(Response::new(DeleteObservationResponse {}))
     }
 
@@ -411,7 +426,7 @@ impl Memlayer for MemlayerService {
             directory: r.directory,
             reply: tx,
         }))?;
-        let session = map(rx.await.map_err(|_| Error::internal("write thread crashed"))?)?;
+        let session = await_write_reply(rx).await?;
         // Build context snapshot using a read connection.
         let conn = map(project.open_read_conn())?;
         let (recent, topics) = map(sessions_q::build_context_snapshot(&conn, 10))?;
@@ -448,7 +463,7 @@ impl Memlayer for MemlayerService {
             summary: r.summary,
             reply: tx,
         }))?;
-        let s = map(rx.await.map_err(|_| Error::internal("write thread crashed"))?)?;
+        let s = await_write_reply(rx).await?;
         Ok(Response::new(EndSessionResponse {
             session: Some(session_to_proto(s)),
         }))
@@ -469,7 +484,7 @@ impl Memlayer for MemlayerService {
             summary: r.summary,
             reply: tx,
         }))?;
-        let s = map(rx.await.map_err(|_| Error::internal("write thread crashed"))?)?;
+        let s = await_write_reply(rx).await?;
         Ok(Response::new(SaveSessionSummaryResponse {
             session: Some(session_to_proto(s)),
         }))
@@ -523,7 +538,7 @@ impl Memlayer for MemlayerService {
             content: r.content,
             reply: tx,
         }))?;
-        let p = map(rx.await.map_err(|_| Error::internal("write thread crashed"))?)?;
+        let p = await_write_reply(rx).await?;
         Ok(Response::new(SavePromptResponse {
             prompt: Some(prompt_to_proto(p)),
         }))

@@ -13,7 +13,6 @@
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use tonic::{Request, Status};
 use tracing::warn;
 
@@ -70,6 +69,7 @@ mod tests {
     use crate::tokens::{TokenMeta, TokenStore};
     use tempfile::TempDir;
 
+    #[allow(dead_code)]
     fn fake_store() -> (TempDir, Arc<TokenStore>, String) {
         let d = TempDir::new().unwrap();
         let store = TokenStore::open(d.path().join("tokens.db")).unwrap();
@@ -91,6 +91,7 @@ mod tests {
 
     #[test]
     fn constant_time_eq_holds() {
+        use subtle::ConstantTimeEq;
         let a = [1u8; 32];
         let b = [1u8; 32];
         assert!(bool::from(a.ct_eq(&b)));

@@ -56,7 +56,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Filesystem / OS
-nix = { version = "0.29", features = ["fs", "resource", "signal"] }
+nix = { version = "0.29", features = ["fs", "resource", "signal", "user"] }
 fs2 = "0.4"
 dirs = "5"
 
