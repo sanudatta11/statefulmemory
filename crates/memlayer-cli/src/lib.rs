@@ -10,6 +10,8 @@
 
 pub mod autospawn;
 pub mod cli;
+pub mod cmd_obs;
 pub mod exit;
 pub mod formatter;
 pub mod project_detect;
+pub mod render;

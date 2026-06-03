@@ -37,11 +37,34 @@ pub fn spawn_daemon() -> DaemonHandle {
 }
 
 fn locate_binary() -> PathBuf {
-    // Cargo populates CARGO_BIN_EXE_<name> for binary deps in [[bin]] crates.
+    // Cargo populates CARGO_BIN_EXE_<name> for binary deps in [[bin]] crates
+    // when the binary lives in the same package as the integration test.
+    // memlayer-tests is its own package, so this is rarely populated; we
+    // fall back to walking the workspace target dir.
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_memlayer") {
         return PathBuf::from(p);
     }
-    // Fallback: walk up from cargo target dir.
+
+    // Walk up from the running test binary. The test binary lives at
+    // `<target>/<profile>/deps/<test>-<hash>`, so its parent's parent is
+    // `<target>/<profile>/`. This works even when CARGO_TARGET_DIR is set
+    // or the workspace layout is non-standard.
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cur: Option<&Path> = exe.parent();
+        for _ in 0..4 {
+            let dir = match cur {
+                Some(d) => d,
+                None => break,
+            };
+            let cand = dir.join("memlayer");
+            if cand.exists() {
+                return cand;
+            }
+            cur = dir.parent();
+        }
+    }
+
+    // Last-resort fallback: walk up from the manifest dir to a `target` sibling.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let target = Path::new(&manifest).parent().unwrap().parent().unwrap().join("target");
     for profile in ["debug", "release"] {
@@ -50,7 +73,13 @@ fn locate_binary() -> PathBuf {
             return cand;
         }
     }
-    panic!("could not locate memlayer binary");
+    panic!(
+        "could not locate `memlayer` binary; tried CARGO_BIN_EXE_memlayer, \
+         walking up from current_exe(), and {target_debug}/memlayer / \
+         {target_release}/memlayer. Run `cargo build -p memlayer-cli` first.",
+        target_debug = target.join("debug").display(),
+        target_release = target.join("release").display(),
+    );
 }
 
 /// Poll the UDS until it accepts connections, up to 5 s (FR2.3).

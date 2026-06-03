@@ -10,7 +10,7 @@
 
 use std::io::{self, Write};
 
-use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Formatter {
@@ -33,19 +33,25 @@ impl Formatter {
 
 /// Renderer trait implemented by every RPC response type.
 ///
-/// `render_json` and `render_yaml` have default implementations that delegate
-/// to `serde`. Implementations override `render_text` to produce a
-/// human-readable table or summary.
-pub trait Render: Serialize {
+/// Implementations override `render_text` to produce a human-readable table
+/// or summary, and `to_json_value` to expose a Serialize-able shape.
+/// `render_json` and `render_yaml` have default implementations that go
+/// through `to_json_value`. The trait does **not** require `Serialize` on
+/// `Self` because the prost-generated proto types in `memlayer-proto` are
+/// not Serialize without an extra build feature.
+pub trait Render {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()>;
+    fn to_json_value(&self) -> Value;
 
     fn render_json(&self, w: &mut dyn Write) -> io::Result<()> {
-        serde_json::to_writer_pretty(&mut *w, self).map_err(io::Error::other)?;
+        let v = self.to_json_value();
+        serde_json::to_writer_pretty(&mut *w, &v).map_err(io::Error::other)?;
         writeln!(w)
     }
 
     fn render_yaml(&self, w: &mut dyn Write) -> io::Result<()> {
-        serde_yaml::to_writer(&mut *w, self).map_err(io::Error::other)
+        let v = self.to_json_value();
+        serde_yaml::to_writer(w, &v).map_err(io::Error::other)
     }
 
     fn render(&self, fmt: Formatter, w: &mut dyn Write) -> io::Result<()> {

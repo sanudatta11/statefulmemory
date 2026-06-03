@@ -76,27 +76,151 @@ pub struct ObsArgs {
 #[derive(Subcommand, Debug)]
 pub enum ObsVerb {
     /// Save a new observation.
-    Save,
+    Save(ObsSaveArgs),
     /// Update an existing observation by id.
-    Update,
+    Update(ObsUpdateArgs),
     /// Soft-delete (or `--hard`) an observation.
-    Delete,
+    Delete(ObsDeleteArgs),
     /// Print a single observation.
-    Get,
+    Get(ObsGetArgs),
     /// FTS5 search.
-    Search,
-    /// Recent observations, paginated.
-    Recent,
+    Search(ObsSearchArgs),
+    /// Recent observations.
+    Recent(ObsRecentArgs),
     /// List observations with filters.
-    List,
+    List(ObsListArgs),
     /// Markdown context summary for prompt injection.
-    Context,
+    Context(ObsContextArgs),
     /// Chronological neighbors of an observation.
-    Timeline,
+    Timeline(ObsTimelineArgs),
     /// Suggest a stable topic key for a candidate observation.
-    SuggestTopicKey,
-    /// Extract `## Key Learnings:` bullets from stdin.
-    CapturePassive,
+    SuggestTopicKey(ObsSuggestTopicKeyArgs),
+    /// Extract `## Key Learnings:` bullets from a text block.
+    CapturePassive(ObsCapturePassiveArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ObsSaveArgs {
+    /// Title.
+    #[arg(long)]
+    pub title: String,
+    /// Content body. Pass `-` to read from stdin (capped at 50,000 chars per EC-7).
+    #[arg(long)]
+    pub content: String,
+    /// Observation type: decision, policy, preference, note, learning, …
+    #[arg(long, default_value = "note")]
+    pub r#type: String,
+    /// Visibility scope. SC-12 / FR4 default.
+    #[arg(long, default_value = "project")]
+    pub scope: String,
+    /// Stable topic key for upsert semantics (FR12.5).
+    #[arg(long)]
+    pub topic: Option<String>,
+    /// Session id this observation belongs to.
+    #[arg(long)]
+    pub session: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsUpdateArgs {
+    /// Observation id (numeric DB id) or sync_id.
+    pub id: String,
+    #[arg(long)]
+    pub title: Option<String>,
+    #[arg(long)]
+    pub content: Option<String>,
+    #[arg(long)]
+    pub r#type: Option<String>,
+    #[arg(long)]
+    pub scope: Option<String>,
+    #[arg(long)]
+    pub topic: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsDeleteArgs {
+    pub id: String,
+    /// Hard-delete (DELETE row + FTS entry) instead of soft-delete.
+    #[arg(long)]
+    pub hard: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsGetArgs {
+    pub id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsSearchArgs {
+    /// FTS5 query string.
+    pub query: String,
+    #[arg(long)]
+    pub r#type: Option<String>,
+    #[arg(long)]
+    pub scope: Option<String>,
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+    /// Search across all projects (capped at 32 per EC-10).
+    #[arg(long)]
+    pub all_projects: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsRecentArgs {
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+    #[arg(long)]
+    pub scope: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsListArgs {
+    #[arg(long)]
+    pub r#type: Option<String>,
+    #[arg(long)]
+    pub scope: Option<String>,
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+    /// Opaque cursor token from a previous list page.
+    #[arg(long)]
+    pub cursor: Option<String>,
+    /// Only show decisions whose `review_after` is in the past (SC-27).
+    #[arg(long)]
+    pub due_for_review: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsContextArgs {
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsTimelineArgs {
+    pub id: String,
+    #[arg(long, default_value_t = 5)]
+    pub before: i32,
+    #[arg(long, default_value_t = 5)]
+    pub after: i32,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsSuggestTopicKeyArgs {
+    #[arg(long)]
+    pub title: String,
+    #[arg(long, default_value = "note")]
+    pub r#type: String,
+    #[arg(long, default_value = "project")]
+    pub scope: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsCapturePassiveArgs {
+    /// Markdown text to scan. Pass `-` to read from stdin (50k cap).
+    #[arg(long)]
+    pub text: String,
+    #[arg(long)]
+    pub session: Option<String>,
 }
 
 #[derive(Args, Debug)]
