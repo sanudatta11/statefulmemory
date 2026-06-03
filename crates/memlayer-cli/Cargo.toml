@@ -33,6 +33,7 @@ serde_yaml.workspace = true
 is-terminal.workspace = true
 fs2.workspace = true
 nix.workspace = true
+rcgen.workspace = true
 
 tracing.workspace = true
 thiserror.workspace = true

@@ -1105,6 +1105,7 @@ dependencies = [
  "memlayer-daemon",
  "memlayer-proto",
  "nix",
+ "rcgen",
  "serde",
  "serde_json",
  "serde_yaml",

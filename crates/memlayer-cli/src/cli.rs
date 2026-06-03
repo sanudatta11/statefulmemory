@@ -431,10 +431,37 @@ pub struct TeamArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum TeamVerb {
-    InitCa,
-    TokenCreate,
+    /// Generate a self-signed CA + leaf cert for TCP-mode hosting.
+    InitCa(TeamInitCaArgs),
+    /// Mint a fresh bearer token (admin-only TCP).
+    TokenCreate(TeamTokenCreateArgs),
+    /// List active token names + admin flags (no secrets).
     TokenList,
-    TokenRevoke,
+    /// Revoke a token by name.
+    TokenRevoke(TeamTokenRevokeArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TeamInitCaArgs {
+    /// Output directory for ca.pem, server.pem, server-key.pem.
+    pub dir: std::path::PathBuf,
+    /// Overwrite existing PEM files (EC-9).
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TeamTokenCreateArgs {
+    #[arg(long)]
+    pub name: String,
+    /// Mark this token as admin (gates Shutdown / token RPCs / DeleteProject --hard).
+    #[arg(long)]
+    pub admin: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TeamTokenRevokeArgs {
+    pub name: String,
 }
 
 #[derive(Args, Debug)]

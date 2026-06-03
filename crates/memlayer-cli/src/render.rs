@@ -726,6 +726,85 @@ impl Render for p::SyncStatusResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Daemon (status), Tokens (FR8, FR10) — added in spec2-t7
+// ---------------------------------------------------------------------------
+
+impl Render for p::DaemonStatusResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "version          {}", self.version)?;
+        writeln!(w, "pid              {}", self.pid)?;
+        writeln!(w, "started_at       {}", self.started_at)?;
+        writeln!(w, "read_only_mode   {}", self.read_only_mode)?;
+        writeln!(w, "in_flight_rpcs   {}", self.in_flight_rpcs)?;
+        writeln!(w, "cached_projects  {}", self.cached_projects)?;
+        writeln!(w, "cache_hit_ratio  {:.3}", self.cache_hit_ratio)?;
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "version": self.version,
+            "pid": self.pid,
+            "started_at": self.started_at,
+            "read_only_mode": self.read_only_mode,
+            "in_flight_rpcs": self.in_flight_rpcs,
+            "cached_projects": self.cached_projects,
+            "cache_hit_ratio": self.cache_hit_ratio,
+        })
+    }
+}
+
+impl Render for p::CreateTokenResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        // SC-21: token-create prints the 64-hex token to stdout, exactly once.
+        // Never log this string — it's the only copy of the secret.
+        writeln!(w, "{}", self.secret)
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "secret": self.secret })
+    }
+}
+
+impl Render for p::ListTokensResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            w,
+            "{:<24}  {:<5}  {:<20}  {}",
+            "NAME", "ADMIN", "CREATED_AT", "REVOKED_AT"
+        )?;
+        for t in &self.tokens {
+            writeln!(
+                w,
+                "{:<24}  {:<5}  {:<20}  {}",
+                truncate(&t.name, 24),
+                t.is_admin,
+                truncate(&t.created_at, 20),
+                t.revoked_at.as_deref().unwrap_or("-")
+            )?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "tokens": self.tokens.iter().map(|t| json!({
+                "name": t.name,
+                "is_admin": t.is_admin,
+                "created_at": t.created_at,
+                "revoked_at": t.revoked_at,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl Render for p::RevokeTokenResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "revoked")
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "revoked": true })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
