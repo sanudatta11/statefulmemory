@@ -1,0 +1,612 @@
+// memlayer.proto — gRPC service definition.
+//
+// Scope: in this file, we only define the RPCs needed across all 4 specs.
+// Spec 1 (core-storage-daemon) implements a subset; later specs add handlers
+// for the remaining methods. The wire shapes are stable from day one.
+//
+// References:
+//   PRD §6.1 — RPC inventory
+//   PRD §6.2 — Status code matrix
+//   PRD §5.3 — Field shapes for Observation/Session/Prompt
+//   PRD §6.4 — Cursor pagination
+
+syntax = "proto3";
+package memlayer.v1;
+
+// ---
+// Common shapes
+// ---
+
+// Observation — `observations` table row, projected to the wire.
+message Observation {
+  int64  id              = 1;
+  string sync_id         = 2;
+  string session_id      = 3;
+  string type            = 4;     // "decision" | "policy" | "preference" | …
+  string title           = 5;
+  string content         = 6;
+  optional string tool_name  = 7;
+  string scope           = 8;     // "project" | "personal" | "team"
+  optional string created_by = 9;
+  optional string topic_key  = 10;
+  optional string normalized_hash = 11;
+  int32  revision_count  = 12;
+  int32  duplicate_count = 13;
+  optional string last_seen_at = 14;
+  string created_at      = 15;    // RFC-3339 UTC
+  string updated_at      = 16;    // RFC-3339 UTC
+  optional string deleted_at = 17;
+  optional string review_after = 18;
+}
+
+message Session {
+  string id         = 1;
+  string directory  = 2;
+  string started_at = 3;
+  optional string ended_at = 4;
+  optional string summary  = 5;
+}
+
+message Prompt {
+  int64  id         = 1;
+  string sync_id    = 2;
+  string session_id = 3;
+  string content    = 4;
+  string created_at = 5;
+}
+
+// Inline context attached to StartSessionResponse so agents need only one RPC
+// at session start (FR6.1, SC-11).
+message ContextSnapshot {
+  repeated Observation recent_observations = 1;
+  repeated TopicSummary active_topics = 2;
+}
+
+message TopicSummary {
+  string topic_key  = 1;
+  string scope      = 2;
+  string latest_title = 3;
+  string updated_at = 4;
+}
+
+// Cursor for paginated list endpoints (PRD §6.4). Opaque to clients.
+message Cursor {
+  string token = 1;   // base64(JSON)
+}
+
+// ---
+// Save / Get / Update / Delete observation
+// ---
+
+message SaveObservationRequest {
+  string project_name = 1;
+  optional string sync_id = 2;     // omit → daemon mints a v4 UUID
+  string session_id   = 3;
+  string type         = 4;
+  string title        = 5;
+  string content      = 6;
+  optional string tool_name = 7;
+  string scope        = 8;         // default "project"
+  optional string created_by = 9;
+  optional string topic_key = 10;
+}
+
+message SaveObservationResponse {
+  Observation observation = 1;
+  // Hash-window collisions found during save, in case the agent wants to surface them.
+  repeated Observation similar_observations = 2;
+}
+
+message GetObservationRequest {
+  string project_name = 1;
+  oneof key {
+    int64  id      = 2;
+    string sync_id = 3;
+  }
+}
+
+message GetObservationResponse {
+  Observation observation = 1;
+}
+
+message UpdateObservationRequest {
+  string project_name = 1;
+  oneof key {
+    int64  id      = 2;
+    string sync_id = 3;
+  }
+  optional string title = 4;
+  optional string content = 5;
+  optional string topic_key = 6;
+  optional string scope = 7;
+  optional string type = 8;
+}
+
+message UpdateObservationResponse {
+  Observation observation = 1;
+}
+
+message DeleteObservationRequest {
+  string project_name = 1;
+  oneof key {
+    int64  id      = 2;
+    string sync_id = 3;
+  }
+  bool hard = 4;   // true → DELETE; false (default) → set deleted_at
+}
+
+message DeleteObservationResponse {}
+
+// ---
+// Search / List / Recent observations
+// ---
+
+message SearchObservationsRequest {
+  string project_name = 1;
+  string query        = 2;
+  optional string type = 3;
+  optional string scope = 4;
+  bool all_projects   = 5;
+  int32 limit         = 6;        // default 10, max 50
+}
+
+message SearchObservationsResponse {
+  repeated Observation observations = 1;
+  // Set when all_projects was capped at 32 (EC-10).
+  optional string warning = 2;
+}
+
+message ListObservationsRequest {
+  string project_name = 1;
+  optional string type = 2;
+  optional string scope = 3;
+  optional string created_by = 4;
+  bool due_for_review = 5;
+  int32 limit = 6;
+  optional Cursor cursor = 7;
+}
+
+message ListObservationsResponse {
+  repeated Observation observations = 1;
+  optional Cursor next_cursor = 2;
+}
+
+message RecentObservationsRequest {
+  string project_name = 1;
+  int32 limit = 2;
+  optional string scope = 3;
+}
+
+message RecentObservationsResponse {
+  repeated Observation observations = 1;
+}
+
+// ---
+// Context / Timeline / SuggestTopicKey / CapturePassive (Spec 2)
+// ---
+
+message ContextRequest {
+  string project_name = 1;
+  int32  recent_limit = 2;       // default 10
+}
+message ContextResponse {
+  ContextSnapshot snapshot = 1;
+}
+
+message TimelineRequest {
+  string project_name = 1;
+  oneof anchor {
+    int64  id      = 2;
+    string sync_id = 3;
+  }
+  int32 before = 4;
+  int32 after  = 5;
+}
+message TimelineResponse {
+  repeated Observation before = 1;
+  Observation anchor = 2;
+  repeated Observation after = 3;
+}
+
+message SuggestTopicKeyRequest {
+  string project_name = 1;
+  string title = 2;
+  string type  = 3;
+  string scope = 4;
+}
+message SuggestTopicKeyResponse {
+  string topic_key = 1;
+}
+
+message CapturePassiveRequest {
+  string project_name = 1;
+  string text = 2;
+  string session_id = 3;
+}
+message CapturePassiveResponse {
+  // Plain text snippets the CLI fans out to SaveObservation.
+  repeated string snippets = 1;
+}
+
+// ---
+// Sessions
+// ---
+
+message StartSessionRequest {
+  string project_name = 1;
+  string id           = 2;
+  string directory    = 3;
+}
+
+message StartSessionResponse {
+  Session session = 1;
+  ContextSnapshot context = 2;
+}
+
+message EndSessionRequest {
+  string project_name = 1;
+  string id = 2;
+  optional string summary = 3;
+}
+
+message EndSessionResponse {
+  Session session = 1;
+}
+
+message SaveSessionSummaryRequest {
+  string project_name = 1;
+  string id = 2;
+  string summary = 3;
+}
+
+message SaveSessionSummaryResponse {
+  Session session = 1;
+}
+
+message GetSessionRequest {
+  string project_name = 1;
+  string id = 2;
+}
+message GetSessionResponse {
+  Session session = 1;
+}
+
+message ListSessionsRequest {
+  string project_name = 1;
+  int32 limit = 2;
+  optional Cursor cursor = 3;
+}
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+  optional Cursor next_cursor = 2;
+}
+
+message DeleteSessionRequest {
+  string project_name = 1;
+  string id = 2;
+}
+message DeleteSessionResponse {}
+
+// ---
+// Prompts
+// ---
+
+message SavePromptRequest {
+  string project_name = 1;
+  optional string sync_id = 2;
+  string session_id = 3;
+  string content = 4;
+}
+message SavePromptResponse {
+  Prompt prompt = 1;
+}
+
+message SearchPromptsRequest {
+  string project_name = 1;
+  string query = 2;
+  int32 limit = 3;
+}
+message SearchPromptsResponse {
+  repeated Prompt prompts = 1;
+}
+
+message RecentPromptsRequest {
+  string project_name = 1;
+  int32 limit = 2;
+}
+message RecentPromptsResponse {
+  repeated Prompt prompts = 1;
+}
+
+message DeletePromptRequest {
+  string project_name = 1;
+  oneof key {
+    int64  id      = 2;
+    string sync_id = 3;
+  }
+}
+message DeletePromptResponse {}
+
+// ---
+// Project ops
+// ---
+
+message ProjectInfo {
+  string normalized_name = 1;
+  string display_name    = 2;
+  int64  observation_count = 3;
+  int64  session_count   = 4;
+  int64  prompt_count    = 5;
+  string created_at      = 6;
+}
+
+message ListProjectsRequest {}
+message ListProjectsResponse {
+  repeated ProjectInfo projects = 1;
+}
+
+message CurrentProjectRequest {
+  string directory = 1;
+}
+message CurrentProjectResponse {
+  string normalized_name = 1;
+  string display_name = 2;
+  string source = 3;   // "config" | "git_remote" | "git_root_basename"
+}
+
+message MergeProjectsRequest {
+  string from = 1;
+  string to   = 2;
+}
+message MergeProjectsResponse {
+  int64 observations_migrated = 1;
+  int64 sessions_migrated = 2;
+  int64 prompts_migrated = 3;
+}
+
+message DeleteProjectRequest {
+  string project_name = 1;
+  bool hard = 2;
+}
+message DeleteProjectResponse {}
+
+message ConsolidateProjectsRequest {
+  bool dry_run = 1;
+}
+message ConsolidateProjectsResponse {
+  message Candidate {
+    string from = 1;
+    string to   = 2;
+    double similarity = 3;
+  }
+  repeated Candidate candidates = 1;
+}
+
+message PruneProjectsRequest {
+  bool dry_run = 1;
+}
+message PruneProjectsResponse {
+  repeated string would_remove = 1;
+}
+
+// ---
+// Token admin (TCP mode only) — Spec 2 surface, FR2.3 hooks here.
+// ---
+
+message CreateTokenRequest {
+  string name = 1;
+  bool is_admin = 2;
+}
+message CreateTokenResponse {
+  // Plaintext printed once, never logged. Hash stored.
+  string secret = 1;
+}
+
+message ListTokensRequest {}
+message ListTokensResponse {
+  message Token {
+    string name = 1;
+    bool is_admin = 2;
+    string created_at = 3;
+    optional string revoked_at = 4;
+  }
+  repeated Token tokens = 1;
+}
+
+message RevokeTokenRequest {
+  string name = 1;
+}
+message RevokeTokenResponse {}
+
+// ---
+// Daemon ops
+// ---
+
+message DaemonStatusRequest {}
+message DaemonStatusResponse {
+  string version = 1;
+  string pid = 2;
+  string started_at = 3;
+  bool read_only_mode = 4;
+  int64 in_flight_rpcs = 5;
+  int64 cached_projects = 6;
+  double cache_hit_ratio = 7;
+}
+
+message StatsRequest {
+  optional string project_name = 1;
+}
+message StatsResponse {
+  message ProjectStats {
+    string project = 1;
+    int64 observations = 2;
+    int64 soft_deleted_observations = 3;
+    int64 sessions = 4;
+    int64 prompts = 5;
+  }
+  repeated ProjectStats projects = 1;
+}
+
+message ShutdownRequest {}
+message ShutdownResponse {}
+
+// ---
+// Sync (Spec 3 — stubbed in Spec 1; live wiring in Spec 3)
+// ---
+
+message SyncStatusRequest {
+  optional string project_name = 1;
+}
+message SyncStatusResponse {
+  optional string last_export_at = 1;
+  optional string last_import_at = 2;
+  int32 unseen_chunk_count = 3;
+  optional string last_error = 4;
+  int64 total_exported_chunks = 5;
+  int64 total_imported_chunks = 6;
+}
+
+message SyncExportRequest {
+  string project_name = 1;
+  optional string repo_path = 2;
+}
+message SyncExportResponse {
+  optional string chunk_id = 1;
+  int64 sessions_exported = 2;
+  int64 observations_exported = 3;
+  int64 prompts_exported = 4;
+}
+
+message SyncImportRequest {
+  string project_name = 1;
+  optional string repo_path = 2;
+}
+message SyncImportResponse {
+  int64 chunks_imported = 1;
+  int64 sessions_imported = 2;
+  int64 observations_imported = 3;
+  int64 prompts_imported = 4;
+}
+
+message SyncExportJsonRequest {
+  string project_name = 1;
+  string file = 2;
+}
+message SyncExportJsonResponse {
+  int64 sessions = 1;
+  int64 observations = 2;
+  int64 prompts = 3;
+}
+
+message SyncImportJsonRequest {
+  string project_name = 1;
+  string file = 2;
+}
+message SyncImportJsonResponse {
+  int64 sessions = 1;
+  int64 observations = 2;
+  int64 prompts = 3;
+}
+
+message SyncExportMdRequest {
+  string project_name = 1;
+  string dir = 2;
+  optional string since = 3;
+}
+message SyncExportMdResponse {
+  int64 files_written = 1;
+}
+
+message SyncImportMdRequest {
+  string project_name = 1;
+  string dir = 2;
+}
+message SyncImportMdResponse {
+  int64 sessions_imported = 1;
+  int64 observations_imported = 2;
+  int64 prompts_imported = 3;
+  int64 files_skipped = 4;
+}
+
+// ---
+// Doctor (Spec 4)
+// ---
+
+message DoctorRequest {
+  optional string project_name = 1;
+  bool auto_repair = 2;
+}
+message DoctorResponse {
+  message Finding {
+    string code = 1;
+    string severity = 2;     // "info" | "warn" | "error"
+    string message = 3;
+    optional string remedy = 4;
+  }
+  repeated Finding findings = 1;
+}
+
+// ---
+// Service
+// ---
+
+service Memlayer {
+  // Observation lifecycle
+  rpc SaveObservation        (SaveObservationRequest)        returns (SaveObservationResponse);
+  rpc GetObservation         (GetObservationRequest)         returns (GetObservationResponse);
+  rpc UpdateObservation      (UpdateObservationRequest)      returns (UpdateObservationResponse);
+  rpc DeleteObservation      (DeleteObservationRequest)      returns (DeleteObservationResponse);
+  rpc SearchObservations     (SearchObservationsRequest)     returns (SearchObservationsResponse);
+  rpc ListObservations       (ListObservationsRequest)       returns (ListObservationsResponse);
+  rpc RecentObservations     (RecentObservationsRequest)     returns (RecentObservationsResponse);
+
+  // Context / timeline / heuristics
+  rpc Context                (ContextRequest)                returns (ContextResponse);
+  rpc Timeline               (TimelineRequest)               returns (TimelineResponse);
+  rpc SuggestTopicKey        (SuggestTopicKeyRequest)        returns (SuggestTopicKeyResponse);
+  rpc CapturePassive         (CapturePassiveRequest)         returns (CapturePassiveResponse);
+
+  // Sessions
+  rpc StartSession           (StartSessionRequest)           returns (StartSessionResponse);
+  rpc EndSession             (EndSessionRequest)             returns (EndSessionResponse);
+  rpc SaveSessionSummary     (SaveSessionSummaryRequest)     returns (SaveSessionSummaryResponse);
+  rpc GetSession             (GetSessionRequest)             returns (GetSessionResponse);
+  rpc ListSessions           (ListSessionsRequest)           returns (ListSessionsResponse);
+  rpc DeleteSession          (DeleteSessionRequest)          returns (DeleteSessionResponse);
+
+  // Prompts
+  rpc SavePrompt             (SavePromptRequest)             returns (SavePromptResponse);
+  rpc SearchPrompts          (SearchPromptsRequest)          returns (SearchPromptsResponse);
+  rpc RecentPrompts          (RecentPromptsRequest)          returns (RecentPromptsResponse);
+  rpc DeletePrompt           (DeletePromptRequest)           returns (DeletePromptResponse);
+
+  // Projects
+  rpc ListProjects           (ListProjectsRequest)           returns (ListProjectsResponse);
+  rpc CurrentProject         (CurrentProjectRequest)         returns (CurrentProjectResponse);
+  rpc MergeProjects          (MergeProjectsRequest)          returns (MergeProjectsResponse);
+  rpc DeleteProject          (DeleteProjectRequest)          returns (DeleteProjectResponse);
+  rpc ConsolidateProjects    (ConsolidateProjectsRequest)    returns (ConsolidateProjectsResponse);
+  rpc PruneProjects          (PruneProjectsRequest)          returns (PruneProjectsResponse);
+
+  // Tokens (admin)
+  rpc CreateToken            (CreateTokenRequest)            returns (CreateTokenResponse);
+  rpc ListTokens             (ListTokensRequest)             returns (ListTokensResponse);
+  rpc RevokeToken            (RevokeTokenRequest)            returns (RevokeTokenResponse);
+
+  // Daemon ops
+  rpc DaemonStatus           (DaemonStatusRequest)           returns (DaemonStatusResponse);
+  rpc Stats                  (StatsRequest)                  returns (StatsResponse);
+  rpc Shutdown               (ShutdownRequest)               returns (ShutdownResponse);
+
+  // Sync
+  rpc SyncStatus             (SyncStatusRequest)             returns (SyncStatusResponse);
+  rpc SyncExport             (SyncExportRequest)             returns (SyncExportResponse);
+  rpc SyncImport             (SyncImportRequest)             returns (SyncImportResponse);
+  rpc SyncExportJson         (SyncExportJsonRequest)         returns (SyncExportJsonResponse);
+  rpc SyncImportJson         (SyncImportJsonRequest)         returns (SyncImportJsonResponse);
+  rpc SyncExportMd           (SyncExportMdRequest)           returns (SyncExportMdResponse);
+  rpc SyncImportMd           (SyncImportMdRequest)           returns (SyncImportMdResponse);
+
+  // Doctor
+  rpc Doctor                 (DoctorRequest)                 returns (DoctorResponse);
+}
