@@ -10,7 +10,10 @@ description = "End-to-end integration tests against the running memlayer daemon.
 [dependencies]
 memlayer-core = { path = "../memlayer-core" }
 memlayer-proto = { path = "../memlayer-proto" }
-memlayer-daemon = { path = "../memlayer-daemon" }
+# Depend on memlayer-cli so CARGO_BIN_EXE_memlayer resolves to the new
+# unified `memlayer` binary (Spec 2). The tests spawn it as
+# `memlayer daemon start --foreground` per PRD §4.1.
+memlayer-cli = { path = "../memlayer-cli" }
 tokio.workspace = true
 tonic.workspace = true
 tower = "0.4"

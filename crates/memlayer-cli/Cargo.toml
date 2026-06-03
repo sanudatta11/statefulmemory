@@ -1,0 +1,43 @@
+[package]
+name = "memlayer-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "memlayer CLI: clap dispatch, output formatting, project detection, daemon auto-spawn."
+
+[[bin]]
+name = "memlayer"
+path = "src/main.rs"
+
+[lib]
+name = "memlayer_cli"
+path = "src/lib.rs"
+
+[dependencies]
+memlayer-core = { path = "../memlayer-core" }
+memlayer-proto = { path = "../memlayer-proto" }
+memlayer-client = { path = "../memlayer-client" }
+memlayer-daemon = { path = "../memlayer-daemon" }
+
+clap.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+is-terminal.workspace = true
+fs2.workspace = true
+nix.workspace = true
+
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

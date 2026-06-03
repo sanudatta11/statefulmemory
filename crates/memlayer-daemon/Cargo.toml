@@ -12,9 +12,11 @@ description = "memlayer daemon binary: tonic gRPC server, lifecycle, signals, TL
 name = "memlayer_daemon"
 path = "src/lib.rs"
 
-[[bin]]
-name = "memlayer"
-path = "src/main.rs"
+# The `memlayer` binary moved to crates/memlayer-cli starting with Spec 2:
+# Cargo errors out if two workspace packages share a binary name.
+# `daemon start --foreground` is dispatched from memlayer-cli's main.rs
+# into memlayer_daemon::server::run. The orphaned src/main.rs is kept for
+# git history only; cargo no longer compiles it.
 
 [dependencies]
 memlayer-core = { path = "../memlayer-core" }
