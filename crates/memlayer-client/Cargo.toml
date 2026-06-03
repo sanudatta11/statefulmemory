@@ -1,0 +1,23 @@
+[package]
+name = "memlayer-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "memlayer gRPC client: tonic Channel wrapper, bearer interceptor, retry helper."
+
+[dependencies]
+memlayer-proto = { path = "../memlayer-proto" }
+
+tokio.workspace = true
+tonic.workspace = true
+tower.workspace = true
+hyper-util.workspace = true
+
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
