@@ -1,0 +1,54 @@
+[package]
+name = "memlayer-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "memlayer daemon binary: tonic gRPC server, lifecycle, signals, TLS."
+
+[lib]
+name = "memlayer_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "memlayer"
+path = "src/main.rs"
+
+[dependencies]
+memlayer-core = { path = "../memlayer-core" }
+memlayer-proto = { path = "../memlayer-proto" }
+memlayer-storage = { path = "../memlayer-storage" }
+
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+hex.workspace = true
+base64.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+nix.workspace = true
+fs2.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,16 @@
+//! memlayer daemon — library entry point.
+//!
+//! The binary in `main.rs` is a thin wrapper that parses the `daemon start`
+//! / `daemon stop` subcommands and delegates to `lifecycle`.
+
+pub mod auth;
+pub mod error_map;
+pub mod lifecycle;
+pub mod logging;
+pub mod server;
+pub mod service;
+pub mod signals;
+pub mod tls;
+pub mod tokens;
+
+pub use service::MemlayerService;
