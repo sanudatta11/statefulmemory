@@ -379,31 +379,88 @@ impl Memlayer for MemlayerService {
     }
 
     // ---- Context / Timeline / SuggestTopicKey / CapturePassive ----
-    // Spec 1 stubs; Spec 2 adds full implementations.
+    // FR12.1–FR12.6, wired in spec2-t3.
 
+    #[instrument(skip(self, req), fields(rpc = "Context"))]
     async fn context(
         &self,
-        _req: Request<ContextRequest>,
+        req: Request<ContextRequest>,
     ) -> Result<Response<ContextResponse>, Status> {
-        Err(Status::unimplemented("Context RPC: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let limit = if r.recent_limit <= 0 { 10 } else { r.recent_limit };
+        let conn = map(project.open_read_conn())?;
+        let (recents, topics) = map(read_q::recent_active(&conn, limit))?;
+        let snapshot = ContextSnapshot {
+            recent_observations: recents.into_iter().map(obs_to_proto).collect(),
+            active_topics: topics
+                .into_iter()
+                .map(|t| TopicSummary {
+                    topic_key: t.topic_key,
+                    scope: t.scope,
+                    latest_title: t.latest_title,
+                    updated_at: t.updated_at,
+                })
+                .collect(),
+        };
+        Ok(Response::new(ContextResponse {
+            snapshot: Some(snapshot),
+        }))
     }
+
+    #[instrument(skip(self, req), fields(rpc = "Timeline"))]
     async fn timeline(
         &self,
-        _req: Request<TimelineRequest>,
+        req: Request<TimelineRequest>,
     ) -> Result<Response<TimelineResponse>, Status> {
-        Err(Status::unimplemented("Timeline RPC: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let key = match r.anchor {
+            Some(timeline_request::Anchor::Id(id)) => ObservationKey::Id(id),
+            Some(timeline_request::Anchor::SyncId(s)) => ObservationKey::SyncId(s),
+            None => return Err(Status::invalid_argument("missing timeline anchor")),
+        };
+        let conn = map(project.open_read_conn())?;
+        let (before, anchor, after) =
+            map(read_q::timeline(&conn, &key, r.before, r.after))?;
+        Ok(Response::new(TimelineResponse {
+            before: before.into_iter().map(obs_to_proto).collect(),
+            anchor: Some(obs_to_proto(anchor)),
+            after: after.into_iter().map(obs_to_proto).collect(),
+        }))
     }
+
+    #[instrument(skip(self, req), fields(rpc = "SuggestTopicKey"))]
     async fn suggest_topic_key(
         &self,
-        _req: Request<SuggestTopicKeyRequest>,
+        req: Request<SuggestTopicKeyRequest>,
     ) -> Result<Response<SuggestTopicKeyResponse>, Status> {
-        Err(Status::unimplemented("SuggestTopicKey RPC: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let scope = if r.scope.is_empty() { "project".to_string() } else { r.scope };
+        let conn = map(project.open_read_conn())?;
+        let key = map(crate::suggest_topic_key::suggest(
+            &conn, &r.r#type, &r.title, &scope,
+        ))?;
+        Ok(Response::new(SuggestTopicKeyResponse { topic_key: key }))
     }
+
+    #[instrument(skip(self, req), fields(rpc = "CapturePassive"))]
     async fn capture_passive(
         &self,
-        _req: Request<CapturePassiveRequest>,
+        req: Request<CapturePassiveRequest>,
     ) -> Result<Response<CapturePassiveResponse>, Status> {
-        Err(Status::unimplemented("CapturePassive RPC: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        // CapturePassive is pure markdown parsing — no project DB access
+        // needed, but we still validate the project name to give consistent
+        // error shape across the surface.
+        let _ = map(self.open_project(&r.project_name))?;
+        let snippets = crate::capture_passive::extract_key_learnings(&r.text);
+        Ok(Response::new(CapturePassiveResponse { snippets }))
     }
 
     // ---- Sessions ----

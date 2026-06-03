@@ -285,6 +285,113 @@ fn sanitize_fts5_query(q: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// One row of the active-topic summary used by `Context` (FR12.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveTopic {
+    pub topic_key: String,
+    pub scope: String,
+    pub latest_title: String,
+    pub updated_at: String,
+}
+
+/// `Context` (FR12.3): last `limit` active observations + active topic keys
+/// with their latest title + updated_at.
+///
+/// "Active" means `deleted_at IS NULL`. The topic block returns up to 20
+/// rows ordered by most-recent activity in any scope.
+pub fn recent_active(
+    conn: &Connection,
+    limit: i32,
+) -> Result<(Vec<Observation>, Vec<ActiveTopic>)> {
+    let recents = recent(conn, limit, None)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT topic_key, scope, title, updated_at FROM observations
+              WHERE topic_key IS NOT NULL AND deleted_at IS NULL
+              GROUP BY topic_key
+              ORDER BY MAX(updated_at) DESC
+              LIMIT 20",
+        )
+        .map_err(|e| Error::internal(format!("prepare context topic: {e}")))?;
+    let topic_iter = stmt
+        .query_map([], |row| {
+            Ok(ActiveTopic {
+                topic_key: row.get(0)?,
+                scope: row.get(1)?,
+                latest_title: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| Error::internal(format!("context topic query: {e}")))?;
+    let mut topics = Vec::new();
+    for r in topic_iter {
+        topics.push(r.map_err(|e| Error::internal(format!("context topic row: {e}")))?);
+    }
+    Ok((recents, topics))
+}
+
+/// `Timeline` (FR12.4): chronological neighbors of one observation.
+///
+/// Returns `(before, anchor, after)` where:
+/// - `before`  = up to `before_n` rows with `created_at < anchor.created_at`,
+///               sorted DESC (closest-older-first).
+/// - `anchor`  = the observation identified by `key`.
+/// - `after`   = up to `after_n` rows with `created_at > anchor.created_at`,
+///               sorted ASC (closest-newer-first).
+///
+/// Soft-deleted rows are excluded; the anchor itself must not be soft-deleted.
+pub fn timeline(
+    conn: &Connection,
+    key: &ObservationKey,
+    before_n: i32,
+    after_n: i32,
+) -> Result<(Vec<Observation>, Observation, Vec<Observation>)> {
+    let anchor = get(conn, key)?;
+    let before = if before_n > 0 {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {SELECT_COLS} FROM observations
+                  WHERE deleted_at IS NULL
+                    AND (created_at < ?1 OR (created_at = ?1 AND id < ?2))
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT ?3"
+            ))
+            .map_err(|e| Error::internal(format!("prepare timeline before: {e}")))?;
+        let rows = stmt
+            .query_map(params![anchor.created_at, anchor.id, before_n], Observation::from_row)
+            .map_err(|e| Error::internal(format!("timeline before query: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| Error::internal(format!("timeline before row: {e}")))?);
+        }
+        out
+    } else {
+        Vec::new()
+    };
+    let after = if after_n > 0 {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {SELECT_COLS} FROM observations
+                  WHERE deleted_at IS NULL
+                    AND (created_at > ?1 OR (created_at = ?1 AND id > ?2))
+                  ORDER BY created_at ASC, id ASC
+                  LIMIT ?3"
+            ))
+            .map_err(|e| Error::internal(format!("prepare timeline after: {e}")))?;
+        let rows = stmt
+            .query_map(params![anchor.created_at, anchor.id, after_n], Observation::from_row)
+            .map_err(|e| Error::internal(format!("timeline after query: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| Error::internal(format!("timeline after row: {e}")))?);
+        }
+        out
+    } else {
+        Vec::new()
+    };
+    Ok((before, anchor, after))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +485,125 @@ mod tests {
         save(&mut c, "with quotes", "note");
         // Should not panic.
         let _ = search(&c, "weird\"chars*+", None, None, 10).unwrap();
+    }
+
+    // ---------------------------------------------------------------------
+    // FR12.3 / FR12.4 — Context + Timeline (spec2-t3)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn context_returns_recent_active() {
+        let (_d, mut c) = make_conn();
+        // Insert observations with topic keys + a soft-deleted one to verify
+        // it's filtered.
+        for i in 0..5 {
+            let tx = c.transaction().unwrap();
+            crate::write::handle_save_observation_for_tests(
+                &tx,
+                SaveObservationInput {
+                    sync_id: None,
+                    session_id: "s1".into(),
+                    r#type: "note".into(),
+                    title: format!("title-{i}"),
+                    content: format!("content-{i}"),
+                    tool_name: None,
+                    scope: "project".into(),
+                    created_by: None,
+                    topic_key: Some(format!("note/topic-{i}")),
+                    dedupe_window_secs: 0,
+                    max_content_chars: 50_000,
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        // Soft-delete the most recent one.
+        c.execute(
+            "UPDATE observations SET deleted_at = datetime('now')
+              WHERE title = 'title-4'",
+            [],
+        )
+        .unwrap();
+
+        let (recents, topics) = recent_active(&c, 10).unwrap();
+        // 4 active recents (the deleted one is excluded).
+        assert_eq!(recents.len(), 4);
+        // 4 active topics (the deleted topic is also excluded — its only row
+        // is soft-deleted and the GROUP BY filter `deleted_at IS NULL`
+        // removes it).
+        assert_eq!(topics.len(), 4);
+        // Topics ordered by most-recent activity: topic-3 first.
+        assert_eq!(topics[0].topic_key, "note/topic-3");
+    }
+
+    #[test]
+    fn timeline_before_after_neighbors() {
+        let (_d, mut c) = make_conn();
+        // Insert 5 observations with distinguishable content. SQLite's
+        // datetime('now') is per-second, so we manually stamp created_at to
+        // guarantee ordering inside this test.
+        for i in 0..5 {
+            let tx = c.transaction().unwrap();
+            crate::write::handle_save_observation_for_tests(
+                &tx,
+                SaveObservationInput {
+                    sync_id: None,
+                    session_id: "s1".into(),
+                    r#type: "note".into(),
+                    title: format!("t{i}"),
+                    content: format!("body-{i}"),
+                    tool_name: None,
+                    scope: "project".into(),
+                    created_by: None,
+                    topic_key: None,
+                    dedupe_window_secs: 0,
+                    max_content_chars: 50_000,
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        // Stamp created_at so ordering is deterministic.
+        for i in 0..5 {
+            c.execute(
+                "UPDATE observations SET created_at = ?1 WHERE title = ?2",
+                params![format!("2026-01-0{}T00:00:00Z", i + 1), format!("t{i}")],
+            )
+            .unwrap();
+        }
+        // Anchor on the middle row (t2).
+        let id: i64 = c
+            .query_row(
+                "SELECT id FROM observations WHERE title = 't2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (before, anchor, after) =
+            timeline(&c, &ObservationKey::Id(id), 5, 5).unwrap();
+        assert_eq!(anchor.title, "t2");
+        // Closest-older-first: t1, t0.
+        assert_eq!(
+            before.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(),
+            vec!["t1", "t0"]
+        );
+        // Closest-newer-first: t3, t4.
+        assert_eq!(
+            after.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(),
+            vec!["t3", "t4"]
+        );
+    }
+
+    #[test]
+    fn timeline_zero_before_returns_empty_before() {
+        let (_d, mut c) = make_conn();
+        save(&mut c, "only", "note");
+        let id: i64 = c
+            .query_row("SELECT id FROM observations LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let (before, _anchor, after) =
+            timeline(&c, &ObservationKey::Id(id), 0, 0).unwrap();
+        assert!(before.is_empty());
+        assert!(after.is_empty());
     }
 }

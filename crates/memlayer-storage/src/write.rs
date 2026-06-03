@@ -904,4 +904,103 @@ mod tests {
         tx.commit().unwrap();
         assert_eq!(n, 2);
     }
+
+    // ---------------------------------------------------------------------
+    // FR12.1 / FR12.2 — Update + hard delete (spec2-t3)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn update_bumps_revision_and_locks_sync_id() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let original = handle_save_observation(&tx, save_input("v1 content")).unwrap();
+        let original_sync_id = original.sync_id.clone();
+        let original_created_at = original.created_at.clone();
+        assert_eq!(original.revision_count, 1);
+
+        // Apply a partial update — sync_id and created_at are not in the
+        // patch struct, so they must remain locked by construction.
+        let patch = ObservationPatch {
+            title: Some("renamed".into()),
+            content: Some("v2 content".into()),
+            ..Default::default()
+        };
+        let updated = handle_update_obs(&tx, &ObservationKey::Id(original.id), &patch).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(updated.id, original.id);
+        assert_eq!(updated.title, "renamed");
+        assert_eq!(updated.content, "v2 content");
+        assert_eq!(updated.revision_count, 2);
+        // sync_id and created_at locked.
+        assert_eq!(updated.sync_id, original_sync_id, "sync_id must not change");
+        assert_eq!(
+            updated.created_at, original_created_at,
+            "created_at must not change"
+        );
+        // updated_at advanced (or at least did not regress).
+        assert!(updated.updated_at >= original.updated_at);
+    }
+
+    #[test]
+    fn update_rejects_soft_deleted_observation() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let obs = handle_save_observation(&tx, save_input("v1")).unwrap();
+        handle_soft_delete_obs(&tx, &ObservationKey::Id(obs.id)).unwrap();
+        let patch = ObservationPatch {
+            title: Some("new".into()),
+            ..Default::default()
+        };
+        let r = handle_update_obs(&tx, &ObservationKey::Id(obs.id), &patch);
+        tx.commit().unwrap();
+        assert!(matches!(r, Err(Error::FailedPrecondition(_))));
+    }
+
+    #[test]
+    fn hard_delete_removes_row_and_fts() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let obs = handle_save_observation(&tx, save_input("uniqueneedlexyz")).unwrap();
+        tx.commit().unwrap();
+
+        // FTS5 row should be present pre-delete.
+        let pre_fts: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observations_fts WHERE observations_fts MATCH 'uniqueneedlexyz'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre_fts, 1);
+
+        // Hard-delete.
+        let tx = conn.transaction().unwrap();
+        handle_hard_delete_obs(&tx, &ObservationKey::Id(obs.id)).unwrap();
+        tx.commit().unwrap();
+
+        let row_count: i64 = conn
+            .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(row_count, 0, "observations row should be gone");
+
+        // FTS5 trigger (obs_fts_ad) should have removed the FTS5 entry.
+        let post_fts: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observations_fts WHERE observations_fts MATCH 'uniqueneedlexyz'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_fts, 0, "FTS5 entry should have been removed by trigger");
+    }
+
+    #[test]
+    fn hard_delete_returns_not_found_on_missing_row() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let r = handle_hard_delete_obs(&tx, &ObservationKey::Id(99_999));
+        tx.commit().unwrap();
+        assert!(matches!(r, Err(Error::NotFound(_))));
+    }
 }

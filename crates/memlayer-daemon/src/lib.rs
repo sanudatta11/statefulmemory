@@ -4,12 +4,14 @@
 //! / `daemon stop` subcommands and delegates to `lifecycle`.
 
 pub mod auth;
+pub mod capture_passive;
 pub mod error_map;
 pub mod lifecycle;
 pub mod logging;
 pub mod server;
 pub mod service;
 pub mod signals;
+pub mod suggest_topic_key;
 pub mod tls;
 pub mod tokens;
 
