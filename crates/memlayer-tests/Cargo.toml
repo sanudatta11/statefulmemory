@@ -1,0 +1,26 @@
+[package]
+name = "memlayer-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "End-to-end integration tests against the running memlayer daemon."
+
+[dependencies]
+memlayer-core = { path = "../memlayer-core" }
+memlayer-proto = { path = "../memlayer-proto" }
+memlayer-daemon = { path = "../memlayer-daemon" }
+
+[dev-dependencies]
+tokio.workspace = true
+tonic.workspace = true
+tower = "0.4"
+hyper = "0.14"
+hyper-util = "0.1"
+tempfile = "3"
+nix.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
