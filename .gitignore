@@ -43,3 +43,19 @@ logs/
 coverage/
 .coverage
 htmlcov/
+
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Memlayer runtime data (developer machines only)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Catalyst caches/sessions (state itself is checked in)
+.catalyst/cache/
+.catalyst/sessions/
+
