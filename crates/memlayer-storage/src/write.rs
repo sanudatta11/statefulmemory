@@ -294,6 +294,14 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
 // SaveObservation handler
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+pub(crate) fn handle_save_observation_for_tests(
+    tx: &rusqlite::Transaction<'_>,
+    input: SaveObservationInput,
+) -> Result<Observation> {
+    handle_save_observation(tx, input)
+}
+
 fn handle_save_observation(
     tx: &rusqlite::Transaction<'_>,
     input: SaveObservationInput,
