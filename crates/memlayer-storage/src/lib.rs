@@ -14,6 +14,7 @@ pub mod dedupe;
 pub mod diskmon;
 pub mod models;
 pub mod pragmas;
+pub mod projects_admin;
 pub mod prompts;
 pub mod read;
 pub mod registry;

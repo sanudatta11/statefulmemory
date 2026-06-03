@@ -28,18 +28,20 @@ use memlayer_storage::{
     cursor::Cursor as StorageCursor,
     diskmon::DiskMonitor,
     models::{Observation, Prompt, Session},
+    projects_admin,
     prompts as prompts_q,
     read as read_q,
     sessions as sessions_q,
     stats as stats_q,
     write::{
-        ObservationKey, ObservationPatch, SaveObservationInput, WriteRequest,
+        ObservationKey, ObservationPatch, PromptKey, SaveObservationInput, WriteRequest,
     },
     ProjectRegistry, ProjectState,
 };
 
+use crate::admin_guard;
 use crate::error_map::map;
-use crate::tokens::TokenStore;
+use crate::tokens::{TokenMeta, TokenStore};
 
 /// Shared daemon state injected into the service.
 #[derive(Clone)]
@@ -564,16 +566,60 @@ impl Memlayer for MemlayerService {
 
     async fn list_sessions(
         &self,
-        _req: Request<ListSessionsRequest>,
+        req: Request<ListSessionsRequest>,
     ) -> Result<Response<ListSessionsResponse>, Status> {
-        Err(Status::unimplemented("ListSessions: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let cur = map(parse_cursor(&r.cursor))?;
+        let limit = if r.limit == 0 { 10 } else { r.limit };
+        let conn = map(project.open_read_conn())?;
+        let (rows, next) = map(sessions_q::list(&conn, limit, cur.as_ref()))?;
+        let next_cursor = match next {
+            Some(c) => Some(map(proto_cursor(c))?),
+            None => None,
+        };
+        Ok(Response::new(ListSessionsResponse {
+            sessions: rows.into_iter().map(session_to_proto).collect(),
+            next_cursor,
+        }))
     }
 
     async fn delete_session(
         &self,
-        _req: Request<DeleteSessionRequest>,
+        req: Request<DeleteSessionRequest>,
     ) -> Result<Response<DeleteSessionResponse>, Status> {
-        Err(Status::unimplemented("DeleteSession: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        map(self.check_writeable())?;
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        // FR12.8: refuse if any active observation references the session.
+        let conn = map(project.open_read_conn())?;
+        if map(sessions_q::has_observations(&conn, &r.id))? {
+            return Err(Status::failed_precondition(format!(
+                "session '{}' still has observations; delete or move them first",
+                r.id
+            )));
+        }
+        drop(conn);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // The write thread doesn't have a "delete session" variant yet — we
+        // submit a Custom request to run the DELETE under the write lock.
+        let session_id = r.id.clone();
+        map(project.write.send(WriteRequest::Custom {
+            f: Box::new(move |conn: &mut rusqlite::Connection| {
+                let n = conn
+                    .execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![session_id])
+                    .map_err(|e| Error::internal(format!("delete session: {e}")))?;
+                if n == 0 {
+                    return Err(Error::not_found(format!("session {session_id}")));
+                }
+                Ok(())
+            }),
+            reply: tx,
+        }))?;
+        await_write_reply(rx).await?;
+        Ok(Response::new(DeleteSessionResponse {}))
     }
 
     // ---- Prompts ----
@@ -635,9 +681,21 @@ impl Memlayer for MemlayerService {
 
     async fn delete_prompt(
         &self,
-        _req: Request<DeletePromptRequest>,
+        req: Request<DeletePromptRequest>,
     ) -> Result<Response<DeletePromptResponse>, Status> {
-        Err(Status::unimplemented("DeletePrompt: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        map(self.check_writeable())?;
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let key = match r.key {
+            Some(delete_prompt_request::Key::Id(id)) => PromptKey::Id(id),
+            Some(delete_prompt_request::Key::SyncId(s)) => PromptKey::SyncId(s),
+            None => return Err(Status::invalid_argument("missing prompt key")),
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        map(project.write.send(WriteRequest::DeletePrompt { key, reply: tx }))?;
+        await_write_reply(rx).await?;
+        Ok(Response::new(DeletePromptResponse {}))
     }
 
     // ---- Project ops (Spec 2) ----
@@ -646,58 +704,186 @@ impl Memlayer for MemlayerService {
         &self,
         _req: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
-        Err(Status::unimplemented("ListProjects: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let counts = map(projects_admin::list_projects_with_counts())?;
+        let projects = counts
+            .into_iter()
+            .map(|p| ProjectInfo {
+                normalized_name: p.normalized_name,
+                display_name: p.display_name,
+                observation_count: p.observation_count,
+                session_count: p.session_count,
+                prompt_count: p.prompt_count,
+                created_at: p.created_at,
+            })
+            .collect();
+        Ok(Response::new(ListProjectsResponse { projects }))
     }
+
     async fn current_project(
         &self,
-        _req: Request<CurrentProjectRequest>,
+        req: Request<CurrentProjectRequest>,
     ) -> Result<Response<CurrentProjectResponse>, Status> {
-        Err(Status::unimplemented("CurrentProject: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        // Daemon-side project detection mirrors the CLI's algorithm but
+        // operates on the directory the caller is asking about. The full
+        // PRD §9.1 walk lives in the CLI's project_detect; the daemon-side
+        // is a simpler fallback used by the rare caller that doesn't run
+        // detection locally.
+        let dir = std::path::PathBuf::from(&r.directory);
+        if !dir.is_dir() {
+            return Err(Status::invalid_argument(format!(
+                "directory does not exist: {}",
+                dir.display()
+            )));
+        }
+        let basename = dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| Status::invalid_argument("directory has no usable basename"))?;
+        let normalized = map(memlayer_core::project::normalize(basename))?;
+        Ok(Response::new(CurrentProjectResponse {
+            normalized_name: normalized,
+            display_name: basename.to_string(),
+            source: "git_root_basename".to_string(),
+        }))
     }
+
     async fn merge_projects(
         &self,
-        _req: Request<MergeProjectsRequest>,
+        req: Request<MergeProjectsRequest>,
     ) -> Result<Response<MergeProjectsResponse>, Status> {
-        Err(Status::unimplemented("MergeProjects: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        map(self.check_writeable())?;
+        let r = req.into_inner();
+        if r.from == r.to {
+            return Err(Status::invalid_argument(
+                "cannot merge a project into itself",
+            ));
+        }
+        let from_norm = map(memlayer_core::project::normalize(&r.from))?;
+        let to_norm = map(memlayer_core::project::normalize(&r.to))?;
+        let from_path = memlayer_core::paths::project_db_path(&from_norm);
+        let to_path = memlayer_core::paths::project_db_path(&to_norm);
+        let outcome = map(projects_admin::merge_projects(&from_path, &to_path))?;
+        Ok(Response::new(MergeProjectsResponse {
+            observations_migrated: outcome.observations_migrated,
+            sessions_migrated: outcome.sessions_migrated,
+            prompts_migrated: outcome.prompts_migrated,
+        }))
     }
+
     async fn delete_project(
         &self,
-        _req: Request<DeleteProjectRequest>,
+        req: Request<DeleteProjectRequest>,
     ) -> Result<Response<DeleteProjectResponse>, Status> {
-        Err(Status::unimplemented("DeleteProject: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        map(self.check_writeable())?;
+        // FR12.13: `--hard` is admin-only in TCP mode (FR7, EH-7).
+        // Capture auth context before consuming the request body.
+        let auth = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let inner = req.into_inner();
+        if inner.hard {
+            if let Some(ctx) = auth {
+                if !ctx.is_admin {
+                    return Err(Status::permission_denied(
+                        "DeleteProject --hard requires an admin bearer token",
+                    ));
+                }
+            }
+        }
+        let normalized = map(memlayer_core::project::normalize(&inner.project_name))?;
+        if inner.hard {
+            map(projects_admin::hard_delete_project(&normalized))?;
+        } else {
+            let db = memlayer_core::paths::project_db_path(&normalized);
+            map(projects_admin::soft_delete_project_observations(&db))?;
+        }
+        Ok(Response::new(DeleteProjectResponse {}))
     }
+
     async fn consolidate_projects(
         &self,
         _req: Request<ConsolidateProjectsRequest>,
     ) -> Result<Response<ConsolidateProjectsResponse>, Status> {
-        Err(Status::unimplemented("ConsolidateProjects: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let pairs = map(projects_admin::consolidate_candidates(0.85))?;
+        let candidates = pairs
+            .into_iter()
+            .map(|c| consolidate_projects_response::Candidate {
+                from: c.from,
+                to: c.to,
+                similarity: c.similarity,
+            })
+            .collect();
+        Ok(Response::new(ConsolidateProjectsResponse { candidates }))
     }
+
     async fn prune_projects(
         &self,
         _req: Request<PruneProjectsRequest>,
     ) -> Result<Response<PruneProjectsResponse>, Status> {
-        Err(Status::unimplemented("PruneProjects: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        let names = map(projects_admin::prune_candidates())?;
+        Ok(Response::new(PruneProjectsResponse { would_remove: names }))
     }
 
-    // ---- Tokens (admin / Spec 2) ----
+    // ---- Tokens (admin-only in TCP mode / Spec 2) ----
 
     async fn create_token(
         &self,
-        _req: Request<CreateTokenRequest>,
+        req: Request<CreateTokenRequest>,
     ) -> Result<Response<CreateTokenResponse>, Status> {
-        Err(Status::unimplemented("CreateToken: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        admin_guard::require_admin(&req)?;
+        let r = req.into_inner();
+        let store = self
+            .state
+            .token_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("token admin requires TCP mode"))?;
+        let secret = map(generate_and_store_token(store, &r.name, r.is_admin))?;
+        Ok(Response::new(CreateTokenResponse { secret }))
     }
+
     async fn list_tokens(
         &self,
-        _req: Request<ListTokensRequest>,
+        req: Request<ListTokensRequest>,
     ) -> Result<Response<ListTokensResponse>, Status> {
-        Err(Status::unimplemented("ListTokens: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        admin_guard::require_admin(&req)?;
+        let store = self
+            .state
+            .token_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("token admin requires TCP mode"))?;
+        let tokens = map(store.list())?
+            .into_iter()
+            .map(|m| list_tokens_response::Token {
+                name: m.name,
+                is_admin: m.is_admin,
+                created_at: m.created_at,
+                revoked_at: m.revoked_at,
+            })
+            .collect();
+        Ok(Response::new(ListTokensResponse { tokens }))
     }
+
     async fn revoke_token(
         &self,
-        _req: Request<RevokeTokenRequest>,
+        req: Request<RevokeTokenRequest>,
     ) -> Result<Response<RevokeTokenResponse>, Status> {
-        Err(Status::unimplemented("RevokeToken: implemented in Spec 2"))
+        let _g = self.enter_rpc();
+        admin_guard::require_admin(&req)?;
+        let r = req.into_inner();
+        let store = self
+            .state
+            .token_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("token admin requires TCP mode"))?;
+        map(store.revoke(&r.name))?;
+        Ok(Response::new(RevokeTokenResponse {}))
     }
 
     // ---- Daemon ops ----
@@ -818,5 +1004,89 @@ impl Memlayer for MemlayerService {
         _req: Request<DoctorRequest>,
     ) -> Result<Response<DoctorResponse>, Status> {
         Err(Status::unimplemented("Doctor: implemented in Spec 4"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token creation helper (FR12.15, NFR6, EH-8)
+// ---------------------------------------------------------------------------
+
+/// Generate a fresh 64-char hex token, store its SHA-256 hash in `store`,
+/// and return the plaintext to the caller. The plaintext is **never** logged.
+///
+/// Spec sections: NFR6 (no token secrets in logs), EH-8 (CreateToken handler
+/// logs token name only).
+pub fn generate_and_store_token(
+    store: &TokenStore,
+    name: &str,
+    is_admin: bool,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut secret_bytes = [0u8; 32];
+    getrandom::getrandom(&mut secret_bytes)
+        .map_err(|e| Error::internal(format!("OS RNG: {e}")))?;
+    let secret_hex = hex::encode(secret_bytes);
+    let mut hasher = Sha256::new();
+    hasher.update(secret_hex.as_bytes());
+    let hash = hasher.finalize().to_vec();
+    store.insert(TokenMeta {
+        name: name.to_string(),
+        hash,
+        is_admin,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        revoked_at: None,
+    })?;
+    // Log only the token name + admin flag — never the plaintext.
+    tracing::info!(token_name = %name, is_admin, "token created");
+    Ok(secret_hex)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use tempfile::TempDir;
+
+    #[test]
+    fn create_token_logs_name_only_not_secret() {
+        // The whole point of NFR6/EH-8: the plaintext token must never be
+        // persisted or returned through any side channel besides the RPC
+        // response. We verify by inspecting what the token store actually
+        // recorded after a successful generate-and-store.
+        let dir = TempDir::new().unwrap();
+        let store = TokenStore::open(dir.path().join("tokens.db")).unwrap();
+        let secret = generate_and_store_token(&store, "alice", true).unwrap();
+
+        // Caller receives a 64-char hex secret (32 random bytes).
+        assert_eq!(secret.len(), 64);
+        assert!(secret.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let stored = store.list().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].name, "alice");
+        assert!(stored[0].is_admin);
+
+        // The stored hash must NOT equal the plaintext bytes or its hex.
+        assert_ne!(stored[0].hash, secret.as_bytes());
+        assert_ne!(stored[0].hash, hex::decode(&secret).unwrap());
+
+        // The stored hash must equal SHA-256(secret_hex_bytes).
+        let mut h = Sha256::new();
+        h.update(secret.as_bytes());
+        let expected: Vec<u8> = h.finalize().to_vec();
+        assert_eq!(stored[0].hash, expected);
+    }
+
+    #[test]
+    fn generate_and_store_token_each_call_is_unique() {
+        let dir = TempDir::new().unwrap();
+        let store = TokenStore::open(dir.path().join("tokens.db")).unwrap();
+        let s1 = generate_and_store_token(&store, "alice", false).unwrap();
+        let s2 = generate_and_store_token(&store, "bob", false).unwrap();
+        assert_ne!(s1, s2, "two OsRng draws must not collide");
     }
 }

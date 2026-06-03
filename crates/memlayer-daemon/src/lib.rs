@@ -3,6 +3,7 @@
 //! The binary in `main.rs` is a thin wrapper that parses the `daemon start`
 //! / `daemon stop` subcommands and delegates to `lifecycle`.
 
+pub mod admin_guard;
 pub mod auth;
 pub mod capture_passive;
 pub mod error_map;
