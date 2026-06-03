@@ -211,13 +211,17 @@ pub fn list(
           WHERE {} ORDER BY created_at DESC, id DESC LIMIT ?{pos}",
         where_clauses.join(" AND ")
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| Error::internal(format!("prepare list: {e}")))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare list: {e}")))?;
     let bind_refs: Vec<&dyn ToSql> = bind.iter().map(|b| &**b as &dyn ToSql).collect();
-    let mut rows: Vec<Observation> = stmt
+    let row_iter = stmt
         .query_map(params_from_iter(bind_refs), Observation::from_row)
-        .map_err(|e| Error::internal(format!("list query: {e}")))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| Error::internal(format!("list rows: {e}")))?;
+        .map_err(|e| Error::internal(format!("list query: {e}")))?;
+    let mut rows: Vec<Observation> = Vec::new();
+    for r in row_iter {
+        rows.push(r.map_err(|e| Error::internal(format!("list rows: {e}")))?);
+    }
 
     let next = if rows.len() > limit as usize {
         let last = rows.pop().unwrap();
@@ -257,12 +261,18 @@ pub fn recent(
             vec![Box::new(limit)],
         )
     };
-    let mut stmt = conn.prepare(&sql).map_err(|e| Error::internal(format!("prepare recent: {e}")))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare recent: {e}")))?;
     let bind_refs: Vec<&dyn ToSql> = bound.iter().map(|b| &**b as &dyn ToSql).collect();
-    stmt.query_map(params_from_iter(bind_refs), Observation::from_row)
-        .map_err(|e| Error::internal(format!("recent query: {e}")))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| Error::internal(format!("recent rows: {e}")))
+    let row_iter = stmt
+        .query_map(params_from_iter(bind_refs), Observation::from_row)
+        .map_err(|e| Error::internal(format!("recent query: {e}")))?;
+    let mut out = Vec::new();
+    for r in row_iter {
+        out.push(r.map_err(|e| Error::internal(format!("recent rows: {e}")))?);
+    }
+    Ok(out)
 }
 
 /// Escape FTS5-special characters so a user-supplied query never crashes the parser.

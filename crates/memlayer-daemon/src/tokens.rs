@@ -95,7 +95,7 @@ impl TokenStore {
         let mut stmt = conn
             .prepare("SELECT name, sha256_hex, is_admin, created_at, revoked_at FROM tokens ORDER BY created_at")
             .map_err(|e| Error::internal(format!("prepare list: {e}")))?;
-        let rows = stmt
+        let row_iter = stmt
             .query_map([], |row| {
                 let hex_s: String = row.get(1)?;
                 Ok(TokenMeta {
@@ -106,9 +106,11 @@ impl TokenStore {
                     revoked_at: row.get(4)?,
                 })
             })
-            .map_err(|e| Error::internal(format!("list query: {e}")))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| Error::internal(format!("list rows: {e}")))?;
+            .map_err(|e| Error::internal(format!("list query: {e}")))?;
+        let mut rows = Vec::new();
+        for r in row_iter {
+            rows.push(r.map_err(|e| Error::internal(format!("list rows: {e}")))?);
+        }
         Ok(rows)
     }
 

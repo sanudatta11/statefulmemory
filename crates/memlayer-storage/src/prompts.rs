@@ -21,11 +21,17 @@ pub fn search(conn: &Connection, query: &str, limit: i32) -> Result<Vec<Prompt>>
           )
           ORDER BY id DESC"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| Error::internal(format!("prepare: {e}")))?;
-    stmt.query_map(params![safe, limit], Prompt::from_row)
-        .map_err(|e| Error::internal(format!("query: {e}")))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| Error::internal(format!("rows: {e}")))
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare: {e}")))?;
+    let rows = stmt
+        .query_map(params![safe, limit], Prompt::from_row)
+        .map_err(|e| Error::internal(format!("query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("rows: {e}")))?);
+    }
+    Ok(out)
 }
 
 pub fn recent(conn: &Connection, limit: i32) -> Result<Vec<Prompt>> {
@@ -33,11 +39,17 @@ pub fn recent(conn: &Connection, limit: i32) -> Result<Vec<Prompt>> {
     let sql = format!(
         "SELECT {SELECT_COLS} FROM user_prompts ORDER BY created_at DESC LIMIT ?1"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| Error::internal(format!("prepare: {e}")))?;
-    stmt.query_map(params![limit], Prompt::from_row)
-        .map_err(|e| Error::internal(format!("query: {e}")))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| Error::internal(format!("rows: {e}")))
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare: {e}")))?;
+    let rows = stmt
+        .query_map(params![limit], Prompt::from_row)
+        .map_err(|e| Error::internal(format!("query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("rows: {e}")))?);
+    }
+    Ok(out)
 }
 
 fn sanitize_fts5_query(q: &str) -> String {

@@ -30,44 +30,42 @@ pub fn list(
 ) -> Result<(Vec<Session>, Option<Cursor>)> {
     let limit = limit.clamp(1, 50);
     let limit_plus = limit + 1;
-    let (sql, mut sessions): (String, Vec<Session>) = if let Some(cur) = cursor {
+    let mut sessions: Vec<Session> = if let Some(cur) = cursor {
         let sql = "SELECT id, directory, started_at, ended_at, summary FROM sessions
                     WHERE started_at < ?1 OR (started_at = ?1 AND id < ?2)
-                    ORDER BY started_at DESC, id DESC LIMIT ?3"
-            .to_string();
+                    ORDER BY started_at DESC, id DESC LIMIT ?3";
         let mut stmt = conn
-            .prepare(&sql)
+            .prepare(sql)
             .map_err(|e| Error::internal(format!("prepare: {e}")))?;
-        let rows = stmt
+        let row_iter = stmt
             .query_map(
                 params![cur.last_created_at, cur.last_id.to_string(), limit_plus],
                 Session::from_row,
             )
-            .map_err(|e| Error::internal(format!("list query: {e}")))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| Error::internal(format!("list rows: {e}")))?;
-        (sql, rows)
+            .map_err(|e| Error::internal(format!("list query: {e}")))?;
+        let mut out = Vec::new();
+        for r in row_iter {
+            out.push(r.map_err(|e| Error::internal(format!("list rows: {e}")))?);
+        }
+        out
     } else {
         let sql = "SELECT id, directory, started_at, ended_at, summary FROM sessions
-                    ORDER BY started_at DESC, id DESC LIMIT ?1"
-            .to_string();
+                    ORDER BY started_at DESC, id DESC LIMIT ?1";
         let mut stmt = conn
-            .prepare(&sql)
+            .prepare(sql)
             .map_err(|e| Error::internal(format!("prepare: {e}")))?;
-        let rows = stmt
+        let row_iter = stmt
             .query_map(params![limit_plus], Session::from_row)
-            .map_err(|e| Error::internal(format!("list query: {e}")))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| Error::internal(format!("list rows: {e}")))?;
-        (sql, rows)
+            .map_err(|e| Error::internal(format!("list query: {e}")))?;
+        let mut out = Vec::new();
+        for r in row_iter {
+            out.push(r.map_err(|e| Error::internal(format!("list rows: {e}")))?);
+        }
+        out
     };
     let next = if sessions.len() > limit as usize {
         let _ = sessions.pop();
-        let last = sessions.last().unwrap();
-        // session id is text; cursor uses last_id i64 — store hash here is overkill,
-        // so we encode session id via last_id=0 and rely on started_at + id text
-        // for ordering. For simplicity we ship one cursor field for both numeric
-        // and text PKs by encoding ID into last_created_at.
+        let last = sessions.last().expect("non-empty after over-fetch");
         Some(Cursor::new(0, last.started_at.clone()))
     } else {
         None
@@ -106,7 +104,7 @@ pub fn build_context_snapshot(
              ORDER BY MAX(updated_at) DESC LIMIT 20",
         )
         .map_err(|e| Error::internal(format!("prepare topic select: {e}")))?;
-    let topics: Vec<(String, String, String, String)> = stmt
+    let row_iter = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -115,8 +113,10 @@ pub fn build_context_snapshot(
                 row.get::<_, String>(3)?,
             ))
         })
-        .map_err(|e| Error::internal(format!("topic query: {e}")))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| Error::internal(format!("topic rows: {e}")))?;
+        .map_err(|e| Error::internal(format!("topic query: {e}")))?;
+    let mut topics: Vec<(String, String, String, String)> = Vec::new();
+    for r in row_iter {
+        topics.push(r.map_err(|e| Error::internal(format!("topic rows: {e}")))?);
+    }
     Ok((recents, topics))
 }
