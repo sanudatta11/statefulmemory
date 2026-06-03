@@ -16,10 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, instrument};
 
 use memlayer_core::error::{Error, Result};
-use memlayer_core::time as mtime;
 use memlayer_proto::{
     memlayer_server::Memlayer,
     Cursor as ProtoCursor,
@@ -161,19 +160,6 @@ fn parse_cursor(c: &Option<ProtoCursor>) -> Result<Option<StorageCursor>> {
         Some(c) => Some(StorageCursor::decode(&c.token)?),
         None => None,
     })
-}
-
-fn obs_key_from_request(
-    id: i64,
-    sync_id: Option<&String>,
-    use_sync_id: bool,
-) -> Result<ObservationKey> {
-    if use_sync_id {
-        let s = sync_id.cloned().ok_or_else(|| Error::invalid("missing sync_id"))?;
-        Ok(ObservationKey::SyncId(s))
-    } else {
-        Ok(ObservationKey::Id(id))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -762,15 +748,3 @@ impl Memlayer for MemlayerService {
         Err(Status::unimplemented("Doctor: implemented in Spec 4"))
     }
 }
-
-#[allow(dead_code)]
-fn unused_warn_silencer() {
-    let _ = error;
-    let _ = warn;
-    let _ = obs_key_from_request as fn(i64, Option<&String>, bool) -> Result<ObservationKey>;
-    let _ = mtime::now_rfc3339;
-}
-
-// `mtime` is currently unused inside the module body; the ProjectRegistry
-// imports its own path to chrono. Suppress the dead-import warning when
-// mtime grows usage in Spec 2 handlers.
