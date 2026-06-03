@@ -1,0 +1,32 @@
+[package]
+name = "memlayer-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Per-project SQLite+FTS5 storage layer for memlayer."
+
+[dependencies]
+memlayer-core = { path = "../memlayer-core" }
+
+rusqlite.workspace = true
+refinery.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+once_cell.workspace = true
+nix.workspace = true
+tokio = { workspace = true, default-features = false, features = ["sync", "time", "rt", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
