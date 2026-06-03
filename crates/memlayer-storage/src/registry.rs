@@ -98,6 +98,13 @@ impl ProjectRegistry {
         {
             let mut inner = self.inner.lock();
             if let Some(state) = inner.map.get(&normalized).cloned() {
+                if state.display_name != display_name {
+                    return Err(Error::AlreadyExists(format!(
+                        "project '{display_name}' normalizes to '{normalized}', \
+                         which already maps to '{}'",
+                        state.display_name
+                    )));
+                }
                 inner.hits += 1;
                 inner.touch(&normalized);
                 return Ok(state);
@@ -273,15 +280,20 @@ pub fn atomic_write(path: &std::path::Path, body: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn isolated_data_dir() -> tempfile::TempDir {
+    // MEMLAYER_DATA_DIR is process-global. Serialize all tests that mutate it
+    // so they don't stomp on each other's tempdir when run in parallel.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn isolated_data_dir() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let d = tempfile::TempDir::new().unwrap();
         std::env::set_var("MEMLAYER_DATA_DIR", d.path());
-        d
+        (guard, d)
     }
 
     #[test]
     fn get_or_open_creates_config() {
-        let _d = isolated_data_dir();
+        let (_guard, _d) = isolated_data_dir();
         let r = ProjectRegistry::new(8, 32, Duration::from_millis(5));
         let s = r.get_or_open("My Project").unwrap();
         assert_eq!(s.normalized, "my-project");
@@ -291,7 +303,7 @@ mod tests {
 
     #[test]
     fn collision_returns_already_exists() {
-        let _d = isolated_data_dir();
+        let (_guard, _d) = isolated_data_dir();
         let r = ProjectRegistry::new(8, 32, Duration::from_millis(5));
         r.get_or_open("My Project").unwrap();
         let err = r.get_or_open("MY_PROJECT").err().unwrap();
@@ -300,7 +312,7 @@ mod tests {
 
     #[test]
     fn cache_hit_ratio_climbs() {
-        let _d = isolated_data_dir();
+        let (_guard, _d) = isolated_data_dir();
         let r = ProjectRegistry::new(8, 32, Duration::from_millis(5));
         r.get_or_open("foo").unwrap();
         r.get_or_open("foo").unwrap();

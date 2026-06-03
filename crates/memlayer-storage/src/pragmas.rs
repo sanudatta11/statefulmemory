@@ -19,13 +19,14 @@ const PRAGMAS: &[(&str, &str)] = &[
 /// Apply the standard pragmas to `conn`.
 ///
 /// Notes:
-/// - `journal_mode = WAL` is special: the result of the assignment is queryable.
-///   We use `query_row` for that one and `pragma_update` for the rest.
+/// - `journal_mode = WAL` returns the new mode; we verify it was applied.
+/// - `mmap_size` and `cache_size` also return rows on assignment.
+/// - rusqlite's `execute_batch` with `bundled-full` enables the `extra_check`
+///   feature, which makes it reject any statement that produces rows. We use
+///   `query_row` unconditionally so row-returning pragmas are handled safely.
 pub fn apply(conn: &Connection) -> Result<()> {
     for (key, value) in PRAGMAS {
         if *key == "journal_mode" {
-            // SQLite returns the new mode from `PRAGMA journal_mode = WAL` — fetch it
-            // so a misconfigured DB (read-only mount, etc.) surfaces as an error.
             let mode: String = conn
                 .query_row(&format!("PRAGMA journal_mode = {value}"), [], |row| row.get(0))
                 .map_err(|e| Error::internal(format!("pragma journal_mode: {e}")))?;
@@ -35,7 +36,15 @@ pub fn apply(conn: &Connection) -> Result<()> {
                 )));
             }
         } else {
-            conn.pragma_update(None, key, value)
+            // Use query_row to safely handle pragmas that may return a result row.
+            // We ignore the returned value for all non-journal_mode pragmas.
+            let _ = conn
+                .query_row(&format!("PRAGMA {key} = {value}"), [], |_| Ok(()))
+                .or_else(|e| match e {
+                    // QueryReturnedNoRows is fine — pragma had no result row.
+                    rusqlite::Error::QueryReturnedNoRows => Ok(()),
+                    other => Err(other),
+                })
                 .map_err(|e| Error::internal(format!("pragma {key}: {e}")))?;
         }
     }

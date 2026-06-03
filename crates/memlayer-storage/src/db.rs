@@ -97,7 +97,7 @@ mod tests {
 
         let n: i64 = conn
             .query_row(
-                "SELECT count(*) FROM observations_fts WHERE observations_fts MATCH 'unique-content-xyz'",
+                "SELECT count(*) FROM observations_fts WHERE observations_fts MATCH '\"unique-content-xyz\"'",
                 [],
                 |r| r.get(0),
             )
