@@ -1,6 +1,6 @@
 # Memlayer — Product Requirements Document
 
-A persistent-memory service for AI coding agents. New project, **inspired by** Engram. Not a port — wire formats are not back-compatible with Engram, although a one-shot legacy importer is provided.
+A persistent-memory service for AI coding agents. Greenfield Rust implementation.
 
 This PRD is a working spec for a Rust implementation. All defaults, names, and shapes below are normative unless explicitly marked open.
 
@@ -16,19 +16,16 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 - **Target platforms**: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`. Windows out of scope for v1.
 - **License**: MIT AND Apache-2.0 (dual-license; users choose either).
 
-### Inspirations from Engram (kept)
+### Design Principles
 - Per-project memory store with FTS5 full-text search.
 - Topic-key upserts for evolving knowledge.
 - Sessions, observations, prompts as the core entities.
 - Git-based sync via per-repo `.memlayer/` directory.
 - Minimum-friction agent integration through prompt-level skills/rules.
-
-### Departures from Engram
 - **CLI is the only agent interface.** No MCP server. No HTTP REST.
 - **Daemon-backed.** A single user-local daemon owns SQLite; CLI talks to it over gRPC on a Unix socket.
 - **Per-project DB files** (one SQLite file per project), not a single global DB.
-- **Drop**: cloud subsystem, conflict-relations subsystem with judging state machine, embedding columns, multi-screen TUI, Obsidian-shaped export.
-- **Add**: 1000-concurrent-agent acceptance bar, batched-commit write path, simplified doctor with `--auto-repair`, prompt-level setup integrations for multiple agents, scoped observations (`project` / `personal` / `team`), read-only mode on disk-full.
+- 1000-concurrent-agent acceptance bar, batched-commit write path, simplified doctor with `--auto-repair`, prompt-level setup integrations for multiple agents, scoped observations (`project` / `personal` / `team`), read-only mode on disk-full.
 
 ---
 
@@ -43,7 +40,6 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 6. **Team-hostable.** A daemon can be exposed over TCP for an entire team.
 
 ### Non-goals
-- **No drop-in compatibility** with Engram's wire formats, MCP tools, or HTTP API.
 - **No vector search / embeddings** in v1.
 - **No multi-region replication.** Git sync is the only cross-machine sharing mechanism.
 - **No write throughput beyond ~5K saves/sec aggregate** in v1. Escape hatch is per-project sharding (already designed); RocksDB migration is a v2 escape route.
@@ -118,7 +114,7 @@ Noun-first, kubectl-style. Top-level groups, each with verbs.
 memlayer <group> <verb> [args] [flags]
 ```
 
-**Groups**: `obs`, `session`, `prompt`, `project`, `sync`, `daemon`, `service`, `setup`, `tui`, `doctor`, `logs`, `team`, `version`, `import-legacy`.
+**Groups**: `obs`, `session`, `prompt`, `project`, `sync`, `daemon`, `service`, `setup`, `tui`, `doctor`, `logs`, `team`, `version`, `completions`.
 
 ### 3.2 Output
 - **TTY-aware default**: stdout is a terminal → human-readable text/table. Stdout is piped/redirected → JSON.
@@ -178,7 +174,6 @@ memlayer <group> <verb> [args] [flags]
 | `team token-create` | `--name N [--admin]` | Generate a per-user bearer token for TCP mode. `--admin` sets `is_admin=true`. |
 | `team token-list` | — | List active tokens (names + admin flag, no secret value). |
 | `team token-revoke` | `<name>` | Revoke a token by name. |
-| `import-legacy` | `<path-to-engram.db>` | One-shot import from an Engram SQLite file. Creates pre-migration backup of destination DB before running. |
 | `completions` | `{bash,zsh,fish}` | Emit shell completion script to stdout. |
 | `version` | — | Print `memlayer X.Y.Z`. |
 
@@ -412,14 +407,12 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
 ```
 
-**Differences from Engram (deliberate)**:
+**Schema notes**:
 - `project` column dropped from observations/sessions/prompts (project is implicit in the file path).
-- `embedding`, `embedding_model`, `embedding_created_at` columns dropped (never populated in Engram).
-- `idx_obs_dedupe` simplified.
-- `idx_obs_active` is a partial index (faster for the common "active rows only" case).
+- `embedding`, `embedding_model`, `embedding_created_at` columns are not included (no vector search in v1).
 - `scope` column: `'project' | 'personal' | 'team'`. `created_by` enables per-user filtering in team contexts.
-- No `memory_relations`, no `sync_apply_deferred`, no `cloud_*` tables, no `sync_state`, no `sync_mutations`, no `sync_enrolled_projects` (cloud subsystem is dropped).
-- `prompt_tombstones` table dropped (prompts are hard-delete only; no need for tombstone tracking).
+- No `memory_relations`, no conflict-relations state machine, no cloud sync tables.
+- `prompt_tombstones` table omitted (prompts are hard-delete only; no need for tombstone tracking).
 
 ### 5.4 Migrations (refinery)
 - Schema versions tracked via `schema_meta(key='version')`.
@@ -1090,5 +1083,4 @@ All of the following hold:
 - Internal module structure of the Rust crate.
 - Specific Levenshtein algorithm crate (any reasonable choice; locked at implementation time).
 - Token storage schema in `tokens.db` (implementation detail; single-table SQLite).
-- `import-legacy` field-mapping details (implementation-time; engram schema is the source of truth).
 
