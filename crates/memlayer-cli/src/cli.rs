@@ -231,12 +231,58 @@ pub struct SessionArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum SessionVerb {
-    Start,
-    End,
-    Summary,
-    List,
-    Get,
-    Delete,
+    /// Start (or resume) a session.
+    Start(SessionStartArgs),
+    /// Mark a session ended, optionally with a summary.
+    End(SessionEndArgs),
+    /// Save a structured summary onto an existing session.
+    Summary(SessionSummaryArgs),
+    /// List recent sessions, paginated.
+    List(SessionListArgs),
+    /// Print one session.
+    Get(SessionGetArgs),
+    /// Delete a session. FAILED_PRECONDITION if observations reference it (FR12.8).
+    Delete(SessionDeleteArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SessionStartArgs {
+    pub id: String,
+    /// Working directory the session is rooted at.
+    #[arg(long)]
+    pub directory: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionEndArgs {
+    pub id: String,
+    #[arg(long)]
+    pub summary: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionSummaryArgs {
+    pub id: String,
+    #[arg(long)]
+    pub content: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionListArgs {
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+    #[arg(long)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionGetArgs {
+    pub id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionDeleteArgs {
+    pub id: String,
 }
 
 #[derive(Args, Debug)]
@@ -247,10 +293,42 @@ pub struct PromptArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PromptVerb {
-    Save,
-    Search,
-    Recent,
-    Delete,
+    /// Save a user prompt.
+    Save(PromptSaveArgs),
+    /// FTS5 search across saved prompts.
+    Search(PromptSearchArgs),
+    /// Recent prompts, paginated.
+    Recent(PromptRecentArgs),
+    /// Permanently delete a prompt (FR12.9 — no soft-delete).
+    Delete(PromptDeleteArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PromptSaveArgs {
+    /// Prompt body. Pass `-` to read from stdin (50k cap).
+    #[arg(long)]
+    pub content: String,
+    #[arg(long)]
+    pub session: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct PromptSearchArgs {
+    pub query: String,
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+}
+
+#[derive(Args, Debug)]
+pub struct PromptRecentArgs {
+    #[arg(long, default_value_t = 10)]
+    pub limit: i32,
+}
+
+#[derive(Args, Debug)]
+pub struct PromptDeleteArgs {
+    /// Prompt id (numeric DB id) or sync_id.
+    pub id: String,
 }
 
 #[derive(Args, Debug)]
@@ -261,12 +339,50 @@ pub struct ProjectArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ProjectVerb {
+    /// List every project on disk with row counts.
     List,
+    /// Show the project name detected from cwd.
     Current,
-    Merge,
-    Delete,
-    Consolidate,
-    Prune,
+    /// Merge `from` into `to` (atomic; soft-deletes source observations).
+    Merge(ProjectMergeArgs),
+    /// Delete a project. `--hard` removes the DB file (admin-only TCP).
+    Delete(ProjectDeleteArgs),
+    /// Find projects whose names look alike (jaro_winkler ≥ 0.85).
+    Consolidate(ProjectConsolidateArgs),
+    /// List projects with zero active observations.
+    Prune(ProjectPruneArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectMergeArgs {
+    #[arg(long)]
+    pub from: String,
+    #[arg(long)]
+    pub to: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectDeleteArgs {
+    pub name: String,
+    #[arg(long)]
+    pub hard: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectConsolidateArgs {
+    /// Show candidates without performing merges.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Include similar pairs from every project, not just the current one's neighborhood.
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectPruneArgs {
+    /// Show candidates without removing anything.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -278,7 +394,14 @@ pub struct SyncArgs {
 #[derive(Subcommand, Debug)]
 pub enum SyncVerb {
     /// Sync status — only verb in Spec 2; export/import land in Spec 3.
-    Status,
+    Status(SyncStatusArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SyncStatusArgs {
+    /// Filter to a single project; defaults to the detected project.
+    #[arg(long)]
+    pub project: Option<String>,
 }
 
 #[derive(Args, Debug)]

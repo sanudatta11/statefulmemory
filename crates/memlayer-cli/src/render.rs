@@ -345,6 +345,387 @@ impl Render for p::CapturePassiveResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+fn session_to_json(s: &p::Session) -> Value {
+    json!({
+        "id": s.id,
+        "directory": s.directory,
+        "started_at": s.started_at,
+        "ended_at": s.ended_at,
+        "summary": s.summary,
+    })
+}
+
+fn write_session_detail(s: &p::Session, w: &mut dyn Write) -> io::Result<()> {
+    writeln!(w, "id          {}", s.id)?;
+    writeln!(w, "directory   {}", s.directory)?;
+    writeln!(w, "started_at  {}", s.started_at)?;
+    if let Some(t) = &s.ended_at {
+        writeln!(w, "ended_at    {t}")?;
+    }
+    if let Some(t) = &s.summary {
+        writeln!(w, "summary     {t}")?;
+    }
+    Ok(())
+}
+
+fn write_session_table_header(w: &mut dyn Write) -> io::Result<()> {
+    writeln!(
+        w,
+        "{:<24}  {:<20}  {:<20}  {}",
+        "ID", "STARTED_AT", "ENDED_AT", "DIRECTORY"
+    )
+}
+
+fn write_session_row(s: &p::Session, w: &mut dyn Write) -> io::Result<()> {
+    writeln!(
+        w,
+        "{:<24}  {:<20}  {:<20}  {}",
+        truncate(&s.id, 24),
+        truncate(&s.started_at, 20),
+        s.ended_at.as_deref().map(|t| truncate(t, 20)).unwrap_or_else(|| "-".to_string()),
+        truncate(&s.directory, 40)
+    )
+}
+
+impl Render for p::StartSessionResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if let Some(s) = &self.session {
+            write_session_detail(s, w)?;
+        }
+        if let Some(snap) = &self.context {
+            writeln!(w)?;
+            writeln!(w, "INLINE CONTEXT — {} recent observations", snap.recent_observations.len())?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        let snap = self.context.as_ref().map(|s| {
+            json!({
+                "recent_observations": s.recent_observations.iter().map(obs_to_json).collect::<Vec<_>>(),
+                "active_topics": s
+                    .active_topics
+                    .iter()
+                    .map(|t| json!({
+                        "topic_key": t.topic_key,
+                        "scope": t.scope,
+                        "latest_title": t.latest_title,
+                        "updated_at": t.updated_at,
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        });
+        json!({
+            "session": self.session.as_ref().map(session_to_json),
+            "context": snap,
+        })
+    }
+}
+
+impl Render for p::EndSessionResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if let Some(s) = &self.session {
+            write_session_detail(s, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "session": self.session.as_ref().map(session_to_json) })
+    }
+}
+
+impl Render for p::SaveSessionSummaryResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if let Some(s) = &self.session {
+            write_session_detail(s, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "session": self.session.as_ref().map(session_to_json) })
+    }
+}
+
+impl Render for p::GetSessionResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if let Some(s) = &self.session {
+            write_session_detail(s, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "session": self.session.as_ref().map(session_to_json) })
+    }
+}
+
+impl Render for p::ListSessionsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        write_session_table_header(w)?;
+        for s in &self.sessions {
+            write_session_row(s, w)?;
+        }
+        if let Some(c) = &self.next_cursor {
+            writeln!(w)?;
+            writeln!(w, "next_cursor: {}", c.token)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "sessions": self.sessions.iter().map(session_to_json).collect::<Vec<_>>(),
+            "next_cursor": self.next_cursor.as_ref().map(|c| json!({ "token": c.token })),
+        })
+    }
+}
+
+impl Render for p::DeleteSessionResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "deleted")
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "deleted": true })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prompts
+// ---------------------------------------------------------------------------
+
+fn prompt_to_json(p: &p::Prompt) -> Value {
+    json!({
+        "id": p.id,
+        "sync_id": p.sync_id,
+        "session_id": p.session_id,
+        "content": p.content,
+        "created_at": p.created_at,
+    })
+}
+
+fn write_prompt_detail(p: &p::Prompt, w: &mut dyn Write) -> io::Result<()> {
+    writeln!(w, "id          {}", p.id)?;
+    writeln!(w, "sync_id     {}", p.sync_id)?;
+    writeln!(w, "session_id  {}", p.session_id)?;
+    writeln!(w, "created_at  {}", p.created_at)?;
+    writeln!(w, "content     {}", p.content)?;
+    Ok(())
+}
+
+fn write_prompt_table_header(w: &mut dyn Write) -> io::Result<()> {
+    writeln!(
+        w,
+        "{:<6}  {:<24}  {:<20}  {}",
+        "ID", "SESSION", "CREATED_AT", "CONTENT"
+    )
+}
+
+fn write_prompt_row(p: &p::Prompt, w: &mut dyn Write) -> io::Result<()> {
+    writeln!(
+        w,
+        "{:<6}  {:<24}  {:<20}  {}",
+        p.id,
+        truncate(&p.session_id, 24),
+        truncate(&p.created_at, 20),
+        snippet(&p.content, 60),
+    )
+}
+
+impl Render for p::SavePromptResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if let Some(pr) = &self.prompt {
+            write_prompt_detail(pr, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "prompt": self.prompt.as_ref().map(prompt_to_json) })
+    }
+}
+
+impl Render for p::SearchPromptsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        write_prompt_table_header(w)?;
+        for pr in &self.prompts {
+            write_prompt_row(pr, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "prompts": self.prompts.iter().map(prompt_to_json).collect::<Vec<_>>() })
+    }
+}
+
+impl Render for p::RecentPromptsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        write_prompt_table_header(w)?;
+        for pr in &self.prompts {
+            write_prompt_row(pr, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "prompts": self.prompts.iter().map(prompt_to_json).collect::<Vec<_>>() })
+    }
+}
+
+impl Render for p::DeletePromptResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "deleted")
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "deleted": true })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+impl Render for p::ListProjectsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            w,
+            "{:<24}  {:<24}  {:<6}  {:<6}  {:<6}  {}",
+            "NAME", "DISPLAY", "OBS", "SES", "PRM", "CREATED_AT"
+        )?;
+        for proj in &self.projects {
+            writeln!(
+                w,
+                "{:<24}  {:<24}  {:<6}  {:<6}  {:<6}  {}",
+                truncate(&proj.normalized_name, 24),
+                truncate(&proj.display_name, 24),
+                proj.observation_count,
+                proj.session_count,
+                proj.prompt_count,
+                proj.created_at
+            )?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "projects": self.projects.iter().map(|p| json!({
+                "normalized_name": p.normalized_name,
+                "display_name": p.display_name,
+                "observation_count": p.observation_count,
+                "session_count": p.session_count,
+                "prompt_count": p.prompt_count,
+                "created_at": p.created_at,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl Render for p::CurrentProjectResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "name      {}", self.normalized_name)?;
+        writeln!(w, "display   {}", self.display_name)?;
+        writeln!(w, "source    {}", self.source)?;
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "normalized_name": self.normalized_name,
+            "display_name": self.display_name,
+            "source": self.source,
+        })
+    }
+}
+
+impl Render for p::MergeProjectsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "observations migrated: {}", self.observations_migrated)?;
+        writeln!(w, "sessions migrated:     {}", self.sessions_migrated)?;
+        writeln!(w, "prompts migrated:      {}", self.prompts_migrated)?;
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "observations_migrated": self.observations_migrated,
+            "sessions_migrated": self.sessions_migrated,
+            "prompts_migrated": self.prompts_migrated,
+        })
+    }
+}
+
+impl Render for p::DeleteProjectResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "deleted")
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "deleted": true })
+    }
+}
+
+impl Render for p::ConsolidateProjectsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            w,
+            "{:<32}  {:<32}  {}",
+            "FROM", "TO", "SIMILARITY"
+        )?;
+        for c in &self.candidates {
+            writeln!(
+                w,
+                "{:<32}  {:<32}  {:.3}",
+                truncate(&c.from, 32),
+                truncate(&c.to, 32),
+                c.similarity
+            )?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "candidates": self.candidates.iter().map(|c| json!({
+                "from": c.from,
+                "to": c.to,
+                "similarity": c.similarity,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl Render for p::PruneProjectsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        for n in &self.would_remove {
+            writeln!(w, "- {n}")?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({ "would_remove": self.would_remove })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
+
+impl Render for p::SyncStatusResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "last_export_at       {}", self.last_export_at.as_deref().unwrap_or("-"))?;
+        writeln!(w, "last_import_at       {}", self.last_import_at.as_deref().unwrap_or("-"))?;
+        writeln!(w, "unseen_chunk_count   {}", self.unseen_chunk_count)?;
+        writeln!(w, "last_error           {}", self.last_error.as_deref().unwrap_or("-"))?;
+        writeln!(w, "total_exported       {}", self.total_exported_chunks)?;
+        writeln!(w, "total_imported       {}", self.total_imported_chunks)?;
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "last_export_at": self.last_export_at,
+            "last_import_at": self.last_import_at,
+            "unseen_chunk_count": self.unseen_chunk_count,
+            "last_error": self.last_error,
+            "total_exported_chunks": self.total_exported_chunks,
+            "total_imported_chunks": self.total_imported_chunks,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
