@@ -23,6 +23,7 @@ pub mod write;
 
 pub use db::{open_read, open_write, Migrate};
 pub use models::{Observation, Prompt, Session};
+pub use registry::{ProjectConfig, ProjectRegistry, ProjectState};
 
 mod migrations {
     refinery::embed_migrations!("../../migrations");
