@@ -1,0 +1,28 @@
+[package]
+name = "memlayer-sync"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Git-chunk sync, JSON, and Markdown export/import for memlayer."
+
+[dependencies]
+memlayer-core    = { path = "../memlayer-core" }
+memlayer-storage = { path = "../memlayer-storage" }
+
+tokio       = { workspace = true, features = ["fs", "rt", "macros"] }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sha2        = { workspace = true }
+hex         = { workspace = true }
+tracing     = { workspace = true }
+thiserror   = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+zstd        = "0.13"
+
+[dev-dependencies]
+tempfile  = "3"
+tokio     = { workspace = true, features = ["full"] }
