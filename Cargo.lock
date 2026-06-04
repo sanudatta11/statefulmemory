@@ -1198,6 +1198,7 @@ dependencies = [
  "memlayer-core",
  "memlayer-proto",
  "memlayer-storage",
+ "memlayer-sync",
  "nix",
  "once_cell",
  "parking_lot",

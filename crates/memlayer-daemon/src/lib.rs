@@ -13,6 +13,7 @@ pub mod server;
 pub mod service;
 pub mod signals;
 pub mod suggest_topic_key;
+pub mod sync_status;
 pub mod tls;
 pub mod tokens;
 

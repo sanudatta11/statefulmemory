@@ -22,6 +22,7 @@ path = "src/lib.rs"
 memlayer-core = { path = "../memlayer-core" }
 memlayer-proto = { path = "../memlayer-proto" }
 memlayer-storage = { path = "../memlayer-storage" }
+memlayer-sync = { path = "../memlayer-sync" }
 
 tokio.workspace = true
 tokio-stream.workspace = true

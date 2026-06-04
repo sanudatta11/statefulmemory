@@ -3,10 +3,12 @@
 //! Spec sections: FR1, FR2, FR8 (logging interplay), FR10 (signals interplay),
 //! SC-1, SC-3, SC-16.
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
@@ -68,6 +70,9 @@ pub async fn run(cfg: Config) -> Result<()> {
         shutdown_tx: shutdown_tx.clone(),
         max_content_chars: cfg.max_content_chars,
         dedupe_window: cfg.dedupe_window,
+        export_mutexes: Arc::new(Mutex::new(HashMap::new())),
+        last_sync_errors: Arc::new(Mutex::new(HashMap::new())),
+        last_export_at: Arc::new(Mutex::new(HashMap::new())),
     });
     let svc = MemlayerService::new(state.clone());
 

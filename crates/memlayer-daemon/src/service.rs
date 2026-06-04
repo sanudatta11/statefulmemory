@@ -11,10 +11,12 @@
 //! `Status::unimplemented(...)` with a stable message that Spec 2's CLI can
 //! detect.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use tonic::{Request, Response, Status};
 use tracing::{debug, instrument};
 
@@ -58,6 +60,16 @@ pub struct DaemonState {
     pub max_content_chars: usize,
     /// Dedupe window (PRD §5.8). Mirrors Config.
     pub dedupe_window: Duration,
+    /// Per-project export serialization (FR3 / EC-7). The outer
+    /// `parking_lot::Mutex` guards the registry; each per-project entry is a
+    /// `tokio::sync::Mutex` so handlers can `.lock().await` across `.await`
+    /// points (manifest IO, write-thread reply) without holding the outer lock.
+    pub export_mutexes:
+        Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Per-project last sync error string (set by SyncExport / SyncImport handlers).
+    pub last_sync_errors: Arc<Mutex<HashMap<String, String>>>,
+    /// Per-project last export timestamp (RFC3339), set by SyncExport.
+    pub last_export_at: Arc<Mutex<HashMap<String, String>>>,
 }
 
 #[derive(Clone)]
@@ -995,10 +1007,14 @@ impl Memlayer for MemlayerService {
 
     async fn sync_status(
         &self,
-        _req: Request<SyncStatusRequest>,
+        req: Request<SyncStatusRequest>,
     ) -> Result<Response<SyncStatusResponse>, Status> {
-        // Spec 1 returns an all-zeroes/empty stub.
-        Ok(Response::new(SyncStatusResponse::default()))
+        let _guard = self.enter_rpc();
+        let r = req.into_inner();
+        let project_name = r.project_name.as_deref().unwrap_or("default");
+        let project = map(self.open_project(project_name))?;
+        let resp = crate::sync_status::compute(&self.state, &project, &r).await?;
+        Ok(Response::new(resp))
     }
     async fn sync_export(
         &self,
