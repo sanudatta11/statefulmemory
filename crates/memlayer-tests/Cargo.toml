@@ -14,6 +14,9 @@ memlayer-proto = { path = "../memlayer-proto" }
 # unified `memlayer` binary (Spec 2). The tests spawn it as
 # `memlayer daemon start --foreground` per PRD §4.1.
 memlayer-cli = { path = "../memlayer-cli" }
+# memlayer-client is needed for TS-15: the CLI binary only talks UDS in v1,
+# so we drive the daemon's TCP+TLS path directly through the client crate.
+memlayer-client = { path = "../memlayer-client" }
 tokio.workspace = true
 tonic.workspace = true
 tower = "0.4"
@@ -24,3 +27,10 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+assert_cmd = "2"
+predicates = "3"
+serde_json.workspace = true
+rcgen.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true

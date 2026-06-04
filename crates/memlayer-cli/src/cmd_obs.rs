@@ -300,13 +300,58 @@ async fn capture_passive(
     } else {
         a.text
     };
+    let session_id = a.session.unwrap_or_default();
     let req = p::CapturePassiveRequest {
         project_name: project_name.to_string(),
         text,
-        session_id: a.session.unwrap_or_default(),
+        session_id: session_id.clone(),
     };
     let resp = client.capture_passive(req).await?.into_inner();
-    write_render(&resp, fmt)?;
+
+    // FR12.6 / SC-15: the daemon returns the extracted snippets; the CLI
+    // fans each one out to SaveObservation as a `learning`-type observation
+    // attached to the current session. Returning early with an empty list
+    // gives EC-3 (no `## Key Learnings:` header) the right shape: zero
+    // saves, exit 0.
+    let mut saved: Vec<p::Observation> = Vec::with_capacity(resp.snippets.len());
+    for (i, snippet) in resp.snippets.iter().enumerate() {
+        let title = snippet
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let mut t = s.to_string();
+                if t.chars().count() > 60 {
+                    t = t.chars().take(60).collect::<String>() + "…";
+                }
+                t
+            })
+            .unwrap_or_else(|| format!("learning {}", i + 1));
+        let save_req = p::SaveObservationRequest {
+            project_name: project_name.to_string(),
+            sync_id: None,
+            session_id: session_id.clone(),
+            r#type: "learning".to_string(),
+            title,
+            content: snippet.clone(),
+            tool_name: None,
+            scope: "project".to_string(),
+            created_by: None,
+            topic_key: None,
+        };
+        let s = client.save_observation(save_req).await?.into_inner();
+        if let Some(o) = s.observation {
+            saved.push(o);
+        }
+    }
+
+    let response = p::CapturePassiveResponse { snippets: resp.snippets };
+    let combined = crate::render::CapturePassiveOutcome {
+        response,
+        saved,
+    };
+    write_render(&combined, fmt)?;
     Ok(())
 }
 

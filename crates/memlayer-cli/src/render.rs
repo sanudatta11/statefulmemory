@@ -345,6 +345,35 @@ impl Render for p::CapturePassiveResponse {
     }
 }
 
+/// CLI-side aggregate for `obs capture-passive`: wraps the daemon's
+/// snippet list with the observations actually persisted by the
+/// per-snippet SaveObservation fan-out (FR12.6 / SC-15).
+pub struct CapturePassiveOutcome {
+    pub response: p::CapturePassiveResponse,
+    pub saved: Vec<p::Observation>,
+}
+
+impl Render for CapturePassiveOutcome {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if self.saved.is_empty() {
+            writeln!(w, "no key learnings found")?;
+            return Ok(());
+        }
+        writeln!(w, "saved {} observation(s):", self.saved.len())?;
+        write_table_header(w)?;
+        for o in &self.saved {
+            write_observation_row(o, w)?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "snippets": self.response.snippets,
+            "saved": self.saved.iter().map(obs_to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------

@@ -157,10 +157,15 @@ pub async fn poll_socket(
 
 /// Spawn the daemon as a detached child. The child is placed in its own
 /// session via `setsid(2)` so SIGHUP from the parent shell does not propagate.
+///
+/// The child runs `daemon start --foreground` so it actually executes the
+/// daemon main loop in-process. Without `--foreground` the child would itself
+/// re-enter the auto-spawn path and never bind the socket.
 fn spawn_detached(binary: &Path) -> std::io::Result<()> {
     let mut cmd = Command::new(binary);
     cmd.arg("daemon")
         .arg("start")
+        .arg("--foreground")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
