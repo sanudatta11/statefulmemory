@@ -180,12 +180,23 @@ impl CliEnv {
     /// an RPC immediately after socket-exists can hit "h2 protocol error"
     /// because the server isn't ready to handshake yet.
     pub fn spawn_daemon(&mut self) -> &mut Self {
+        // Redirect daemon stderr to a file under the env's data dir so a
+        // failing test can dump it via `env.daemon_stderr()` and see why
+        // the daemon died (panics, RUST_BACKTRACE traces, etc.). Piping
+        // to Stdio::piped() and not reading would buffer indefinitely;
+        // a file means the bytes are available even after the test panic.
+        let stderr_log = std::fs::File::create(self.data_path().join("daemon.stderr"))
+            .expect("create daemon.stderr log");
         let child = Command::new(&self.binary)
             .args(["daemon", "start", "--foreground"])
             .env("MEMLAYER_DATA_DIR", self.data_path())
             .env("MEMLAYER_LOG", "warn")
+            // RUST_BACKTRACE=1 makes panics in the daemon visible in the
+            // captured stderr log, which is invaluable when the only
+            // symptom client-side is "h2 protocol error".
+            .env("RUST_BACKTRACE", "1")
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(stderr_log)
             .spawn()
             .expect("spawn daemon");
         self.daemon = Some(child);
@@ -219,6 +230,13 @@ impl CliEnv {
             }
         }
         self
+    }
+
+    /// Read whatever the daemon has written to its captured stderr file.
+    /// Returns `None` if the file does not exist (e.g. spawn_daemon was
+    /// never called). Useful inside test panic handlers.
+    pub fn daemon_stderr(&self) -> Option<String> {
+        std::fs::read_to_string(self.data_path().join("daemon.stderr")).ok()
     }
 
     /// Build a fresh `Command` invoking the `memlayer` binary, with the env's

@@ -47,12 +47,14 @@ pub async fn run(cfg: Config) -> Result<()> {
     let dm = DiskMonitor::new();
     diskmon::spawn(dm.clone(), cfg.data_dir.clone(), cfg.disk_full_threshold, cfg.disk_poll_interval);
 
-    // Token store (TCP only).
-    let token_store = if cfg.is_tcp_mode() {
-        Some(Arc::new(TokenStore::open(paths::tokens_db_path())?))
-    } else {
-        None
-    };
+    // Token store. Opened in both UDS and TCP modes: UDS mode lets the
+    // local admin pre-provision tokens that will later authenticate TCP
+    // clients (the typical bootstrap flow). The TCP auth interceptor is
+    // wired below only when binding TCP, so UDS callers reach the
+    // admin-only RPCs (CreateToken/ListTokens/RevokeToken) without an
+    // AuthCtx — admin_guard::require_admin pass-through covers that case
+    // (filesystem permissions are the UDS trust boundary).
+    let token_store = Some(Arc::new(TokenStore::open(paths::tokens_db_path())?));
 
     // Daemon shared state.
     let in_flight = Arc::new(AtomicU64::new(0));

@@ -217,7 +217,11 @@ impl Render for p::ListObservationsResponse {
     fn to_json_value(&self) -> Value {
         json!({
             "observations": self.observations.iter().map(obs_to_json).collect::<Vec<_>>(),
-            "next_cursor": self.next_cursor.as_ref().map(|c| json!({ "token": c.token })),
+            // `next_cursor` is rendered as a bare string token (not a
+            // wrapped object) so the JSON shape matches the text output
+            // (`next_cursor: <token>`) and so callers can pass it back as
+            // `--cursor <token>` without unwrapping.
+            "next_cursor": self.next_cursor.as_ref().map(|c| c.token.clone()),
         })
     }
 }
@@ -272,22 +276,32 @@ impl Render for p::ContextResponse {
         Ok(())
     }
     fn to_json_value(&self) -> Value {
-        let snap = self.snapshot.as_ref().map(|s| {
-            json!({
-                "recent_observations": s.recent_observations.iter().map(obs_to_json).collect::<Vec<_>>(),
-                "active_topics": s
-                    .active_topics
+        // Flatten the optional snapshot so callers always see
+        // `recent_observations` and `active_topics` at the top level.
+        // When the daemon returns no snapshot, render empty arrays
+        // instead of `{"snapshot": null}` so consumers can read the
+        // arrays unconditionally.
+        let (recents, topics) = match &self.snapshot {
+            Some(s) => (
+                s.recent_observations.iter().map(obs_to_json).collect::<Vec<_>>(),
+                s.active_topics
                     .iter()
-                    .map(|t| json!({
-                        "topic_key": t.topic_key,
-                        "scope": t.scope,
-                        "latest_title": t.latest_title,
-                        "updated_at": t.updated_at,
-                    }))
+                    .map(|t| {
+                        json!({
+                            "topic_key": t.topic_key,
+                            "scope": t.scope,
+                            "latest_title": t.latest_title,
+                            "updated_at": t.updated_at,
+                        })
+                    })
                     .collect::<Vec<_>>(),
-            })
-        });
-        json!({ "snapshot": snap })
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        json!({
+            "recent_observations": recents,
+            "active_topics": topics,
+        })
     }
 }
 
@@ -505,7 +519,7 @@ impl Render for p::ListSessionsResponse {
     fn to_json_value(&self) -> Value {
         json!({
             "sessions": self.sessions.iter().map(session_to_json).collect::<Vec<_>>(),
-            "next_cursor": self.next_cursor.as_ref().map(|c| json!({ "token": c.token })),
+            "next_cursor": self.next_cursor.as_ref().map(|c| c.token.clone()),
         })
     }
 }
@@ -926,5 +940,58 @@ mod tests {
         r.render_text(&mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert_eq!(s, "- alpha\n- beta\n");
+    }
+
+    #[test]
+    fn list_response_json_shape_pins_cursor_as_string() {
+        // TS-21 pinned: `next_cursor` must be a bare string (or null), not
+        // a `{"token": …}` object. CLI consumers feed the value back in via
+        // `--cursor`, which expects the raw token. Wrapping it in an
+        // object silently breaks pagination loops that read
+        // `v["next_cursor"].as_str()`.
+        let resp_with = p::ListObservationsResponse {
+            observations: vec![sample_observation()],
+            next_cursor: Some(p::Cursor { token: "abc123".into() }),
+        };
+        let v = resp_with.to_json_value();
+        assert_eq!(v["next_cursor"], json!("abc123"));
+        assert!(v["observations"].is_array());
+
+        let resp_without = p::ListObservationsResponse {
+            observations: vec![],
+            next_cursor: None,
+        };
+        let v = resp_without.to_json_value();
+        assert!(v["next_cursor"].is_null(), "absent cursor must render as null");
+    }
+
+    #[test]
+    fn context_response_json_shape_is_flat() {
+        // TS-9 pinned: `recent_observations` and `active_topics` must sit
+        // at the top level of the `obs context` JSON output, not nested
+        // under a `snapshot` key. Callers reading the response should not
+        // have to unwrap an optional snapshot — when the daemon returns
+        // no snapshot we emit empty arrays instead of `{"snapshot": null}`.
+        let snap = p::ContextSnapshot {
+            recent_observations: vec![sample_observation()],
+            active_topics: vec![p::TopicSummary {
+                topic_key: "k".into(),
+                scope: "project".into(),
+                latest_title: "t".into(),
+                updated_at: "2026-06-03T10:00:00Z".into(),
+            }],
+        };
+        let resp = p::ContextResponse { snapshot: Some(snap) };
+        let v = resp.to_json_value();
+        assert!(v["recent_observations"].is_array());
+        assert_eq!(v["recent_observations"].as_array().unwrap().len(), 1);
+        assert!(v["active_topics"].is_array());
+        assert!(v["snapshot"].is_null(), "snapshot wrapper must not appear");
+
+        // Empty-snapshot path: arrays still present, not null.
+        let resp_empty = p::ContextResponse { snapshot: None };
+        let v = resp_empty.to_json_value();
+        assert_eq!(v["recent_observations"], json!([]));
+        assert_eq!(v["active_topics"], json!([]));
     }
 }

@@ -160,7 +160,9 @@ fn ts24b_duplicate_token_name_already_exists() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.to_lowercase().contains("already") || stderr.contains("ALREADY_EXISTS"),
-        "stderr should mention already-exists; got: {stderr}",
+        "stderr should mention already-exists; got: {stderr}\n\
+         daemon.stderr:\n{}",
+        env.daemon_stderr().unwrap_or_else(|| "<none>".into()),
     );
 }
 
