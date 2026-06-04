@@ -425,6 +425,36 @@ pub fn count_imported_chunks(conn: &Connection) -> Result<i64> {
     Ok(n)
 }
 
+/// All chunk IDs that have been imported into this DB.
+/// Used by `SyncStatus` to compute `unseen_chunk_count`.
+#[instrument(level = "debug", skip(conn))]
+pub fn list_imported_chunk_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT chunk_id FROM sync_chunks ORDER BY imported_at ASC")
+        .map_err(|e| Error::internal(format!("prepare list_imported_chunk_ids: {e}")))?;
+    let ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| Error::internal(format!("query list_imported_chunk_ids: {e}")))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| Error::internal(format!("collect list_imported_chunk_ids: {e}")))?;
+    Ok(ids)
+}
+
+/// Timestamp of the most-recently imported chunk, or `None` if none yet.
+#[instrument(level = "debug", skip(conn))]
+pub fn last_imported_at(conn: &Connection) -> Result<Option<String>> {
+    let val: Option<String> = conn
+        .query_row(
+            "SELECT MAX(imported_at) FROM sync_chunks",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::internal(format!("last_imported_at: {e}")))?
+        .flatten();
+    Ok(val)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

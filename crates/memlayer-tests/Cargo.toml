@@ -34,3 +34,4 @@ rcgen.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
 hex.workspace = true
+zstd = "0.13"

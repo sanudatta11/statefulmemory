@@ -1018,9 +1018,12 @@ impl Memlayer for MemlayerService {
     }
     async fn sync_export(
         &self,
-        _req: Request<SyncExportRequest>,
+        req: Request<SyncExportRequest>,
     ) -> Result<Response<SyncExportResponse>, Status> {
-        Err(Status::unimplemented("SyncExport: implemented in Spec 3"))
+        let _guard = self.enter_rpc();
+        map(self.check_writeable())?;
+        let resp = crate::sync_export::handle(&self.state, req.into_inner()).await?;
+        Ok(Response::new(resp))
     }
     async fn sync_import(
         &self,
