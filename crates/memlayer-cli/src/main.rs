@@ -18,7 +18,7 @@ use memlayer_cli::{
 };
 use memlayer_cli::{autospawn, exit};
 use memlayer_cli::formatter::Formatter;
-use memlayer_cli::project_detect;
+use memlayer_cli::project_detect::{self, ProjectDetection};
 use memlayer_client::{channel as client_channel, ClientError, MemlayerClient};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -56,7 +56,7 @@ async fn main() -> ExitCode {
             let needs_client = !matches!(args.verb, memlayer_cli::cli::TeamVerb::InitCa(_));
             if needs_client {
                 match open_client(cli.output, cli.project).await {
-                    Ok((mut client, _project, fmt)) => {
+                    Ok((mut client, _detection, fmt)) => {
                         cmd_team::dispatch(Some(&mut client), fmt, args.verb).await
                     }
                     Err(code) => code,
@@ -66,32 +66,33 @@ async fn main() -> ExitCode {
             }
         }
         Command::Obs(args) => match open_client(cli.output, cli.project).await {
-            Ok((mut client, project, fmt)) => {
-                cmd_obs::dispatch(&mut client, &project, fmt, cli.quiet, args.verb).await
+            Ok((mut client, detection, fmt)) => {
+                cmd_obs::dispatch(&mut client, &detection.normalized, fmt, cli.quiet, args.verb)
+                    .await
             }
             Err(code) => code,
         },
         Command::Session(args) => match open_client(cli.output, cli.project).await {
-            Ok((mut client, project, fmt)) => {
-                cmd_session::dispatch(&mut client, &project, fmt, args.verb).await
+            Ok((mut client, detection, fmt)) => {
+                cmd_session::dispatch(&mut client, &detection.normalized, fmt, args.verb).await
             }
             Err(code) => code,
         },
         Command::Prompt(args) => match open_client(cli.output, cli.project).await {
-            Ok((mut client, project, fmt)) => {
-                cmd_prompt::dispatch(&mut client, &project, fmt, args.verb).await
+            Ok((mut client, detection, fmt)) => {
+                cmd_prompt::dispatch(&mut client, &detection.normalized, fmt, args.verb).await
             }
             Err(code) => code,
         },
         Command::Project(args) => match open_client(cli.output, cli.project).await {
-            Ok((mut client, project, fmt)) => {
-                cmd_project::dispatch(&mut client, &project, fmt, args.verb).await
+            Ok((mut client, detection, fmt)) => {
+                cmd_project::dispatch(&mut client, &detection, fmt, args.verb).await
             }
             Err(code) => code,
         },
         Command::Sync(args) => match open_client(cli.output, cli.project).await {
-            Ok((mut client, project, fmt)) => {
-                cmd_sync::dispatch(&mut client, &project, fmt, args.verb).await
+            Ok((mut client, detection, fmt)) => {
+                cmd_sync::dispatch(&mut client, &detection.normalized, fmt, args.verb).await
             }
             Err(code) => code,
         },
@@ -120,11 +121,20 @@ async fn run_daemon_foreground() -> ExitCode {
 /// Resolve the project, open a UDS gRPC client (auto-spawning the daemon
 /// per FR2 if the socket is missing), pick the formatter, and hand the
 /// prepared trio back. Returns `Err(exit_code)` if any step fails.
+///
+/// Reads `MEMLAYER_PROJECT` directly here (not via clap's `env=`) so that
+/// `project_detect` can attribute the source as `env_override` rather than
+/// `cli_flag` when only the env var is set. Precedence (highest first):
+/// `--project` flag, `MEMLAYER_PROJECT`, `.memlayer/config.json`, git
+/// remote, git root basename.
 async fn open_client(
     output: Option<OutputFormat>,
     project_flag: Option<String>,
-) -> Result<(MemlayerClient<tonic::transport::Channel>, String, Formatter), ExitCode> {
+) -> Result<(MemlayerClient<tonic::transport::Channel>, ProjectDetection, Formatter), ExitCode> {
     let cli_override = project_flag.filter(|s| !s.is_empty());
+    let env_override = std::env::var("MEMLAYER_PROJECT")
+        .ok()
+        .filter(|s| !s.is_empty());
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => {
@@ -132,7 +142,7 @@ async fn open_client(
             return Err(ExitCode::from(exit::GENERAL));
         }
     };
-    let detection = match project_detect::detect_in(&cwd, None, cli_override) {
+    let detection = match project_detect::detect_in(&cwd, env_override, cli_override) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("memlayer: {e}");
@@ -170,5 +180,5 @@ async fn open_client(
     let client = MemlayerClient::new(channel);
     let stdout_is_tty = std::io::stdout().is_terminal();
     let fmt = Formatter::resolve(output.map(|f| f.to_formatter()), stdout_is_tty);
-    Ok((client, detection.normalized, fmt))
+    Ok((client, detection, fmt))
 }

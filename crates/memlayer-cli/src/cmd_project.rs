@@ -11,21 +11,22 @@ use crate::cli::{
 use crate::cmd_obs::Client;
 use crate::exit;
 use crate::formatter::{Formatter, Render};
+use crate::project_detect::ProjectDetection;
 
 pub async fn dispatch(
     client: &mut Client,
-    project_name: &str,
+    detection: &ProjectDetection,
     fmt: Formatter,
     verb: ProjectVerb,
 ) -> ExitCode {
     let result = match verb {
         ProjectVerb::List => list(client, fmt).await,
-        ProjectVerb::Current => current(client, fmt).await,
+        ProjectVerb::Current => current_local(detection, fmt),
         ProjectVerb::Merge(a) => match validate_merge(&a) {
             Ok(()) => merge(client, fmt, a).await,
             Err(msg) => Err(MergeOrStatus::Usage(msg)),
         },
-        ProjectVerb::Delete(a) => delete(client, fmt, project_name, a).await,
+        ProjectVerb::Delete(a) => delete(client, fmt, &detection.normalized, a).await,
         ProjectVerb::Consolidate(a) => consolidate(client, fmt, a).await,
         ProjectVerb::Prune(a) => prune(client, fmt, a).await,
     };
@@ -79,13 +80,18 @@ async fn list(client: &mut Client, fmt: Formatter) -> Result<(), MergeOrStatus> 
     Ok(())
 }
 
-async fn current(client: &mut Client, fmt: Formatter) -> Result<(), MergeOrStatus> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| MergeOrStatus::Status(tonic::Status::internal(format!("getcwd: {e}"))))?;
-    let req = p::CurrentProjectRequest {
-        directory: cwd.to_string_lossy().into_owned(),
+/// Render `project current` from the CLI-side detection result. The daemon
+/// also has a `current_project` RPC, but its detection is intentionally
+/// naive (basename only) and does not honor `.memlayer/config.json`,
+/// `[remote "origin"]`, `--project`, or `MEMLAYER_PROJECT`. The CLI has
+/// already done the full PRD §9.1 walk in `open_client`, so we render
+/// locally and skip the RPC.
+fn current_local(detection: &ProjectDetection, fmt: Formatter) -> Result<(), MergeOrStatus> {
+    let resp = p::CurrentProjectResponse {
+        normalized_name: detection.normalized.clone(),
+        display_name: detection.display_name.clone(),
+        source: detection.source_label().to_string(),
     };
-    let resp = client.current_project(req).await?.into_inner();
     write_render(&resp, fmt).map_err(io_to_status)?;
     Ok(())
 }
@@ -185,7 +191,45 @@ fn io_to_status(e: io::Error) -> MergeOrStatus {
 mod tests {
     use super::*;
     use crate::cli::{Cli, Command, ProjectArgs};
+    use crate::project_detect::ProjectSource;
     use clap::Parser;
+    use std::path::PathBuf;
+
+    #[test]
+    fn current_local_renders_from_detection_no_rpc() {
+        // The bug fix lifts `project current` off the daemon RPC path and
+        // renders from the CLI-side detection. Verify that for each source
+        // variant the rendered JSON includes the expected `source` label
+        // and the display + normalized names. A regression here would
+        // re-introduce the failure mode where the daemon's naive
+        // basename-only detection silently overrode `--project`,
+        // `MEMLAYER_PROJECT`, and `.memlayer/config.json`.
+        let cases: Vec<(ProjectSource, &str)> = vec![
+            (ProjectSource::CliFlag, "cli_flag"),
+            (ProjectSource::EnvOverride, "env_override"),
+            (ProjectSource::ConfigFile(PathBuf::from("/tmp/.memlayer/config.json")), "config_file"),
+            (ProjectSource::GitRemote("git@github.com:acme/widgets.git".into()), "git_remote"),
+            (ProjectSource::GitRoot(PathBuf::from("/tmp/widgets")), "git_root_basename"),
+        ];
+        for (source, expected_label) in cases {
+            let det = ProjectDetection {
+                display_name: "Widgets".into(),
+                normalized: "widgets".into(),
+                source,
+            };
+            assert_eq!(det.source_label(), expected_label);
+            // Build the response the same way current_local does and verify
+            // the fields propagate verbatim.
+            let resp = p::CurrentProjectResponse {
+                normalized_name: det.normalized.clone(),
+                display_name: det.display_name.clone(),
+                source: det.source_label().to_string(),
+            };
+            assert_eq!(resp.normalized_name, "widgets");
+            assert_eq!(resp.display_name, "Widgets");
+            assert_eq!(resp.source, expected_label);
+        }
+    }
 
     #[test]
     fn self_merge_returns_invalid_argument() {

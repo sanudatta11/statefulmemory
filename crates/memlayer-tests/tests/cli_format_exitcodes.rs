@@ -276,9 +276,11 @@ fn ts6c_non_git_dir_returns_exit5() {
 fn ts6_sc7_config_json_drives_project_name() {
     let mut env = CliEnv::new();
     env.spawn_daemon();
-    // Create .memlayer/config.json in the tempdir cwd. We bypass the project
-    // env var so detection actually runs.
-    let dot_dir = env.data_path().join(".memlayer");
+    // macOS tempdirs are named `.tmpXXXXXX` which `normalize` rejects (leading
+    // dot). Run the CLI from a non-dot subdirectory so cwd's basename is
+    // valid, and put .memlayer/config.json there so detection finds it.
+    let work_dir = env.data_path().join("workspace-sc7");
+    let dot_dir = work_dir.join(".memlayer");
     std::fs::create_dir_all(&dot_dir).unwrap();
     std::fs::write(
         dot_dir.join("config.json"),
@@ -286,8 +288,9 @@ fn ts6_sc7_config_json_drives_project_name() {
     )
     .unwrap();
 
-    let out = env
-        .cmd_no_project_env()
+    let mut cmd = env.cmd_no_project_env();
+    cmd.current_dir(&work_dir);
+    let out = cmd
         .args(["--output", "json", "project", "current"])
         .output()
         .expect("project current");
@@ -315,10 +318,15 @@ fn ts6_sc7_config_json_drives_project_name() {
 fn ts6_sc8_git_remote_drives_project_name() {
     let mut env = CliEnv::new();
     env.spawn_daemon();
-    write_minimal_git_dir(env.data_path(), Some("git@github.com:acme/proj-from-remote.git"));
+    // Same leading-dot avoidance as SC-7: do not run the CLI directly inside
+    // the macOS tempdir whose basename starts with `.tmp`.
+    let work_dir = env.data_path().join("workspace-sc8");
+    std::fs::create_dir_all(&work_dir).unwrap();
+    write_minimal_git_dir(&work_dir, Some("git@github.com:acme/proj-from-remote.git"));
 
-    let out = env
-        .cmd_no_project_env()
+    let mut cmd = env.cmd_no_project_env();
+    cmd.current_dir(&work_dir);
+    let out = cmd
         .args(["--output", "json", "project", "current"])
         .output()
         .expect("project current");

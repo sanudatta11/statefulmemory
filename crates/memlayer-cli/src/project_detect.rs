@@ -49,6 +49,23 @@ pub struct ProjectDetection {
     pub source: ProjectSource,
 }
 
+impl ProjectDetection {
+    /// Stable string label for the source variant. Used by `project current`
+    /// to populate the `source` field of the rendered output. The label set
+    /// is part of the CLI's user-visible contract: tests in
+    /// `crates/memlayer-tests/tests/cli_format_exitcodes.rs` assert specific
+    /// values (`config_file`, `git_root_basename`, …).
+    pub fn source_label(&self) -> &'static str {
+        match self.source {
+            ProjectSource::CliFlag => "cli_flag",
+            ProjectSource::EnvOverride => "env_override",
+            ProjectSource::ConfigFile(_) => "config_file",
+            ProjectSource::GitRemote(_) => "git_remote",
+            ProjectSource::GitRoot(_) => "git_root_basename",
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DetectError {
     /// Neither override, config, nor git found. Exit 5 (PRD §3.4).

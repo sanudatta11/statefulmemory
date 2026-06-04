@@ -174,7 +174,11 @@ impl CliEnv {
     }
 
     /// Spawn the daemon in foreground mode against this env's data dir, then
-    /// block until the UDS socket appears (max 5 s).
+    /// block until the UDS socket actually accepts connections (max 5 s).
+    /// Polling for socket-file *existence* is not enough: tonic creates the
+    /// listener fd before its acceptor task starts, so a test that issues
+    /// an RPC immediately after socket-exists can hit "h2 protocol error"
+    /// because the server isn't ready to handshake yet.
     pub fn spawn_daemon(&mut self) -> &mut Self {
         let child = Command::new(&self.binary)
             .args(["daemon", "start", "--foreground"])
@@ -189,12 +193,30 @@ impl CliEnv {
         let sock = self.socket_path();
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut delay = Duration::from_millis(10);
+
+        // Phase 1: wait for the socket file to appear.
         while !sock.exists() {
             if Instant::now() > deadline {
                 panic!("daemon socket never appeared at {}", sock.display());
             }
             std::thread::sleep(delay);
             delay = std::cmp::min(delay * 2, Duration::from_millis(160));
+        }
+
+        // Phase 2: wait until a client UnixStream::connect actually succeeds.
+        // tonic creates the listener fd before its acceptor task is hooked
+        // up; under parallel test load this gap is wide enough for a racing
+        // RPC to land on a half-open socket and surface as h2 protocol error.
+        let mut delay = Duration::from_millis(10);
+        loop {
+            match std::os::unix::net::UnixStream::connect(&sock) {
+                Ok(_) => break,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(delay);
+                    delay = std::cmp::min(delay * 2, Duration::from_millis(160));
+                }
+                Err(e) => panic!("daemon socket {} never accepted connections: {e}", sock.display()),
+            }
         }
         self
     }

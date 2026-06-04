@@ -22,8 +22,11 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub output: Option<OutputFormat>,
 
-    /// Project name override. Skips detection (FR3.4).
-    #[arg(long, global = true, env = "MEMLAYER_PROJECT")]
+    /// Project name override. Skips detection (FR3.4). The
+    /// `MEMLAYER_PROJECT` env var is honored too, but `main.rs` reads it
+    /// directly so detection can attribute the source as `env_override`
+    /// rather than `cli_flag` when only the env var is set.
+    #[arg(long, global = true)]
     pub project: Option<String>,
 
     /// Disable ANSI color in output (FR1.4). `NO_COLOR` env var also works.
@@ -520,15 +523,19 @@ mod tests {
     }
 
     #[test]
-    fn project_env_picked_up() {
-        // env() is wired via `#[arg(env = "MEMLAYER_PROJECT")]`. Verifying
-        // the attribute is present is enough — clap reads the env at parse
-        // time but we don't need to mutate global state in this test.
+    fn project_flag_parses_without_env_binding() {
+        // The clap-level `env=` binding was removed deliberately so that
+        // `main.rs` can read MEMLAYER_PROJECT separately and attribute the
+        // detection source as `env_override` (not `cli_flag`). Verify the
+        // arg is still defined and accepts a value, but no longer reads
+        // from the environment.
         let cmd = Cli::command();
         let arg = cmd
             .get_arguments()
             .find(|a| a.get_id() == "project")
             .expect("--project arg defined");
-        assert!(arg.get_env().is_some());
+        assert!(arg.get_env().is_none(), "project arg should not have env binding");
+        let cli = Cli::try_parse_from(["memlayer", "--project", "explicit", "version"]).unwrap();
+        assert_eq!(cli.project.as_deref(), Some("explicit"));
     }
 }
