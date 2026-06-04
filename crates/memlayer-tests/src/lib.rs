@@ -257,6 +257,13 @@ pub struct TcpDaemon {
     daemon: Child,
 }
 
+/// Process-wide mutex guarding the TCP port pick + daemon bind in
+/// `TcpDaemon::spawn`. Without this two parallel tests can race on the
+/// same kernel-assigned ephemeral port: thread A picks port N, drops the
+/// listener, thread B's `pick_port` happens to get N too, and only one
+/// daemon ends up bound.
+pub static TCP_SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl TcpDaemon {
     /// Open `tokens.db` in the env's data dir before the daemon starts so the
     /// auth interceptor sees the seeded entries on its first lookup.
@@ -325,7 +332,12 @@ impl TcpDaemon {
         )
     }
 
-    /// Pick an ephemeral port by binding briefly and reading the assigned port.
+    /// Pick an ephemeral port by binding briefly and reading the assigned
+    /// port. The TCP listener is dropped before this returns; the daemon
+    /// then re-binds the same port. There is a TOCTOU window where another
+    /// thread could grab the port — callers should hold
+    /// [`TCP_SPAWN_LOCK`] across pick + spawn to keep concurrent
+    /// `TcpDaemon::spawn` calls from racing each other.
     pub fn pick_port() -> u16 {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
         l.local_addr().expect("local addr").port()
@@ -333,33 +345,66 @@ impl TcpDaemon {
 
     /// Spawn the daemon in TCP+TLS mode. Caller must seed tokens.db before
     /// calling if the daemon needs to authenticate any requests.
+    ///
+    /// Acquires [`TCP_SPAWN_LOCK`] for the duration of the bind+spawn dance
+    /// so two parallel tests can't accidentally pick the same kernel-assigned
+    /// port (the bind-then-drop-then-rebind path is inherently TOCTOU). The
+    /// lock is released as soon as the daemon successfully binds, so the
+    /// rest of the test runs concurrently. Will retry up to 5 times if the
+    /// daemon fails to bind within the readiness window.
     pub fn spawn(data_dir: tempfile::TempDir) -> Self {
         let binary = locate_binary();
         let (cert, key, ca_pem) = Self::generate_certs(data_dir.path());
-        let port = Self::pick_port();
-        let listen = format!("tcp://127.0.0.1:{port}");
 
-        let daemon = Command::new(&binary)
-            .args(["daemon", "start", "--foreground"])
-            .env("MEMLAYER_DATA_DIR", data_dir.path())
-            .env("MEMLAYER_LISTEN", &listen)
-            .env("MEMLAYER_TLS_CERT", &cert)
-            .env("MEMLAYER_TLS_KEY", &key)
-            .env("MEMLAYER_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn tcp daemon");
+        // Serialize the bind/spawn dance with any other TcpDaemon::spawn so
+        // one test's pick_port can't race another's bind.
+        let _guard = TCP_SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
 
-        // Wait for the TCP port to accept connections.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        for attempt in 1..=5 {
+            let port = Self::pick_port();
+            let listen = format!("tcp://127.0.0.1:{port}");
+
+            let daemon = Command::new(&binary)
+                .args(["daemon", "start", "--foreground"])
+                .env("MEMLAYER_DATA_DIR", data_dir.path())
+                .env("MEMLAYER_LISTEN", &listen)
+                .env("MEMLAYER_TLS_CERT", &cert)
+                .env("MEMLAYER_TLS_KEY", &key)
+                .env("MEMLAYER_LOG", "warn")
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn tcp daemon");
+
+            // Wait for the TCP port to accept connections.
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut bound = false;
+            while Instant::now() < deadline {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    bound = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+
+            if bound {
                 return TcpDaemon { data_dir, port, ca_pem, binary, daemon };
             }
-            std::thread::sleep(Duration::from_millis(50));
+
+            // Daemon never bound — likely the port got grabbed in the TOCTOU
+            // window. Reap the failed child and try again with a fresh port.
+            let mut daemon = daemon;
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            if attempt == 5 {
+                panic!(
+                    "TCP daemon never bound after 5 attempts; last attempted port {port}",
+                );
+            }
         }
-        panic!("TCP daemon never bound 127.0.0.1:{port}");
+        unreachable!("loop above always returns or panics");
     }
 
     pub fn endpoint(&self) -> String {

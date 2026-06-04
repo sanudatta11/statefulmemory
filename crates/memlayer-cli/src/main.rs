@@ -28,6 +28,12 @@ async fn main() -> ExitCode {
         Err(e) => e.exit(),
     };
 
+    // FR1.4 / FR1.6: wire global flags before any dispatch. `--no-color` is
+    // implemented as setting NO_COLOR in the environment, which composes with
+    // users who already set the env var themselves; `--quiet` is read by the
+    // info!() macro in the lib root.
+    memlayer_cli::init_globals(cli.quiet, cli.no_color);
+
     match cli.command {
         // daemon start --foreground runs the daemon in this process; never
         // tries to connect to itself, so it sits outside open_client.

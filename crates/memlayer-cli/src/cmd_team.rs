@@ -140,9 +140,9 @@ pub fn init_ca(dir: &Path, force: bool) -> Result<(), InitCaError> {
     fs::write(&ca_path, ca_cert.pem())?;
     fs::write(&server_path, leaf_cert.pem())?;
     fs::write(&server_key_path, leaf_key.serialize_pem())?;
-    eprintln!("wrote {}", ca_path.display());
-    eprintln!("wrote {}", server_path.display());
-    eprintln!("wrote {}", server_key_path.display());
+    crate::info!("wrote {}", ca_path.display());
+    crate::info!("wrote {}", server_path.display());
+    crate::info!("wrote {}", server_key_path.display());
     Ok(())
 }
 

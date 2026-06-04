@@ -269,13 +269,19 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
                 }));
             }
             WriteRequest::Custom { f, reply } => {
-                // Custom is harder: it needs a `&mut Connection` but we have
-                // a Transaction. We commit early, run the closure on a fresh
-                // connection-via-tx-ref, and continue. For now, only allow Custom
-                // when it's the only message in the batch.
-                drop(replies);
+                // Custom needs a `&mut Connection` but we hold a Transaction.
+                // We commit the in-flight tx, then run the closure against the
+                // bare connection. Critically, the prior requests' replies must
+                // fire BEFORE we return — those writes have already committed
+                // and their callers are blocked on `oneshot::Receiver`. Dropping
+                // the reply closures (the original behavior) made the callers
+                // see RecvError and surfaced as "write thread crashed" even
+                // though the writes succeeded.
                 tx.commit()
                     .map_err(|e| Error::internal(format!("COMMIT for custom: {e}")))?;
+                for cb in replies.drain(..) {
+                    cb();
+                }
                 let r = (f)(conn);
                 let _ = reply.send(r);
                 return Ok(());
@@ -1002,5 +1008,49 @@ mod tests {
         let r = handle_hard_delete_obs(&tx, &ObservationKey::Id(99_999));
         tx.commit().unwrap();
         assert!(matches!(r, Err(Error::NotFound(_))));
+    }
+
+    /// Regression for review-finding "silent reply drop in WriteRequest::Custom":
+    /// a batch of [SaveObservation, Custom] used to commit both writes but drop
+    /// the SaveObservation reply closure, so the caller saw RecvError on its
+    /// oneshot::Receiver and the daemon reported "write thread crashed". After
+    /// the fix, prior replies fire before the Custom early-return.
+    #[test]
+    fn process_batch_custom_does_not_drop_prior_replies() {
+        let (_d, mut conn) = open_test_db();
+
+        let (save_tx, save_rx) = oneshot::channel::<Result<Observation>>();
+        let (custom_tx, custom_rx) = oneshot::channel::<Result<()>>();
+
+        let mut batch: Vec<WriteRequest> = vec![
+            WriteRequest::SaveObservation {
+                input: save_input("hello-from-batch"),
+                reply: save_tx,
+            },
+            WriteRequest::Custom {
+                f: Box::new(|_conn| Ok(())),
+                reply: custom_tx,
+            },
+        ];
+
+        process_batch(&mut conn, &mut batch).expect("process_batch");
+
+        // The SaveObservation reply must arrive — its write was committed.
+        let saved = save_rx
+            .blocking_recv()
+            .expect("SaveObservation reply must fire even when Custom follows");
+        let obs = saved.expect("SaveObservation must succeed");
+        assert_eq!(obs.content, "hello-from-batch");
+
+        // The Custom reply also fires.
+        let custom_result = custom_rx.blocking_recv().expect("Custom reply must fire");
+        assert!(custom_result.is_ok());
+
+        // And the saved observation is durable on disk.
+        let tx = conn.transaction().unwrap();
+        let fetched = fetch_observation_by_sync_id(&tx, &obs.sync_id)
+            .unwrap()
+            .expect("observation must be persisted after process_batch");
+        assert_eq!(fetched.content, "hello-from-batch");
     }
 }

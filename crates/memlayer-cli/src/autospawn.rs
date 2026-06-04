@@ -105,6 +105,17 @@ pub async fn ensure_running(cfg: AutoSpawnConfig) -> Result<(), AutoSpawnError> 
     spawn_detached(&cfg.binary)
         .map_err(|e| AutoSpawnError::Spawn(cfg.binary.clone(), e))?;
 
+    // CRITICAL: release the spawn lock BEFORE polling. The lock's purpose is
+    // to serialize concurrent auto-spawners — once the daemon child has been
+    // forked, our work is done and any racing CLI should observe either the
+    // child's lock or its socket. The daemon child opens the same lock file
+    // and calls `try_lock_exclusive` (lifecycle::acquire_lock_and_pid); if we
+    // were still holding our exclusive lock, the daemon would fail to start,
+    // poll_socket would time out, and the user would see exit 4 even though
+    // everything else was healthy.
+    let _ = FileExt::unlock(&lock_file);
+    drop(lock_file);
+
     let ready = poll_socket(
         &cfg.socket,
         cfg.budget,
@@ -112,8 +123,6 @@ pub async fn ensure_running(cfg: AutoSpawnConfig) -> Result<(), AutoSpawnError> 
         cfg.max_backoff,
     )
     .await;
-
-    let _ = FileExt::unlock(&lock_file);
 
     if ready {
         Ok(())

@@ -4,9 +4,11 @@
 //! The binary entry point in `src/main.rs` builds a tokio runtime, parses the
 //! [`cli::Cli`] root, and dispatches to per-noun command handlers. Cross-
 //! cutting concerns — output formatting (FR1.2), `--no-color` (FR1.4),
-//! `MEMLAYER_PROJECT` env (FR3.4), auto-spawn (FR2), exit codes (FR13) — live
-//! here so each command module added in spec2-t5..t7 stays focused on a
-//! single RPC.
+//! `MEMLAYER_PROJECT` env (FR3.4), `--quiet` (FR1.6), auto-spawn (FR2),
+//! exit codes (FR13) — live here so each command module added in spec2-t5..t7
+//! stays focused on a single RPC.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod autospawn;
 pub mod cli;
@@ -23,3 +25,82 @@ pub mod exit;
 pub mod formatter;
 pub mod project_detect;
 pub mod render;
+
+/// Process-global `--quiet` flag (FR1.6). Set once at startup by `main`,
+/// read by [`info`] before printing informational output. Errors and the
+/// final RPC payload always print regardless of this flag.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Initialize the global `--quiet` and `--no-color` flags. Called once
+/// from `main` after CLI parsing. `--no-color` is implemented by setting
+/// the `NO_COLOR` environment variable so [`formatter::use_color`] sees it
+/// — this composes correctly with users who set `NO_COLOR` directly.
+pub fn init_globals(quiet: bool, no_color: bool) {
+    QUIET.store(quiet, Ordering::Relaxed);
+    if no_color && std::env::var_os("NO_COLOR").is_none() {
+        // SAFETY: set_var is called once at startup before any threads spawn
+        // and before any handler runs. All downstream reads of NO_COLOR go
+        // through std::env::var_os which is sync.
+        std::env::set_var("NO_COLOR", "1");
+    }
+}
+
+/// Whether informational stderr output should be suppressed. Errors are
+/// never suppressed.
+pub fn quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
+
+/// Print an informational message to stderr if `--quiet` is not set.
+/// Errors must still use `eprintln!` directly — [`info`] is for the
+/// "daemon started", "wrote ca.pem", etc. lines that the user can ask
+/// to be silenced.
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => {{
+        if !$crate::quiet() {
+            eprintln!($($arg)*);
+        }
+    }};
+}
+
+#[cfg(test)]
+mod globals_tests {
+    use super::*;
+
+    /// FR1.4: `--no-color` must propagate to anything that consults the
+    /// `NO_COLOR` environment variable. `init_globals(_, no_color=true)`
+    /// is required to set the env var when not already set.
+    #[test]
+    fn init_globals_no_color_sets_env_var() {
+        // Snapshot and clear the env so the test is hermetic regardless of
+        // how the developer's shell is configured.
+        let original = std::env::var_os("NO_COLOR");
+        std::env::remove_var("NO_COLOR");
+
+        init_globals(false, true);
+        assert!(
+            std::env::var_os("NO_COLOR").is_some(),
+            "--no-color must export NO_COLOR for downstream consumers",
+        );
+
+        // Restore for any subsequent test in the same process.
+        match original {
+            Some(v) => std::env::set_var("NO_COLOR", v),
+            None => std::env::remove_var("NO_COLOR"),
+        }
+    }
+
+    #[test]
+    fn init_globals_quiet_flips_quiet_flag() {
+        // Reset to a known state.
+        QUIET.store(false, Ordering::Relaxed);
+        assert!(!quiet());
+
+        init_globals(true, false);
+        assert!(quiet(), "--quiet must flip the global QUIET flag");
+
+        init_globals(false, false);
+        assert!(!quiet(), "init_globals(false, _) must clear quiet");
+    }
+}

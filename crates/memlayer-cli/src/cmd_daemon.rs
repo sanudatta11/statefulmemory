@@ -63,7 +63,7 @@ async fn start(_fmt: Formatter, foreground: bool) -> ExitCode {
     }
     match autospawn::ensure_running(cfg.clone()).await {
         Ok(()) => {
-            eprintln!("daemon started (socket {})", cfg.socket.display());
+            crate::info!("daemon started (socket {})", cfg.socket.display());
             ExitCode::SUCCESS
         }
         Err(e) => {

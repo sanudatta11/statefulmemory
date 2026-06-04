@@ -766,7 +766,47 @@ impl Memlayer for MemlayerService {
         let to_norm = map(memlayer_core::project::normalize(&r.to))?;
         let from_path = memlayer_core::paths::project_db_path(&from_norm);
         let to_path = memlayer_core::paths::project_db_path(&to_norm);
-        let outcome = map(projects_admin::merge_projects(&from_path, &to_path))?;
+        if !from_path.exists() {
+            return Err(Status::not_found(format!(
+                "source project '{from_norm}' does not exist"
+            )));
+        }
+        if !to_path.exists() {
+            return Err(Status::not_found(format!(
+                "target project '{to_norm}' does not exist"
+            )));
+        }
+        // Route the merge through the target project's dedicated write
+        // thread via WriteRequest::Custom. This keeps SQLite's single-writer
+        // invariant intact — the merge tx serializes naturally with any
+        // SaveObservation / UpdateObservation / etc. that the registry has
+        // queued for the same target.
+        let project = map(self.state.registry.get_or_open(&to_norm))?;
+        let outcome: std::sync::Arc<std::sync::Mutex<Option<memlayer_storage::projects_admin::MergeOutcome>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let outcome_slot = outcome.clone();
+        let from_for_closure = from_path.clone();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        map(project.write.send(memlayer_storage::write::WriteRequest::Custom {
+            f: Box::new(move |conn| {
+                let merged = memlayer_storage::projects_admin::merge_into_target_conn(
+                    conn,
+                    &from_for_closure,
+                )?;
+                *outcome_slot.lock().expect("outcome mutex") = Some(merged);
+                Ok(())
+            }),
+            reply: reply_tx,
+        }))?;
+        map(reply_rx.await.map_err(|_| {
+            memlayer_core::error::Error::Unavailable("merge_projects: write thread reply lost".into())
+        }))
+        .and_then(|inner| map(inner))?;
+        let outcome = outcome
+            .lock()
+            .expect("outcome mutex")
+            .take()
+            .ok_or_else(|| Status::internal("merge_projects produced no outcome"))?;
         Ok(Response::new(MergeProjectsResponse {
             observations_migrated: outcome.observations_migrated,
             sessions_migrated: outcome.sessions_migrated,
@@ -1052,11 +1092,11 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn create_token_logs_name_only_not_secret() {
-        // The whole point of NFR6/EH-8: the plaintext token must never be
-        // persisted or returned through any side channel besides the RPC
-        // response. We verify by inspecting what the token store actually
-        // recorded after a successful generate-and-store.
+    fn create_token_returns_distinct_hash() {
+        // generate_and_store_token round-trip: the caller gets the plaintext
+        // back, the store keeps SHA-256(plaintext), and the two are not
+        // confusable. EH-8's other half (log scrubbing) lives in
+        // create_token_log_does_not_leak_secret below.
         let dir = TempDir::new().unwrap();
         let store = TokenStore::open(dir.path().join("tokens.db")).unwrap();
         let secret = generate_and_store_token(&store, "alice", true).unwrap();
@@ -1079,6 +1119,155 @@ mod tests {
         h.update(secret.as_bytes());
         let expected: Vec<u8> = h.finalize().to_vec();
         assert_eq!(stored[0].hash, expected);
+    }
+
+    /// EH-8 / NFR6: the `tracing::info!` emitted by `generate_and_store_token`
+    /// must contain the token name but never the plaintext secret. We install
+    /// a process-wide subscriber once (via OnceLock) that routes events into
+    /// a thread-local capture buffer. The OnceLock guard handles the tracing
+    /// callsite-interest cache: the global subscriber registers each
+    /// callsite with `Interest::always()` the first time it's seen, so
+    /// later tests on other threads can't poison the cache to `Never` and
+    /// drop our event before it reaches the dispatcher.
+    #[test]
+    fn create_token_log_does_not_leak_secret() {
+        use std::cell::RefCell;
+        use std::sync::{Arc, Mutex, OnceLock};
+        use tracing::field::Visit;
+        use tracing::span::{Attributes, Id, Record};
+        use tracing::{Event, Metadata, Subscriber};
+
+        thread_local! {
+            static CAPTURE: RefCell<Option<Arc<Mutex<String>>>> = const { RefCell::new(None) };
+        }
+
+        struct GlobalCaptureSub {
+            next_id: std::sync::atomic::AtomicU64,
+        }
+
+        impl Subscriber for GlobalCaptureSub {
+            fn enabled(&self, _: &Metadata<'_>) -> bool {
+                true
+            }
+            fn register_callsite(&self, _: &'static Metadata<'static>) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::always()
+            }
+            fn new_span(&self, _: &Attributes<'_>) -> Id {
+                let n = self
+                    .next_id
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                Id::from_u64(n)
+            }
+            fn record(&self, _: &Id, _: &Record<'_>) {}
+            fn record_follows_from(&self, _: &Id, _: &Id) {}
+            fn event(&self, event: &Event<'_>) {
+                CAPTURE.with(|c| {
+                    let borrow = c.borrow();
+                    if let Some(buf) = borrow.as_ref() {
+                        struct V<'a>(&'a mut String);
+                        impl<'a> Visit for V<'a> {
+                            fn record_debug(
+                                &mut self,
+                                field: &tracing::field::Field,
+                                value: &dyn std::fmt::Debug,
+                            ) {
+                                use std::fmt::Write;
+                                let _ = write!(self.0, " {}={:?}", field.name(), value);
+                            }
+                            fn record_str(
+                                &mut self,
+                                field: &tracing::field::Field,
+                                value: &str,
+                            ) {
+                                use std::fmt::Write;
+                                let _ = write!(self.0, " {}={}", field.name(), value);
+                            }
+                            fn record_bool(
+                                &mut self,
+                                field: &tracing::field::Field,
+                                value: bool,
+                            ) {
+                                use std::fmt::Write;
+                                let _ = write!(self.0, " {}={}", field.name(), value);
+                            }
+                            fn record_u64(
+                                &mut self,
+                                field: &tracing::field::Field,
+                                value: u64,
+                            ) {
+                                use std::fmt::Write;
+                                let _ = write!(self.0, " {}={}", field.name(), value);
+                            }
+                            fn record_i64(
+                                &mut self,
+                                field: &tracing::field::Field,
+                                value: i64,
+                            ) {
+                                use std::fmt::Write;
+                                let _ = write!(self.0, " {}={}", field.name(), value);
+                            }
+                        }
+                        let mut buf = buf.lock().unwrap();
+                        buf.push_str(&format!("[{}]", event.metadata().level()));
+                        let mut visitor = V(&mut buf);
+                        event.record(&mut visitor);
+                        buf.push('\n');
+                    }
+                });
+            }
+            fn enter(&self, _: &Id) {}
+            fn exit(&self, _: &Id) {}
+        }
+
+        static GLOBAL_INSTALLED: OnceLock<()> = OnceLock::new();
+        GLOBAL_INSTALLED.get_or_init(|| {
+            let _ = tracing::subscriber::set_global_default(GlobalCaptureSub {
+                next_id: std::sync::atomic::AtomicU64::new(0),
+            });
+        });
+
+        // Install the per-test capture buffer in this thread's CAPTURE slot.
+        let captured = Arc::new(Mutex::new(String::new()));
+        CAPTURE.with(|c| *c.borrow_mut() = Some(captured.clone()));
+
+        let dir = TempDir::new().unwrap();
+        let store = TokenStore::open(dir.path().join("tokens.db")).unwrap();
+        let secret = generate_and_store_token(&store, "alice", true).unwrap();
+
+        // Drop the capture so other tests aren't affected.
+        CAPTURE.with(|c| *c.borrow_mut() = None);
+
+        let log = captured.lock().unwrap().clone();
+        assert!(
+            !log.is_empty(),
+            "tracing subscriber captured nothing — \
+             EH-8 cannot be verified.",
+        );
+
+        // Sanity: the production log line we expect is present.
+        assert!(
+            log.contains("token_name=alice") || log.contains("token_name=\"alice\""),
+            "expected `token_name=alice` in captured log; got: {log:?}",
+        );
+        assert!(
+            log.contains("token created"),
+            "expected `token created` message in captured log; got: {log:?}",
+        );
+
+        // The actual EH-8 invariant: the plaintext secret must NOT appear
+        // anywhere in the captured event fields.
+        assert!(
+            !log.contains(&secret),
+            "EH-8 violated: plaintext secret leaked into tracing output. \
+             Captured: {log:?}",
+        );
+        // Also reject any 16-char prefix in case a partial-truncation
+        // regression slips through.
+        assert!(
+            !log.contains(&secret[..16]),
+            "EH-8 violated: 16-char prefix of secret leaked. Captured: {log:?}",
+        );
     }
 
     #[test]

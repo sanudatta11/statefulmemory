@@ -124,6 +124,13 @@ fn count(conn: &Connection, sql: &str) -> Result<i64> {
 /// - `DETACH` and `COMMIT`.
 ///
 /// `EC-4`: same path for `from` and `to` is rejected as `INVALID_ARGUMENT`.
+///
+/// **Note:** this opens its own write connection on `to_db`. In the daemon
+/// path you should call [`merge_into_target_conn`] instead, routed through
+/// the target project's `WriteRequest::Custom` so the merge serializes with
+/// other writes to the same DB. This standalone form is retained for tests
+/// and for use cases (e.g., consolidate scripts) that don't share a write
+/// thread with the target.
 pub fn merge_projects(from_db: &Path, to_db: &Path) -> Result<MergeOutcome> {
     if from_db == to_db {
         return Err(Error::invalid("cannot merge a project into itself"));
@@ -141,6 +148,28 @@ pub fn merge_projects(from_db: &Path, to_db: &Path) -> Result<MergeOutcome> {
         )));
     }
     let mut conn = crate::db::open_write(to_db)?;
+    merge_into_target_conn(&mut conn, from_db)
+}
+
+/// Merge `from_db` into the target write connection that the caller has
+/// already opened (typically the project registry's dedicated write thread).
+/// Routing through this entry point preserves the single-writer invariant
+/// — the merge tx runs on the same connection that handles SaveObservation
+/// et al., so SQLite serializes them naturally.
+///
+/// Pre-conditions: `from_db` exists, `conn` is a write-capable connection
+/// for the target DB. `from_db == to_db` rejection is the caller's
+/// responsibility (the connection knows nothing of its on-disk path).
+pub fn merge_into_target_conn(
+    conn: &mut Connection,
+    from_db: &Path,
+) -> Result<MergeOutcome> {
+    if !from_db.exists() {
+        return Err(Error::not_found(format!(
+            "source DB does not exist: {}",
+            from_db.display()
+        )));
+    }
 
     // ATTACH outside the transaction; SQLite forbids ATTACH inside one.
     conn.execute(
