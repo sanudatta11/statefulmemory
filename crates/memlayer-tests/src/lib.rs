@@ -402,10 +402,20 @@ impl TcpDaemon {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
 
+        // Daemon stderr is mirrored to a file so that a bind failure or
+        // startup panic shows up in the panic message below instead of
+        // disappearing into an unread pipe. RUST_BACKTRACE=1 makes panics
+        // fully visible.
+        let stderr_path = data_dir.path().join("daemon.stderr");
+
         for attempt in 1..=5 {
             let port = Self::pick_port();
             let listen = format!("tcp://127.0.0.1:{port}");
 
+            // Truncate the stderr log between attempts so the panic
+            // message below reflects only the most recent attempt.
+            let stderr_log = std::fs::File::create(&stderr_path)
+                .expect("create daemon.stderr log");
             let daemon = Command::new(&binary)
                 .args(["daemon", "start", "--foreground"])
                 .env("MEMLAYER_DATA_DIR", data_dir.path())
@@ -413,8 +423,9 @@ impl TcpDaemon {
                 .env("MEMLAYER_TLS_CERT", &cert)
                 .env("MEMLAYER_TLS_KEY", &key)
                 .env("MEMLAYER_LOG", "warn")
+                .env("RUST_BACKTRACE", "1")
                 .stdout(Stdio::null())
-                .stderr(Stdio::piped())
+                .stderr(stderr_log)
                 .spawn()
                 .expect("spawn tcp daemon");
 
@@ -434,13 +445,17 @@ impl TcpDaemon {
             }
 
             // Daemon never bound — likely the port got grabbed in the TOCTOU
-            // window. Reap the failed child and try again with a fresh port.
+            // window, or the daemon panicked on startup. Reap the failed
+            // child and try again with a fresh port.
             let mut daemon = daemon;
             let _ = daemon.kill();
             let _ = daemon.wait();
             if attempt == 5 {
+                let stderr = std::fs::read_to_string(&stderr_path)
+                    .unwrap_or_else(|e| format!("(could not read daemon.stderr: {e})"));
                 panic!(
-                    "TCP daemon never bound after 5 attempts; last attempted port {port}",
+                    "TCP daemon never bound after 5 attempts; last attempted port {port}\n\
+                     daemon.stderr (last attempt):\n{stderr}",
                 );
             }
         }

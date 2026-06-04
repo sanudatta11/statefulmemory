@@ -15,6 +15,11 @@ tokio.workspace = true
 tonic.workspace = true
 tower.workspace = true
 hyper-util.workspace = true
+# rustls is pulled in transitively by tonic's TLS feature; we depend on it
+# directly so we can install a default CryptoProvider before any
+# ClientTlsConfig is built (rustls 0.23 panics if neither aws-lc-rs nor
+# ring is unambiguously selected — the workspace pulls both transitively).
+rustls.workspace = true
 
 tracing.workspace = true
 thiserror.workspace = true

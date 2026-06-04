@@ -55,6 +55,7 @@ pub async fn connect_tcp(
     ca_pem: &[u8],
     domain: &str,
 ) -> Result<Channel, ClientError> {
+    install_default_crypto_provider();
     let endpoint_url = if addr.starts_with("http://") || addr.starts_with("https://") {
         addr.to_string()
     } else {
@@ -68,6 +69,24 @@ pub async fn connect_tcp(
         .tls_config(tls)
         .map_err(ClientError::Tls)?;
     endpoint.connect().await.map_err(ClientError::Connect)
+}
+
+/// Install rustls's default `CryptoProvider` exactly once per process.
+///
+/// rustls 0.23 panics on the first `ClientConfig::builder()` /
+/// `ServerConfig::builder()` call when more than one provider crate is
+/// reachable in the dep graph (our workspace pulls both `aws-lc-rs` and
+/// `ring` transitively). Calling this from the client's TLS entry point
+/// guarantees a provider is in place before tonic touches rustls.
+///
+/// Idempotent via [`std::sync::Once`]: a second call is a no-op even if
+/// the first installed a different provider via the daemon's matching
+/// helper in `memlayer_daemon::tls`.
+fn install_default_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
 }
 
 #[cfg(test)]
