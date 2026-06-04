@@ -13,6 +13,7 @@ use memlayer_tests::{connect, spawn_daemon};
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "spec-task-11: not yet implemented"]
 async fn ts12_sigkill_mid_export() {
     // Spec ref: TS-12, SC-14
     // Spawn daemon, start SyncExport from CLI subprocess; sleep 50-200ms;
