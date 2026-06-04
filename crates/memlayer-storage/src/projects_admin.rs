@@ -63,8 +63,7 @@ pub fn list_projects_with_counts_at(projects_dir: &Path) -> Result<Vec<ProjectCo
     for entry in std::fs::read_dir(projects_dir)
         .map_err(|e| Error::internal(format!("read_dir {}: {e}", projects_dir.display())))?
     {
-        let entry = entry
-            .map_err(|e| Error::internal(format!("read_dir entry: {e}")))?;
+        let entry = entry.map_err(|e| Error::internal(format!("read_dir entry: {e}")))?;
         let ft = entry
             .file_type()
             .map_err(|e| Error::internal(format!("file_type: {e}")))?;
@@ -93,7 +92,10 @@ pub fn list_projects_with_counts_at(projects_dir: &Path) -> Result<Vec<ProjectCo
         let conn = crate::db::open_read(&db_path)?;
         out.push(ProjectCounts {
             display_name: cfg.project_display_name,
-            observation_count: count(&conn, "SELECT count(*) FROM observations WHERE deleted_at IS NULL")?,
+            observation_count: count(
+                &conn,
+                "SELECT count(*) FROM observations WHERE deleted_at IS NULL",
+            )?,
             session_count: count(&conn, "SELECT count(*) FROM sessions")?,
             prompt_count: count(&conn, "SELECT count(*) FROM user_prompts")?,
             created_at: cfg.created_at,
@@ -160,10 +162,7 @@ pub fn merge_projects(from_db: &Path, to_db: &Path) -> Result<MergeOutcome> {
 /// Pre-conditions: `from_db` exists, `conn` is a write-capable connection
 /// for the target DB. `from_db == to_db` rejection is the caller's
 /// responsibility (the connection knows nothing of its on-disk path).
-pub fn merge_into_target_conn(
-    conn: &mut Connection,
-    from_db: &Path,
-) -> Result<MergeOutcome> {
+pub fn merge_into_target_conn(conn: &mut Connection, from_db: &Path) -> Result<MergeOutcome> {
     if !from_db.exists() {
         return Err(Error::not_found(format!(
             "source DB does not exist: {}",
@@ -183,19 +182,18 @@ pub fn merge_into_target_conn(
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| Error::internal(format!("BEGIN IMMEDIATE: {e}")))?;
 
-        let sessions = tx
-            .execute(
+        let sessions =
+            tx.execute(
                 "INSERT OR IGNORE INTO main.sessions
                     (id, directory, started_at, ended_at, summary)
                   SELECT id, directory, started_at, ended_at, summary
                     FROM src.sessions",
                 [],
             )
-            .map_err(|e| Error::internal(format!("copy sessions: {e}")))?
-            as i64;
+            .map_err(|e| Error::internal(format!("copy sessions: {e}")))? as i64;
 
-        let observations = tx
-            .execute(
+        let observations =
+            tx.execute(
                 "INSERT OR IGNORE INTO main.observations
                     (sync_id, session_id, type, title, content, tool_name, scope,
                      created_by, topic_key, normalized_hash, revision_count,
@@ -208,19 +206,17 @@ pub fn merge_into_target_conn(
                     FROM src.observations",
                 [],
             )
-            .map_err(|e| Error::internal(format!("copy observations: {e}")))?
-            as i64;
+            .map_err(|e| Error::internal(format!("copy observations: {e}")))? as i64;
 
-        let prompts = tx
-            .execute(
+        let prompts =
+            tx.execute(
                 "INSERT OR IGNORE INTO main.user_prompts
                     (sync_id, session_id, content, created_at)
                   SELECT sync_id, session_id, content, created_at
                     FROM src.user_prompts",
                 [],
             )
-            .map_err(|e| Error::internal(format!("copy prompts: {e}")))?
-            as i64;
+            .map_err(|e| Error::internal(format!("copy prompts: {e}")))? as i64;
 
         // Soft-delete in source. Sessions and prompts have no deleted_at
         // column; only observations participate in soft-delete semantics.
@@ -287,7 +283,11 @@ pub fn consolidate_pairs(projects: &[ProjectCounts], threshold: f64) -> Vec<Cons
         }
     }
     // Most-similar first.
-    out.sort_by(|x, y| y.similarity.partial_cmp(&x.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|x, y| {
+        y.similarity
+            .partial_cmp(&x.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -365,7 +365,11 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             repo_path: None,
         };
-        std::fs::write(dir.join("config.json"), serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            serde_json::to_vec_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
         let db_path = data_dir.join("projects").join(format!("{normalized}.db"));
         let conn = crate::db::open_write(&db_path).unwrap();
         conn.execute(
@@ -447,7 +451,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(active_in_src, 0, "source observations should be soft-deleted");
+        assert_eq!(
+            active_in_src, 0,
+            "source observations should be soft-deleted"
+        );
     }
 
     #[test]
@@ -499,7 +506,9 @@ mod tests {
             "expected memlayer/memlayer-cli pair, got {pairs:?}"
         );
         assert!(
-            !pairs.iter().any(|c| c.from.contains("totally") || c.to.contains("totally")),
+            !pairs
+                .iter()
+                .any(|c| c.from.contains("totally") || c.to.contains("totally")),
             "totally-other must not appear: {pairs:?}"
         );
     }
@@ -537,7 +546,10 @@ mod tests {
 
         let mut candidates = prune_candidates_at(&fresh_projects_dir(&td)).unwrap();
         candidates.sort();
-        assert_eq!(candidates, vec!["beta-empty".to_string(), "gamma-empty".to_string()]);
+        assert_eq!(
+            candidates,
+            vec!["beta-empty".to_string(), "gamma-empty".to_string()]
+        );
     }
 
     #[test]
@@ -576,7 +588,10 @@ mod tests {
         assert!(p.exists());
         hard_delete_project_at(&projects_dir, "alpha").unwrap();
         assert!(!p.exists(), "DB file should be gone");
-        assert!(!projects_dir.join("alpha").exists(), "project dir should be gone");
+        assert!(
+            !projects_dir.join("alpha").exists(),
+            "project dir should be gone"
+        );
     }
 
     #[test]

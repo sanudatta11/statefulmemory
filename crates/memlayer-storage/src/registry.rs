@@ -1,3 +1,4 @@
+// Generated with AI Coding Rules Hub
 //! Project registry: a thread-safe LRU cache from normalized project name to
 //! per-project runtime state.
 //!
@@ -5,7 +6,7 @@
 //! SC-17 (collision), SC-25 (eviction churn ≤ 10/min), OQ-6 (idle eviction).
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -234,6 +235,56 @@ impl ProjectRegistry {
         }
         Ok(out)
     }
+
+    /// Persist `repo_path` for the given project's `config.json`.
+    ///
+    /// Spec 3 §11 / OQ-3: when `SyncExport` is invoked with a `repo_path`
+    /// (CLI `--repo-path` or auto-detected from cwd), the daemon stores it
+    /// in the per-project config so subsequent calls don't need to re-pass
+    /// it. Atomic-write via [`atomic_write`].
+    ///
+    /// `display_name` is required because reading the config requires the
+    /// normalized id, which is derived from the display name. Pass the same
+    /// `display_name` that the caller used with [`Self::get_or_open`].
+    pub fn set_repo_path(&self, display_name: &str, repo_path: &Path) -> Result<()> {
+        let normalized = project_name::normalize(display_name)?;
+        let cfg_path = paths::project_config_path(&normalized);
+        if !cfg_path.exists() {
+            return Err(Error::not_found(format!(
+                "project config missing for '{display_name}' at {}",
+                cfg_path.display()
+            )));
+        }
+        let bytes = std::fs::read(&cfg_path)?;
+        let mut cfg: ProjectConfig = serde_json::from_slice(&bytes).map_err(|e| {
+            Error::internal(format!("read project config {}: {e}", cfg_path.display()))
+        })?;
+        cfg.repo_path = Some(repo_path.to_path_buf());
+        let body = serde_json::to_vec_pretty(&cfg)?;
+        atomic_write(&cfg_path, &body)?;
+        info!(project = %normalized, repo = %repo_path.display(), "set repo_path");
+        Ok(())
+    }
+
+    /// Read the stored `repo_path` for a project, if any.
+    ///
+    /// Returns `Ok(None)` when:
+    /// - the project has no `config.json` on disk, or
+    /// - the config exists but has `repo_path: null`.
+    ///
+    /// Returns an error only on I/O or parse failures.
+    pub fn get_repo_path(&self, display_name: &str) -> Result<Option<PathBuf>> {
+        let normalized = project_name::normalize(display_name)?;
+        let cfg_path = paths::project_config_path(&normalized);
+        if !cfg_path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&cfg_path)?;
+        let cfg: ProjectConfig = serde_json::from_slice(&bytes).map_err(|e| {
+            Error::internal(format!("read project config {}: {e}", cfg_path.display()))
+        })?;
+        Ok(cfg.repo_path)
+    }
 }
 
 impl RegistryInner {
@@ -320,5 +371,25 @@ mod tests {
         // 1 miss, 2 hits → 2/3 ≈ 0.66.
         let ratio = r.hit_ratio();
         assert!(ratio > 0.5, "hit ratio = {ratio}");
+    }
+
+    #[test]
+    fn set_and_get_repo_path_round_trip() {
+        let (_guard, _d) = isolated_data_dir();
+        let r = ProjectRegistry::new(8, 32, Duration::from_millis(5));
+        r.get_or_open("My Project").unwrap();
+
+        // Initially unset.
+        assert!(r.get_repo_path("My Project").unwrap().is_none());
+
+        // Set + read back.
+        let repo = std::path::PathBuf::from("/tmp/some/repo");
+        r.set_repo_path("My Project", &repo).unwrap();
+        let got = r.get_repo_path("My Project").unwrap();
+        assert_eq!(got, Some(repo));
+
+        // Unknown project (no config) returns Ok(None).
+        let unknown = r.get_repo_path("does-not-exist").unwrap();
+        assert!(unknown.is_none());
     }
 }

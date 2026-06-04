@@ -1,3 +1,4 @@
+// Generated with AI Coding Rules Hub
 //! Per-project SQLite+FTS5 storage for memlayer.
 //!
 //! Each project gets its own database file at `~/.memlayer/projects/<id>.db`.
@@ -20,11 +21,13 @@ pub mod read;
 pub mod registry;
 pub mod sessions;
 pub mod stats;
+pub mod sync_state;
 pub mod write;
 
 pub use db::{open_read, open_write, Migrate};
 pub use models::{Observation, Prompt, Session};
 pub use registry::{ProjectConfig, ProjectRegistry, ProjectState};
+pub use sync_state::{ExportedIds, UpsertOutcome};
 
 mod migrations {
     refinery::embed_migrations!("../../migrations");

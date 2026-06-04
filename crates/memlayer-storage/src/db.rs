@@ -61,7 +61,11 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = open_write(&path).unwrap();
         let v: String = conn
-            .query_row("SELECT value FROM schema_meta WHERE key='version'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='version'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(v, "1");
     }

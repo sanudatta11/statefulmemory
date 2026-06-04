@@ -79,7 +79,9 @@ pub fn search(
         bind.push(Box::new(s.to_string()));
     }
     sql.push_str(" ORDER BY id DESC");
-    let mut stmt = conn.prepare(&sql).map_err(|e| Error::internal(format!("prepare search: {e}")))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare search: {e}")))?;
     let bind_refs: Vec<&dyn ToSql> = bind.iter().map(|b| &**b as &dyn ToSql).collect();
     let rows = stmt
         .query_map(params_from_iter(bind_refs), Observation::from_row)
@@ -146,12 +148,17 @@ pub fn search_all_projects(
     let union = subqueries.join(" UNION ALL ");
     let sql = format!("SELECT * FROM ({union}) ORDER BY updated_at DESC LIMIT ?2");
 
-    let mut stmt = main_conn.prepare(&sql).map_err(|e| Error::internal(format!("prepare merge: {e}")))?;
+    let mut stmt = main_conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare merge: {e}")))?;
     let mut out = Vec::new();
     let mut rows = stmt
         .query(params![safe_query, limit.clamp(1, MAX_LIMIT)])
         .map_err(|e| Error::internal(format!("query merge: {e}")))?;
-    while let Some(row) = rows.next().map_err(|e| Error::internal(format!("merge row: {e}")))? {
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| Error::internal(format!("merge row: {e}")))?
+    {
         out.push(Observation::from_row(row).map_err(|e| Error::internal(format!("decode: {e}")))?);
     }
 
@@ -358,7 +365,10 @@ pub fn timeline(
             ))
             .map_err(|e| Error::internal(format!("prepare timeline before: {e}")))?;
         let rows = stmt
-            .query_map(params![anchor.created_at, anchor.id, before_n], Observation::from_row)
+            .query_map(
+                params![anchor.created_at, anchor.id, before_n],
+                Observation::from_row,
+            )
             .map_err(|e| Error::internal(format!("timeline before query: {e}")))?;
         let mut out = Vec::new();
         for r in rows {
@@ -379,7 +389,10 @@ pub fn timeline(
             ))
             .map_err(|e| Error::internal(format!("prepare timeline after: {e}")))?;
         let rows = stmt
-            .query_map(params![anchor.created_at, anchor.id, after_n], Observation::from_row)
+            .query_map(
+                params![anchor.created_at, anchor.id, after_n],
+                Observation::from_row,
+            )
             .map_err(|e| Error::internal(format!("timeline after query: {e}")))?;
         let mut out = Vec::new();
         for r in rows {
@@ -447,14 +460,14 @@ mod tests {
         let (_d, mut c) = make_conn();
         save(&mut c, "alpha unique", "note");
         // Soft-delete it.
-        c.execute(
-            "UPDATE observations SET deleted_at = datetime('now')",
-            [],
-        )
-        .unwrap();
+        c.execute("UPDATE observations SET deleted_at = datetime('now')", [])
+            .unwrap();
         assert!(search(&c, "alpha", None, None, 10).unwrap().is_empty());
         assert!(recent(&c, 10, None).unwrap().is_empty());
-        assert!(list(&c, None, None, None, false, 10, None).unwrap().0.is_empty());
+        assert!(list(&c, None, None, None, false, 10, None)
+            .unwrap()
+            .0
+            .is_empty());
     }
 
     #[test]
@@ -573,14 +586,11 @@ mod tests {
         }
         // Anchor on the middle row (t2).
         let id: i64 = c
-            .query_row(
-                "SELECT id FROM observations WHERE title = 't2'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT id FROM observations WHERE title = 't2'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        let (before, anchor, after) =
-            timeline(&c, &ObservationKey::Id(id), 5, 5).unwrap();
+        let (before, anchor, after) = timeline(&c, &ObservationKey::Id(id), 5, 5).unwrap();
         assert_eq!(anchor.title, "t2");
         // Closest-older-first: t1, t0.
         assert_eq!(
@@ -601,8 +611,7 @@ mod tests {
         let id: i64 = c
             .query_row("SELECT id FROM observations LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        let (before, _anchor, after) =
-            timeline(&c, &ObservationKey::Id(id), 0, 0).unwrap();
+        let (before, _anchor, after) = timeline(&c, &ObservationKey::Id(id), 0, 0).unwrap();
         assert!(before.is_empty());
         assert!(after.is_empty());
     }

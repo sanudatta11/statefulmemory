@@ -220,7 +220,11 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
                     let _ = reply.send(result);
                 }));
             }
-            WriteRequest::UpsertSession { id, directory, reply } => {
+            WriteRequest::UpsertSession {
+                id,
+                directory,
+                reply,
+            } => {
                 let r = handle_upsert_session(&tx, &id, &directory);
                 replies.push(Box::new(move || {
                     let _ = reply.send(r);
@@ -238,7 +242,12 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
                     let _ = reply.send(r);
                 }));
             }
-            WriteRequest::SavePrompt { sync_id, session_id, content, reply } => {
+            WriteRequest::SavePrompt {
+                sync_id,
+                session_id,
+                content,
+                reply,
+            } => {
                 let r = handle_save_prompt(&tx, &sync_id, &session_id, &content);
                 replies.push(Box::new(move || {
                     let _ = reply.send(r);
@@ -289,7 +298,8 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
         }
     }
 
-    tx.commit().map_err(|e| Error::internal(format!("COMMIT: {e}")))?;
+    tx.commit()
+        .map_err(|e| Error::internal(format!("COMMIT: {e}")))?;
     for cb in replies {
         cb();
     }
@@ -337,8 +347,8 @@ fn handle_save_observation(
 
     let now = mtime::now_rfc3339();
     let normalized_hash = dedupe::hash(&input.content);
-    let review_after = dedupe::review_months_for_type(&input.r#type)
-        .map(|m| mtime::months_from_now(m));
+    let review_after =
+        dedupe::review_months_for_type(&input.r#type).map(|m| mtime::months_from_now(m));
 
     // 2. Topic-key upsert: if (topic_key, scope) match a non-deleted row,
     //    update it in place and return. (SC-5, EC-9)
@@ -583,10 +593,7 @@ fn handle_update_obs(
     let now = mtime::now_rfc3339();
     let title = patch.title.as_deref().unwrap_or(&existing.title);
     let content = patch.content.as_deref().unwrap_or(&existing.content);
-    let topic_key = patch
-        .topic_key
-        .as_deref()
-        .or(existing.topic_key.as_deref());
+    let topic_key = patch.topic_key.as_deref().or(existing.topic_key.as_deref());
     let scope = patch.scope.as_deref().unwrap_or(&existing.scope);
     let r#type = patch.r#type.as_deref().unwrap_or(&existing.r#type);
     let normalized_hash = dedupe::hash(content);
@@ -639,9 +646,7 @@ fn fetch_observation_by_id(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<Op
     let mut stmt = tx
         .prepare(OBSERVATION_SELECT_FIELDS_BY_ID)
         .map_err(|e| Error::internal(format!("prepare: {e}")))?;
-    let row = stmt
-        .query_row(params![id], Observation::from_row)
-        .ok();
+    let row = stmt.query_row(params![id], Observation::from_row).ok();
     Ok(row)
 }
 
@@ -652,9 +657,7 @@ fn fetch_observation_by_sync_id(
     let mut stmt = tx
         .prepare(OBSERVATION_SELECT_FIELDS_BY_SYNC)
         .map_err(|e| Error::internal(format!("prepare: {e}")))?;
-    let row = stmt
-        .query_row(params![sync_id], Observation::from_row)
-        .ok();
+    let row = stmt.query_row(params![sync_id], Observation::from_row).ok();
     Ok(row)
 }
 
@@ -775,7 +778,9 @@ mod tests {
         assert_eq!(obs.revision_count, 1);
         assert_eq!(obs.duplicate_count, 1);
         let tx = conn.transaction().unwrap();
-        let fetched = fetch_observation_by_sync_id(&tx, &obs.sync_id).unwrap().unwrap();
+        let fetched = fetch_observation_by_sync_id(&tx, &obs.sync_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.content, "hello");
     }
 
@@ -998,7 +1003,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post_fts, 0, "FTS5 entry should have been removed by trigger");
+        assert_eq!(
+            post_fts, 0,
+            "FTS5 entry should have been removed by trigger"
+        );
     }
 
     #[test]

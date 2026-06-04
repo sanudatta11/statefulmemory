@@ -36,9 +36,7 @@ pub fn search(conn: &Connection, query: &str, limit: i32) -> Result<Vec<Prompt>>
 
 pub fn recent(conn: &Connection, limit: i32) -> Result<Vec<Prompt>> {
     let limit = limit.clamp(1, 50);
-    let sql = format!(
-        "SELECT {SELECT_COLS} FROM user_prompts ORDER BY created_at DESC LIMIT ?1"
-    );
+    let sql = format!("SELECT {SELECT_COLS} FROM user_prompts ORDER BY created_at DESC LIMIT ?1");
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| Error::internal(format!("prepare: {e}")))?;
