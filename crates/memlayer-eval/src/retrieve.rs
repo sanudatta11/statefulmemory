@@ -6,9 +6,15 @@
 //! but useless for benchmark questions like "When did Caroline go to the LGBTQ
 //! support group?" which never appear verbatim in any memory.
 //!
-//! Strategy: split the question into alphanumeric tokens, drop stopwords/short
-//! tokens, lowercase, OR them together. Each token is itself wrapped in
-//! double-quotes so embedded punctuation can't break the FTS5 grammar.
+//! Strategy (3-tier, spec-task-2 / TS-1):
+//!   * Tier-1 (phrase): if ≥2 surviving tokens, emit the full quoted phrase
+//!     in input order. BM25 ranks exact-phrase matches highest.
+//!   * Tier-2 (bigrams): adjacent quoted bigrams over surviving tokens.
+//!     Catches near-phrase matches with intervening stopwords.
+//!   * Tier-3 (OR fallback): each individual token, ORed together. Preserves
+//!     recall against memories that only share scattered tokens.
+//! All three tiers are joined with OR. Per-token quote-escape and the
+//! existing stopword set are preserved.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -37,23 +43,52 @@ const STOPWORDS: &[&str] = &[
 ];
 
 fn tokenize(query: &str) -> String {
-    let mut tokens: Vec<String> = query
+    // Survive stopword/length filter, preserve input order for phrase emission.
+    let raw_tokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '\'')
         .filter(|t| t.len() >= 3)
         .map(|t| t.to_lowercase())
         .filter(|t| !STOPWORDS.contains(&t.as_str()))
         .collect();
-    tokens.sort();
-    tokens.dedup();
-    if tokens.is_empty() {
+
+    if raw_tokens.is_empty() {
         return "\"\"".to_string();
     }
-    // Quote each token to neutralise FTS5 specials, OR them together.
-    tokens
+
+    // Per-token quote-escape (FTS5 grammar safety).
+    let escape = |t: &str| t.replace('"', "");
+
+    // Single-token query: skip phrase/bigram tiers, just quote it (Tier-3 only,
+    // no OR needed). Matches the original single-token behaviour byte-for-byte.
+    if raw_tokens.len() == 1 {
+        return format!("\"{}\"", escape(&raw_tokens[0]));
+    }
+
+    let mut clauses: Vec<String> = Vec::new();
+
+    // Tier-1: full phrase over surviving tokens, input order preserved.
+    let phrase = raw_tokens
         .iter()
-        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .map(|t| escape(t))
         .collect::<Vec<_>>()
-        .join(" OR ")
+        .join(" ");
+    clauses.push(format!("\"{phrase}\""));
+
+    // Tier-2: adjacent bigrams.
+    for win in raw_tokens.windows(2) {
+        clauses.push(format!("\"{} {}\"", escape(&win[0]), escape(&win[1])));
+    }
+
+    // Tier-3: per-token OR fallback (dedup so repeated words don't bloat the
+    // query; order doesn't matter for OR clauses).
+    let mut seen = std::collections::HashSet::new();
+    for tok in &raw_tokens {
+        if seen.insert(tok.clone()) {
+            clauses.push(format!("\"{}\"", escape(tok)));
+        }
+    }
+
+    clauses.join(" OR ")
 }
 
 pub fn retrieve(
