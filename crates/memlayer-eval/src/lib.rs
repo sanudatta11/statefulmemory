@@ -5,6 +5,7 @@
 //! No daemon or Unix socket needed — evaluation calls the storage layer
 //! directly via `ProjectRegistry` + `read::search`.
 
+pub mod config;
 pub mod datasets;
 pub mod ingest;
 pub mod judge;
