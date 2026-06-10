@@ -1,0 +1,30 @@
+[package]
+name = "memlayer-eval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "eval"
+path = "src/bin/eval.rs"
+
+[dependencies]
+memlayer-core    = { path = "../memlayer-core" }
+memlayer-storage = { path = "../memlayer-storage" }
+
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap        = { workspace = true }
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+anyhow      = { workspace = true }
+
+# HTTP client for Claude API
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Token counting (tiktoken-compatible BPE, used for prompt-size metrics)
+tiktoken-rs = "0.6"

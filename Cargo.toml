@@ -9,6 +9,7 @@ members = [
     "crates/memlayer-cli",
     "crates/memlayer-tests",
     "crates/memlayer-sync",
+    "crates/memlayer-eval",
 ]
 
 [workspace.package]
