@@ -11,6 +11,7 @@ pub mod ingest;
 pub mod judge;
 pub mod prompt;
 pub mod retrieve;
+pub mod rrf;
 pub mod runner;
 
 pub use runner::{BenchmarkKind, RunConfig, RunReport};
