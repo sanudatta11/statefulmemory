@@ -1,0 +1,23 @@
+# Generated with AI Coding Rules Hub
+[package]
+name = "memlayer-embed"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+candle-core         = { workspace = true }
+candle-nn           = { workspace = true }
+candle-transformers = { workspace = true }
+tokenizers          = { workspace = true }
+hf-hub              = { workspace = true }
+rusqlite            = { workspace = true }
+parking_lot         = { workspace = true }
+sha2                = { workspace = true }
+zerocopy            = { workspace = true }
+anyhow              = { workspace = true }
+tracing             = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

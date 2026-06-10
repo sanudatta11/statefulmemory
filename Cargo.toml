@@ -10,6 +10,7 @@ members = [
     "crates/memlayer-tests",
     "crates/memlayer-sync",
     "crates/memlayer-eval",
+    "crates/memlayer-embed",
 ]
 
 [workspace.package]
@@ -38,6 +39,20 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # Storage
 rusqlite = { version = "0.32", features = ["bundled-full", "chrono"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
+sqlite-vec = "0.1"
+
+# Embeddings / retrieval
+# Candle (pure Rust ML) is used instead of fastembed because the latter pulls
+# in `ort-sys`, which downloads a precompiled ONNX runtime tarball at build
+# time from parcel.pyke.io — blocked by enterprise TLS interception. Candle
+# resolves and builds entirely from crates.io with no third-party fetch.
+candle-core         = "0.8"
+candle-nn           = "0.8"
+candle-transformers = "0.8"
+tokenizers          = { version = "0.20", default-features = false, features = ["onig"] }
+hf-hub              = { version = "0.3",  default-features = false, features = ["online"] }
+zerocopy            = "0.7"
+async-trait         = "0.1"
 
 # Serde
 serde = { version = "1", features = ["derive"] }
@@ -81,6 +96,7 @@ is-terminal = "0.4"
 serde_yaml = "0.9"
 strsim = "0.11"
 getrandom = "0.2"
+tempfile = "3"
 
 [profile.release]
 lto = "thin"
