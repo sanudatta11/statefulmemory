@@ -11,4 +11,4 @@
 //!
 //! See spec retrieval-upgrade-v1 §3.
 
-// Modules land in subsequent tasks. Empty for now.
+pub mod cache;
