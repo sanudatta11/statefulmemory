@@ -131,6 +131,27 @@ pub async fn run(
 
     info!(count = queries_to_run.len(), k = cfg.k, "running queries");
 
+    // Lazily initialise the hybrid retrieval stack only when --mode demands it.
+    // Loading BGE-small + opening the cache is expensive; bm25 mode skips it.
+    let hybrid_stack: Option<(
+        std::sync::Arc<dyn memlayer_embed::Embedder>,
+        std::sync::Arc<memlayer_embed::cache::EmbeddingCache>,
+    )> = match cfg.retrieval.mode {
+        RetrievalMode::Bm25 => None,
+        RetrievalMode::Hybrid | RetrievalMode::HybridRerank => {
+            info!("loading BGE-small embedder for hybrid retrieval");
+            let embedder = std::sync::Arc::new(
+                memlayer_embed::BgeSmallEmbedder::try_new()
+                    .context("load BGE-small embedder")?,
+            ) as std::sync::Arc<dyn memlayer_embed::Embedder>;
+            let cache = std::sync::Arc::new(
+                memlayer_embed::cache::EmbeddingCache::open(&cfg.data_dir)
+                    .context("open embedding cache")?,
+            );
+            Some((embedder, cache))
+        }
+    };
+
     let mut results: Vec<QueryResult> = Vec::with_capacity(queries_to_run.len());
 
     // Run queries sequentially (add semaphore for concurrency if needed).
@@ -140,13 +161,36 @@ pub async fn run(
         // Determine project name for this query (inferred from id prefix).
         let project = infer_project(cfg.benchmark, &q.id);
 
-        // Retrieve.
-        let ret = retrieve(&cfg.data_dir, &project, &q.question, cfg.k)
-            .with_context(|| format!("retrieve for query '{}'", q.id))?;
-        let retrieval_us = ret.latency.as_micros() as u64;
+        // Retrieve — branch on mode. HybridRerank uses Hybrid for now;
+        // the rerank stage lands in spec-task-21 (P3).
+        let (hits, retrieval_us) = match cfg.retrieval.mode {
+            RetrievalMode::Bm25 => {
+                let ret = retrieve(&cfg.data_dir, &project, &q.question, cfg.k)
+                    .with_context(|| format!("retrieve for query '{}'", q.id))?;
+                let us = ret.latency.as_micros() as u64;
+                (ret.hits, us)
+            }
+            RetrievalMode::Hybrid | RetrievalMode::HybridRerank => {
+                let (embedder, cache) = hybrid_stack.as_ref().expect(
+                    "hybrid_stack initialised when mode is Hybrid or HybridRerank",
+                );
+                let ret = crate::retrieve_hybrid::retrieve_hybrid(
+                    &cfg.data_dir,
+                    &project,
+                    &q.question,
+                    cfg.k,
+                    embedder.clone(),
+                    cache.clone(),
+                )
+                .await
+                .with_context(|| format!("hybrid retrieve for query '{}'", q.id))?;
+                let us = ret.latency.as_micros() as u64;
+                (ret.hits, us)
+            }
+        };
 
         // Build answer prompt and count tokens.
-        let (system, user_msg, prompt_tokens) = build_answer_prompt(&ret.hits, &q.question);
+        let (system, user_msg, prompt_tokens) = build_answer_prompt(&hits, &q.question);
 
         // Answer LLM call.
         let model_answer = match judge.answer(&system, &user_msg).await {
