@@ -13,5 +13,6 @@ pub mod prompt;
 pub mod retrieve;
 pub mod rrf;
 pub mod runner;
+pub mod vec_index;
 
 pub use runner::{BenchmarkKind, RunConfig, RunReport};
