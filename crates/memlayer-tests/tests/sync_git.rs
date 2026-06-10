@@ -2,8 +2,8 @@
 //! Integration tests for sync-and-export Spec 3 — git-chunk path.
 //!
 //! Spec sections: TS-1, TS-2, TS-13 (spec-task-4).
-//! TS-3 / TS-4 / TS-5 / TS-6 / TS-16 covered by spec-task-5.
-//! TS-12 / TS-15 covered by spec-task-11.
+//! TS-3/4/5/16 (import) deferred to spec-task-5.
+//! TS-6 / TS-15 covered by spec-task-11.
 //! TS-19 lives in sync_chaos.rs (concurrency tests).
 
 use std::fs;

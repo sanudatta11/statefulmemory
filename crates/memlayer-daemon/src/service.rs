@@ -1029,7 +1029,7 @@ impl Memlayer for MemlayerService {
         &self,
         _req: Request<SyncImportRequest>,
     ) -> Result<Response<SyncImportResponse>, Status> {
-        Err(Status::unimplemented("SyncImport: implemented in Spec 3"))
+        Err(Status::unimplemented("SyncImport: implemented in spec-task-5"))
     }
     async fn sync_export_json(
         &self,
