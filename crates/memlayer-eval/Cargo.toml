@@ -12,6 +12,7 @@ path = "src/bin/eval.rs"
 [dependencies]
 memlayer-core    = { path = "../memlayer-core" }
 memlayer-storage = { path = "../memlayer-storage" }
+memlayer-embed   = { path = "../memlayer-embed" }
 
 rusqlite    = { workspace = true }
 sqlite-vec  = { workspace = true }
@@ -33,3 +34,8 @@ tiktoken-rs = "0.6"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+# Gate online integration tests that require the BGE-small embedding model.
+# Default `cargo test` MUST NOT trigger any network or model downloads.
+online-tests = []

@@ -1974,6 +1974,7 @@ dependencies = [
  "chrono",
  "clap",
  "memlayer-core",
+ "memlayer-embed",
  "memlayer-storage",
  "reqwest",
  "rusqlite",

@@ -54,7 +54,7 @@ const STOPWORDS: &[&str] = &[
     "go", "goes", "went", "going", "gone",
 ];
 
-fn tokenize(query: &str) -> String {
+pub(crate) fn tokenize(query: &str) -> String {
     // Survive stopword/length filter, preserve input order for phrase emission.
     let raw_tokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '\'')
