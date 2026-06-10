@@ -13,5 +13,6 @@
 
 pub mod cache;
 pub mod embedder;
+pub mod quantize;
 
 pub use embedder::{BgeSmallEmbedder, Embedder};
