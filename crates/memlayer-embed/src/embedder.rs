@@ -57,27 +57,57 @@ pub struct BgeSmallEmbedder {
 }
 
 impl BgeSmallEmbedder {
-    /// Load BGE-small-en-v1.5 from HuggingFace Hub. Cached under
-    /// `~/.cache/huggingface/` by default — proxy-friendly via `HTTPS_PROXY`.
+    /// Load BGE-small-en-v1.5.
+    ///
+    /// **Path-resolution order:**
+    /// 1. If `MEMLAYER_BGE_MODEL_DIR` is set, expect `config.json`,
+    ///    `tokenizer.json`, and `model.safetensors` at that path. This is the
+    ///    enterprise escape hatch for environments where HuggingFace can't be
+    ///    reached (corporate TLS interception that the bundled rustls roots
+    ///    in `hf-hub`'s ureq don't trust).
+    /// 2. Otherwise call `hf-hub` which honours `HTTPS_PROXY` and caches
+    ///    files under `~/.cache/huggingface/`.
     ///
     /// Errors are wrapped with `anyhow::Context` so callers can surface a
     /// useful message (EH-2). Common causes:
-    /// * No network and an empty cache.
-    /// * Corporate proxy blocks `huggingface.co`.
+    /// * Local override path doesn't contain all three required files.
+    /// * No network and an empty HF cache.
+    /// * Corporate proxy blocks `huggingface.co` and the bundled rustls
+    ///   roots reject the proxy's intercept cert. Vendor the model and
+    ///   set `MEMLAYER_BGE_MODEL_DIR` to bypass.
     /// * Disk full while writing to the cache directory.
     pub fn try_new() -> Result<Self> {
-        let api = Api::new().context("failed to initialize HuggingFace API client")?;
-        let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
-
-        let config_path: PathBuf = repo
-            .get("config.json")
-            .with_context(|| format!("download {MODEL_ID}/config.json from HuggingFace Hub"))?;
-        let tokenizer_path: PathBuf = repo
-            .get("tokenizer.json")
-            .with_context(|| format!("download {MODEL_ID}/tokenizer.json from HuggingFace Hub"))?;
-        let weights_path: PathBuf = repo.get("model.safetensors").with_context(|| {
-            format!("download {MODEL_ID}/model.safetensors from HuggingFace Hub")
-        })?;
+        let (config_path, tokenizer_path, weights_path) =
+            if let Ok(local_dir) = std::env::var("MEMLAYER_BGE_MODEL_DIR") {
+                let dir = PathBuf::from(local_dir);
+                tracing::info!(?dir, "loading BGE-small from MEMLAYER_BGE_MODEL_DIR");
+                let cfg = dir.join("config.json");
+                let tok = dir.join("tokenizer.json");
+                let wts = dir.join("model.safetensors");
+                for p in [&cfg, &tok, &wts] {
+                    if !p.exists() {
+                        anyhow::bail!(
+                            "MEMLAYER_BGE_MODEL_DIR={} is missing {}",
+                            dir.display(),
+                            p.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+                        );
+                    }
+                }
+                (cfg, tok, wts)
+            } else {
+                let api = Api::new().context("failed to initialize HuggingFace API client")?;
+                let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
+                let cfg = repo.get("config.json").with_context(|| {
+                    format!("download {MODEL_ID}/config.json from HuggingFace Hub")
+                })?;
+                let tok = repo.get("tokenizer.json").with_context(|| {
+                    format!("download {MODEL_ID}/tokenizer.json from HuggingFace Hub")
+                })?;
+                let wts = repo.get("model.safetensors").with_context(|| {
+                    format!("download {MODEL_ID}/model.safetensors from HuggingFace Hub")
+                })?;
+                (cfg, tok, wts)
+            };
 
         let config_json =
             std::fs::read_to_string(&config_path).context("read BGE config.json")?;
