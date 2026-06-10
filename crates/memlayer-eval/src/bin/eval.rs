@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::{fmt, EnvFilter};
 
 use memlayer_eval::{
+    config::{RetrievalConfig, RetrievalMode},
     datasets::{beam::BeamScale, locomo, longmemeval},
     runner::{BenchmarkKind, RunConfig},
 };
@@ -50,6 +51,27 @@ enum Commands {
         /// Skip ingestion (data already prepared by `eval prepare`).
         #[arg(long, default_value_t = false)]
         skip_ingest: bool,
+
+        /// Retrieval strategy.
+        #[arg(long, value_enum, default_value_t = RetrievalMode::Bm25)]
+        mode: RetrievalMode,
+
+        /// Evidence window (±N raw observations around each hit).
+        #[arg(long, default_value_t = 2)]
+        evidence_window: u8,
+    },
+
+    /// Extract facts from a benchmark dataset (P2: not yet implemented).
+    Extract {
+        #[arg(long, value_enum)]
+        benchmark: BenchmarkKind,
+
+        #[arg(long, default_value = "data")]
+        data_dir: PathBuf,
+
+        /// Optional: limit to first N conversations for cheap iteration.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 
     /// Ingest-only (no LLM calls). Use this to pre-populate BEAM at scale.
@@ -84,9 +106,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { benchmark, k, limit, data_dir, out, skip_ingest } => {
+        Commands::Run { benchmark, k, limit, data_dir, out, skip_ingest, mode, evidence_window } => {
             std::fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new("."))).ok();
             let (memories, queries) = load_dataset(benchmark, &data_dir, limit.unwrap_or(usize::MAX))?;
+
+            let retrieval = RetrievalConfig {
+                mode,
+                k,
+                evidence_window,
+                rerank: matches!(mode, RetrievalMode::HybridRerank),
+            };
 
             let cfg = RunConfig {
                 benchmark,
@@ -96,6 +125,7 @@ async fn main() -> Result<()> {
                 concurrency: 4,
                 output_path: out,
                 skip_ingest,
+                retrieval,
             };
 
             let report = memlayer_eval::runner::run(&cfg, memories, queries).await?;
@@ -130,6 +160,10 @@ async fn main() -> Result<()> {
                 }
                 _ => bail!("prepare is only needed for beam-1m and beam-10m"),
             }
+        }
+
+        Commands::Extract { benchmark, .. } => {
+            println!("extraction for {:?} not yet implemented (spec-task-20)", benchmark);
         }
 
         Commands::Summarize { reports, out } => {

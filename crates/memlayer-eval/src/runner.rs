@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::config::{RetrievalConfig, RetrievalMode};
 use crate::datasets::{EvalMemory, EvalQuery};
 use crate::judge::JudgeClient;
 use crate::prompt::{build_answer_prompt, build_judge_prompt};
@@ -45,6 +46,10 @@ pub struct RunConfig {
     pub output_path: PathBuf,
     /// Whether to skip ingestion (data already prepared).
     pub skip_ingest: bool,
+    /// Retrieval strategy + tunables (mode, k, evidence_window, rerank).
+    /// Currently `mode` and `evidence_window` are recorded for reporting only;
+    /// future tasks (spec-task-12/19) branch on these fields.
+    pub retrieval: RetrievalConfig,
 }
 
 /// Per-query result.
@@ -181,7 +186,17 @@ pub async fn run(
         });
     }
 
-    let report = build_report(cfg.benchmark, results);
+    let mode_tag = match cfg.retrieval.mode {
+        RetrievalMode::Bm25 => "bm25",
+        RetrievalMode::Hybrid => "hybrid",
+        RetrievalMode::HybridRerank => "hybrid-rerank",
+    };
+    let report = build_report(
+        cfg.benchmark,
+        results,
+        mode_tag,
+        cfg.retrieval.evidence_window,
+    );
 
     // Write JSON + Markdown.
     let json = serde_json::to_string_pretty(&report).context("serialize report")?;
@@ -209,7 +224,12 @@ fn infer_project(kind: BenchmarkKind, query_id: &str) -> String {
     }
 }
 
-fn build_report(kind: BenchmarkKind, results: Vec<QueryResult>) -> RunReport {
+fn build_report(
+    kind: BenchmarkKind,
+    results: Vec<QueryResult>,
+    mode_tag: &str,
+    evidence_window: u8,
+) -> RunReport {
     let total = results.len();
     let correct = results.iter().filter(|r| r.correct).count();
     let accuracy_pct = if total == 0 { 0.0 } else { correct as f64 / total as f64 * 100.0 };
@@ -226,7 +246,7 @@ fn build_report(kind: BenchmarkKind, results: Vec<QueryResult>) -> RunReport {
     let e2e_p95 = percentile_ms(&mut results.iter().map(|r| r.end_to_end_us).collect::<Vec<_>>(), 95);
 
     RunReport {
-        benchmark: format!("{kind:?}"),
+        benchmark: format!("{kind:?} ({mode_tag}, w={evidence_window})"),
         total_queries: total,
         correct,
         accuracy_pct,
