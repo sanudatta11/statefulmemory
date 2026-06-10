@@ -127,17 +127,21 @@ pub fn retrieve(
     // Field-weighted BM25 weights match observations_fts column order:
     //   title=5, content=1, tool_name=0.5, type=0.5, topic_key=2.
     // See V1__init.sql:54.
+    //
+    // We JOIN observations_fts to observations so the BM25 ranking from the
+    // FTS table propagates through to the final result. An earlier `WHERE id
+    // IN (subquery) ORDER BY id DESC` shape was discarding the rank in favour
+    // of insertion order — the bug surfaced as the most-relevant memory
+    // ranking below incidental keyword matches.
     let mut stmt = conn
         .prepare(
-            "SELECT title, content FROM observations
-              WHERE id IN (
-                  SELECT rowid FROM observations_fts
-                   WHERE observations_fts MATCH ?1
-                   ORDER BY bm25(observations_fts, 5.0, 1.0, 0.5, 0.5, 2.0) ASC
-                   LIMIT ?2
-              )
-                AND deleted_at IS NULL
-              ORDER BY id DESC",
+            "SELECT o.title, o.content
+               FROM observations_fts f
+               JOIN observations o ON o.id = f.rowid
+              WHERE f.observations_fts MATCH ?1
+                AND o.deleted_at IS NULL
+              ORDER BY bm25(observations_fts, 5.0, 1.0, 0.5, 0.5, 2.0) ASC
+              LIMIT ?2",
         )
         .context("prepare FTS5 search")?;
     let rows = stmt
