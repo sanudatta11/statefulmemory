@@ -18,6 +18,12 @@ sha2                = { workspace = true }
 zerocopy            = { workspace = true }
 anyhow              = { workspace = true }
 tracing             = { workspace = true }
+serde_json          = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+# Gate online integration tests that hit HuggingFace Hub.
+# Default `cargo test` MUST NOT trigger any network or model downloads.
+online-tests = []

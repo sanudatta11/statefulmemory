@@ -3,6 +3,7 @@
 //!
 //! TS-3: cache hit returns identical bytes.
 //! EH-7: fingerprint collision treated as miss.
+//! TS-2: BGE-small embeddings are deterministic on CPU.
 //!
 //! Tests use `tempfile::TempDir` so they're hermetic — no shared global state,
 //! no env-var contention.
@@ -103,4 +104,48 @@ fn cache_fingerprint_collision_treated_as_miss() {
         "fingerprint mismatch must be treated as miss (EH-7)"
     );
     assert_eq!(miss_indices, vec![0]);
+}
+
+// ---------------------------------------------------------------------------
+// TS-2 — BGE-small embedder determinism + smoke test.
+//
+// These are gated behind the `online-tests` feature because the first run
+// downloads BAAI/bge-small-en-v1.5 from HuggingFace Hub (~130 MB). The default
+// `cargo test` invocation must NOT trigger network I/O.
+//
+// To run them explicitly:
+//   cargo test --release -p memlayer-embed --features online-tests \
+//     -- --test-threads=1 --include-ignored
+// ---------------------------------------------------------------------------
+
+/// TS-2: identical input must produce byte-equal output across calls (CPU,
+/// no dropout in inference, deterministic kernels).
+#[test]
+#[cfg_attr(not(feature = "online-tests"), ignore)]
+fn bge_small_embedding_is_deterministic_for_same_text() {
+    let emb = memlayer_embed::embedder::BgeSmallEmbedder::try_new()
+        .expect("load BGE-small (requires HF Hub network access on first run)");
+    let v1 = emb.embed(&["hello world"]).unwrap().remove(0);
+    let v2 = emb.embed(&["hello world"]).unwrap().remove(0);
+    assert_eq!(v1.len(), 384);
+    assert_eq!(v1.len(), memlayer_embed::Embedder::dim(&emb));
+    // Byte-exact equality on CPU with same model state.
+    let bytes1: Vec<u8> = v1.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let bytes2: Vec<u8> = v2.iter().flat_map(|f| f.to_le_bytes()).collect();
+    assert_eq!(bytes1, bytes2, "embeddings must be byte-equal across calls");
+}
+
+/// Smoke: distinct sentences should not collapse onto each other after
+/// L2-normalization. Cosine similarity (= dot product on normalized vectors)
+/// stays comfortably below 1.0 for unrelated text.
+#[test]
+#[cfg_attr(not(feature = "online-tests"), ignore)]
+fn bge_small_distinct_texts_have_distinct_embeddings() {
+    let emb = memlayer_embed::embedder::BgeSmallEmbedder::try_new().unwrap();
+    let v1 = emb.embed(&["the cat sat on the mat"]).unwrap().remove(0);
+    let v2 = emb.embed(&["airplanes fly through the sky"]).unwrap().remove(0);
+    let cosine: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
+    // After L2-normalization, dot product is cosine similarity.
+    // Different sentences should be < 0.9.
+    assert!(cosine < 0.9, "expected distinct embeddings, got cosine {cosine}");
 }

@@ -12,3 +12,6 @@
 //! See spec retrieval-upgrade-v1 §3.
 
 pub mod cache;
+pub mod embedder;
+
+pub use embedder::{BgeSmallEmbedder, Embedder};
