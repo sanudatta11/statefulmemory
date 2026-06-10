@@ -16,7 +16,6 @@ use std::path::Path;
 use super::{EvalMemory, EvalQuery};
 
 #[derive(Debug, Deserialize)]
-#[derive(Debug, Deserialize)]
 struct LoCoMoConversation {
     #[serde(rename = "conv_id")]
     conv_id: Option<String>,
