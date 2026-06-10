@@ -201,9 +201,8 @@ fn infer_project(kind: BenchmarkKind, query_id: &str) -> String {
             format!("locomo-{conv_id}")
         }
         BenchmarkKind::Longmemeval => {
-            // id format: "{session_id}-{q_id}"
-            let session_id = query_id.rsplitn(2, '-').nth(1).unwrap_or(query_id);
-            format!("lme-{session_id}")
+            // id is the question_id directly; project is lme-{question_id}
+            format!("lme-{query_id}")
         }
         BenchmarkKind::Beam1m  => "beam-1m".to_string(),
         BenchmarkKind::Beam10m => "beam-10m".to_string(),

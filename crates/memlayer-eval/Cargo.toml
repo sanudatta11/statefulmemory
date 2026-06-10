@@ -13,6 +13,7 @@ path = "src/bin/eval.rs"
 memlayer-core    = { path = "../memlayer-core" }
 memlayer-storage = { path = "../memlayer-storage" }
 
+rusqlite    = { workspace = true }
 tokio       = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }

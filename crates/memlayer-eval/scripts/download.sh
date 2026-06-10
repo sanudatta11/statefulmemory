@@ -9,17 +9,19 @@ mkdir -p "$DATA_DIR"
 echo "=== Downloading LoCoMo ==="
 LOCOMO_DIR="$DATA_DIR/locomo"
 mkdir -p "$LOCOMO_DIR"
-if [ ! -f "$LOCOMO_DIR/locomo10_test.json" ]; then
-    # Clone sparse (only the data file we need)
+if [ ! -f "$LOCOMO_DIR/locomo10.json" ]; then
     TMP=$(mktemp -d)
-    git clone --depth=1 --filter=blob:none --sparse \
-        https://github.com/snap-research/locomo.git "$TMP/locomo" 2>/dev/null
-    cd "$TMP/locomo"
-    git sparse-checkout set data
-    cp data/locomo10_test.json "$LOCOMO_DIR/"
-    cd - > /dev/null
+    git clone --depth=1 https://github.com/snap-research/locomo.git "$TMP/locomo" 2>/dev/null
+    FOUND=$(find "$TMP/locomo" -name "locomo10.json" | head -1)
+    if [ -z "$FOUND" ]; then
+        echo "locomo10.json not found; listing repo contents:"
+        find "$TMP/locomo" -name "*.json" | head -20
+        echo "Please copy the dataset file manually to $LOCOMO_DIR/locomo10.json"
+    else
+        cp "$FOUND" "$LOCOMO_DIR/locomo10.json"
+        echo "LoCoMo: $LOCOMO_DIR/locomo10.json"
+    fi
     rm -rf "$TMP"
-    echo "LoCoMo: $LOCOMO_DIR/locomo10_test.json"
 else
     echo "LoCoMo already present, skipping."
 fi
@@ -28,23 +30,25 @@ echo ""
 echo "=== Downloading LongMemEval ==="
 LME_DIR="$DATA_DIR/longmemeval"
 mkdir -p "$LME_DIR"
-if [ ! -f "$LME_DIR/questions.jsonl" ]; then
-    TMP=$(mktemp -d)
-    git clone --depth=1 --filter=blob:none --sparse \
-        https://github.com/xiaowu0162/LongMemEval.git "$TMP/lme" 2>/dev/null
-    cd "$TMP/lme"
-    git sparse-checkout set data
-    # LongMemEval ships data under data/ — copy what we need
-    cp data/questions.jsonl "$LME_DIR/" 2>/dev/null || \
-        find data -name "*.jsonl" -exec cp {} "$LME_DIR/" \;
-    cp data/sessions.json "$LME_DIR/" 2>/dev/null || \
-        find data -name "sessions.json" -exec cp {} "$LME_DIR/" \;
-    cd - > /dev/null
-    rm -rf "$TMP"
-    echo "LongMemEval: $LME_DIR/"
-else
-    echo "LongMemEval already present, skipping."
-fi
+
+# Files are hosted on HuggingFace datasets repo.
+# We use the s_cleaned (single-session) file as the default eval target.
+HF_BASE="https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main"
+
+for FNAME in longmemeval_s_cleaned.json longmemeval_m_cleaned.json longmemeval_oracle.json; do
+    DEST="$LME_DIR/$FNAME"
+    if [ ! -f "$DEST" ]; then
+        echo "Downloading $FNAME ..."
+        if command -v wget &>/dev/null; then
+            wget -q --show-progress -O "$DEST" "$HF_BASE/$FNAME"
+        else
+            curl -L --progress-bar -o "$DEST" "$HF_BASE/$FNAME"
+        fi
+        echo "  -> $DEST"
+    else
+        echo "$FNAME already present, skipping."
+    fi
+done
 
 echo ""
 echo "All datasets ready. Run:"

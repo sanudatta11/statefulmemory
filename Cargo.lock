@@ -1301,6 +1301,7 @@ dependencies = [
  "memlayer-core",
  "memlayer-storage",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tiktoken-rs",

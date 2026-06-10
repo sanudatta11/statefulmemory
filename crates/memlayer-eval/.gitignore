@@ -1,0 +1,4 @@
+# Eval-time data and reports are not checked in.
+data/
+reports/
+*.db

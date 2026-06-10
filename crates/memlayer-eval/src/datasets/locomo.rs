@@ -2,50 +2,55 @@
 //! LoCoMo dataset adapter.
 //!
 //! LoCoMo (Long-term Conversational Memory) — Stanford SNAP.
-//! Dataset format: a JSON array of conversation objects, each with a
-//! `conversation` list of `{speaker, text}` turns and a `qa` list of
-//! `{question, answer, evidence}`.
+//! File: data/locomo/locomo10.json
+//! Format: JSON array of 10 conversation objects.
+//! Each object has:
+//!   - sample_id: "conv-N"
+//!   - conversation: { speaker_a, speaker_b, session_1_date_time, session_1: [{speaker, dia_id, text}], ... }
+//!   - qa: [{question, answer, evidence, category}]
 //!
 //! Download: https://github.com/snap-research/locomo
-//! Expected file: data/locomo/locomo10_test.json
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde_json::Value;
 use std::path::Path;
 
 use super::{EvalMemory, EvalQuery};
 
 #[derive(Debug, Deserialize)]
 struct LoCoMoConversation {
-    #[serde(rename = "conv_id")]
-    conv_id: Option<String>,
-    conversation: Vec<LoCoMoTurn>,
+    sample_id: Option<Value>,
+    /// Flat dict: { speaker_a, speaker_b, session_1_date_time, session_1: [...], session_2_date_time, ... }
+    conversation: Value,
     qa: Vec<LoCoMoQA>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LoCoMoTurn {
     speaker: String,
+    #[serde(rename = "dia_id")]
+    dia_id: Option<String>,
     text: Option<String>,
-    #[serde(rename = "blip2_caption")]
-    caption: Option<String>,
-    date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LoCoMoQA {
-    #[serde(rename = "qa_id")]
-    qa_id: Option<String>,
-    question: String,
-    answer: String,
-    #[serde(rename = "evidence_list")]
-    evidence_list: Option<Vec<String>>,
+    question: Value,
+    answer: Option<Value>,
+    category: Option<Value>,
 }
 
-/// Load the LoCoMo dataset from `data_dir/locomo10_test.json`.
-/// Returns `(memories, queries)` ready for ingestion and eval.
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Load the LoCoMo dataset from `data_dir/locomo/locomo10.json`.
 pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
-    let path = data_dir.join("locomo").join("locomo10_test.json");
+    let path = data_dir.join("locomo").join("locomo10.json");
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("read LoCoMo from {}", path.display()))?;
     let dataset: Vec<LoCoMoConversation> = serde_json::from_str(&raw)
@@ -55,40 +60,63 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
     let mut queries = Vec::new();
 
     for conv in &dataset {
-        let conv_id = conv.conv_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let conv_id = conv.sample_id.as_ref()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let project = format!("locomo-{conv_id}");
         let session_id = uuid::Uuid::new_v4().to_string();
 
-        // Each turn becomes an observation.
-        for (i, turn) in conv.conversation.iter().enumerate() {
-            let content = match (&turn.text, &turn.caption) {
-                (Some(t), _) => t.clone(),
-                (None, Some(c)) => format!("[image] {c}"),
-                (None, None) => continue,
-            };
-            let date_prefix = turn.date.as_deref().map(|d| format!("[{d}] ")).unwrap_or_default();
-            memories.push(EvalMemory {
-                project: project.clone(),
-                session_id: session_id.clone(),
-                obs_type: "conversation".to_string(),
-                title: format!("{}{}: turn {i}", date_prefix, turn.speaker),
-                content: format!("{}: {content}", turn.speaker),
-                topic_key: None,
-            });
+        if let Some(conv_map) = conv.conversation.as_object() {
+            // Iterate session_N keys (skip speaker_a/b and date_time keys).
+            for (key, value) in conv_map {
+                if !key.starts_with("session_") || key.ends_with("_date_time") {
+                    continue;
+                }
+                // Each session_N is a list of turn objects.
+                let date = conv_map.get(&format!("{key}_date_time"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if let Some(turns) = value.as_array() {
+                    for turn_val in turns {
+                        let turn: LoCoMoTurn = match serde_json::from_value(turn_val.clone()) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        };
+                        let content = match &turn.text {
+                            Some(t) => t.clone(),
+                            None => continue,
+                        };
+                        let dia_label = turn.dia_id.as_deref().unwrap_or("?");
+                        let date_prefix = if date.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[{date}] ")
+                        };
+                        memories.push(EvalMemory {
+                            project: project.clone(),
+                            session_id: session_id.clone(),
+                            obs_type: "conversation".to_string(),
+                            title: format!("{date_prefix}{} ({})", turn.speaker, dia_label),
+                            content: format!("{}: {content}", turn.speaker),
+                            topic_key: None,
+                        });
+                    }
+                }
+            }
         }
 
-        // Each QA pair becomes an eval query.
-        for qa in &conv.qa {
-            let qa_id = qa.qa_id.clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let evidence = qa.evidence_list.as_ref()
-                .map(|ev| ev.join("\n"))
-                .unwrap_or_default();
+        for (i, qa) in conv.qa.iter().enumerate() {
+            let Some(answer) = &qa.answer else { continue };
             queries.push(EvalQuery {
-                id: format!("{conv_id}-{qa_id}"),
-                question: qa.question.clone(),
-                gold_answer: qa.answer.clone(),
-                judge_context: if evidence.is_empty() { None } else { Some(evidence) },
+                id: format!("{conv_id}-q{i}"),
+                question: value_to_string(&qa.question),
+                gold_answer: value_to_string(answer),
+                judge_context: qa.category.as_ref().map(|c| format!("category: {c}")),
             });
         }
     }
