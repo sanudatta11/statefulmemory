@@ -60,9 +60,11 @@ impl EmbeddingCache {
             .with_context(|| format!("open embedding cache at {}", path.display()))?;
         // Reasonable defaults for a single-writer cache; embedding workloads
         // are tiny relative to the main store.
-        conn.pragma_update(None, "journal_mode", "WAL")
+        // journal_mode returns the new mode as a row, so use `pragma()` not
+        // `pragma_update()` (which assumes the setter is silent).
+        conn.pragma(None, "journal_mode", "WAL", |_| Ok(()))
             .context("set journal_mode=WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")
+        conn.pragma(None, "synchronous", "NORMAL", |_| Ok(()))
             .context("set synchronous=NORMAL")?;
         conn.execute(SCHEMA, [])
             .context("create cache table if missing")?;
