@@ -13,6 +13,7 @@ path = "src/bin/eval.rs"
 memlayer-core    = { path = "../memlayer-core" }
 memlayer-storage = { path = "../memlayer-storage" }
 memlayer-embed   = { path = "../memlayer-embed" }
+memlayer-extract = { path = "../memlayer-extract" }
 
 rusqlite    = { workspace = true }
 refinery    = { workspace = true }

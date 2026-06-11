@@ -1940,6 +1940,7 @@ dependencies = [
  "clap",
  "memlayer-core",
  "memlayer-embed",
+ "memlayer-extract",
  "memlayer-storage",
  "refinery",
  "rusqlite",
