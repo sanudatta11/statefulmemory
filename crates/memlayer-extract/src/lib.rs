@@ -13,8 +13,24 @@
 //! * [`ClaudeClient`] trait + impls (this task).
 
 pub mod claude_cli;
+pub mod prompt;
+
+pub use prompt::{build_extraction_prompt, parse_facts};
 
 use serde::{Deserialize, Serialize};
+
+/// One turn of dialogue fed to the extraction prompt. `obs_id` and
+/// `session_id` come from the storage layer (`observations`/`sessions`)
+/// and are stitched onto each [`Fact`] via the `evidence_turn_idx` the
+/// model emits — that's how the retriever knows which raw row to expand
+/// when surfacing a fact (§4.5, EH-3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Turn {
+    pub speaker: String,
+    pub text: String,
+    pub obs_id: i64,
+    pub session_id: Option<String>,
+}
 
 /// One atomic fact extracted from a window of conversation turns.
 ///
