@@ -1941,6 +1941,7 @@ dependencies = [
  "memlayer-core",
  "memlayer-embed",
  "memlayer-storage",
+ "refinery",
  "rusqlite",
  "serde",
  "serde_json",

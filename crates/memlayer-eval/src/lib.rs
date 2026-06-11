@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod datasets;
+pub mod facts_db;
 pub mod ingest;
 pub mod judge;
 pub mod prompt;

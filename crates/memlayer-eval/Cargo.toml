@@ -15,6 +15,7 @@ memlayer-storage = { path = "../memlayer-storage" }
 memlayer-embed   = { path = "../memlayer-embed" }
 
 rusqlite    = { workspace = true }
+refinery    = { workspace = true }
 sqlite-vec  = { workspace = true }
 tokio       = { workspace = true }
 serde       = { workspace = true }
