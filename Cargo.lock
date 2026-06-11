@@ -1954,6 +1954,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "memlayer-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "memlayer-proto"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,47 @@
+// Generated with AI Coding Rules Hub
+//! memlayer-extract — LLM-based fact extraction for the eval pipeline.
+//!
+//! This crate turns raw conversation turns into atomic, searchable facts via
+//! a claude-haiku call (per spec retrieval-upgrade-v1 §3, §4). Output flows
+//! through the eval-side facts.db (sqlite-vec virtual tables for semantic
+//! retrieval; FTS5 for lexical) and feeds the hybrid retrieval pipeline.
+//!
+//! API surface:
+//! * [`Fact`] — extracted (subject, predicate, object, ...) record.
+//! * [`Extractor`] trait — abstract entry point.
+//! * [`HaikuExtractor`] (spec-task-14) — claude-4.5-haiku impl.
+//! * [`ClaudeClient`] trait + impls (this task).
+
+pub mod claude_cli;
+
+use serde::{Deserialize, Serialize};
+
+/// One atomic fact extracted from a window of conversation turns.
+///
+/// `evidence_obs_id` points back at the raw observation row that fired this
+/// fact; the retriever expands hits via the storage layer to give the judge
+/// surrounding context (§4.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fact {
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub temporal: Option<String>,
+    /// 0.0..=1.0 (per the extraction prompt). Reserved for P3 reranker.
+    pub salience: f32,
+    /// `observations.id` for the turn that produced this fact.
+    pub evidence_obs_id: i64,
+    /// `sessions.id` the evidence turn belongs to. Used to bound `expand_evidence`.
+    pub source_session: Option<String>,
+}
+
+/// Pluggable extractor. P2 ships a single Haiku-backed implementation
+/// (spec-task-14); the trait keeps tests mockable and leaves room for a
+/// stronger model swap later (e.g. claude-4.6-sonnet for stubborn windows).
+#[async_trait::async_trait]
+pub trait Extractor: Send + Sync {
+    /// Extract facts from one window of consecutive turns. The window is the
+    /// already-formatted prompt body (the orchestrator handles batching and
+    /// caching).
+    async fn extract_window(&self, prompt: &str) -> anyhow::Result<Vec<Fact>>;
+}
