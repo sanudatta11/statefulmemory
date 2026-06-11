@@ -1,0 +1,448 @@
+// Generated with AI Coding Rules Hub
+//! Per-project extraction orchestrator (spec-task-18).
+//!
+//! Reads raw observations out of a single storage-side project DB, slices
+//! them into overlapping 6-turn windows, fans out cache misses to claude-haiku
+//! through [`ClaudeClient`], embeds the resulting facts via the supplied
+//! [`Embedder`], and bulk-writes the rows into the eval-side `facts.db`.
+//!
+//! Two caches keep this idempotent across re-runs:
+//!   * [`ExtractionCache`] keyed by `sha256(window_json)` — successful Haiku
+//!     output and EH-4 "permanently failed" markers both land here so a
+//!     resumed run skips work that already burned model spend.
+//!   * [`EmbeddingCache`] keyed by `sha256(text)` — re-embedding identical
+//!     `(subject predicate object)` strings is wasted CPU on a repeat run.
+//!
+//! Concurrency:
+//!   The Haiku fan-out is bounded by `concurrency` (default 4) via a
+//!   `tokio::sync::Semaphore`. `Arc<dyn ClaudeClient>` and `Vec<Turn>` are
+//!   `Send`/`Clone`, so each window runs in its own `tokio::spawn`.
+//!
+//! Out of scope here:
+//!   * Entity extraction (spec-task-19a/19c).
+//!   * CLI subcommand wiring (spec-task-20).
+//!   * Anything that touches the storage daemon's migrations (SC-10).
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use tokio::sync::Semaphore;
+use tracing::{debug, info, warn};
+
+use memlayer_core::paths;
+use memlayer_embed::cache::EmbeddingCache;
+use memlayer_embed::Embedder;
+use memlayer_extract::cache::{CachedExtraction, ExtractionCache};
+use memlayer_extract::claude_cli::{ClaudeClient, HAIKU_MODEL};
+use memlayer_extract::{build_extraction_prompt, parse_facts, Fact, Turn};
+use memlayer_storage::ProjectRegistry;
+
+use crate::facts_db::FactsDb;
+use crate::facts_writer::{insert_facts_for_project, FactWithEmbedding};
+
+const DEFAULT_CONCURRENCY: usize = 4;
+const DEFAULT_WINDOW_SIZE: usize = 6;
+const DEFAULT_WINDOW_STRIDE: usize = 3;
+
+/// Per-conversation extraction stats.
+#[derive(Debug, Clone, Default)]
+pub struct ExtractStats {
+    pub windows_total: usize,
+    pub windows_extracted: usize,
+    pub windows_cached: usize,
+    pub windows_failed: usize,
+    pub facts_written: usize,
+    pub elapsed_ms: u128,
+}
+
+/// Orchestrator for the extraction pipeline.
+///
+/// Cheap to construct; one instance is reused across many `extract_project`
+/// calls (one per LoCoMo conversation, one per LME session, etc.).
+pub struct ExtractPipeline {
+    pub data_dir: PathBuf,
+    pub claude: Arc<dyn ClaudeClient>,
+    pub embedder: Arc<dyn Embedder>,
+    /// Concurrency cap for the Haiku fan-out (default 4).
+    pub concurrency: usize,
+    /// Window size in turns (default 6).
+    pub window_size: usize,
+    /// Window stride in turns (default 3 = 50% overlap).
+    pub window_stride: usize,
+}
+
+impl ExtractPipeline {
+    pub fn new(
+        data_dir: impl Into<PathBuf>,
+        claude: Arc<dyn ClaudeClient>,
+        embedder: Arc<dyn Embedder>,
+    ) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            claude,
+            embedder,
+            concurrency: DEFAULT_CONCURRENCY,
+            window_size: DEFAULT_WINDOW_SIZE,
+            window_stride: DEFAULT_WINDOW_STRIDE,
+        }
+    }
+
+    /// Extract facts for one project (one LoCoMo conversation, one LME
+    /// session, etc.). Reads raw observations from the storage-side project
+    /// DB, builds overlapping windows, fans out to Haiku for cache misses,
+    /// embeds the resulting facts, writes to facts.db. Idempotent across
+    /// re-runs via the extraction + embedding caches.
+    pub async fn extract_project(
+        &self,
+        project: &str,
+        facts_db_path: &Path,
+    ) -> Result<ExtractStats> {
+        let t0 = Instant::now();
+        let mut stats = ExtractStats::default();
+
+        // ---------- 1. Open targets ----------
+        // Mirror retrieve.rs: storage layer reads MEMLAYER_DATA_DIR through
+        // memlayer-core::paths, so set it before the registry opens.
+        std::env::set_var("MEMLAYER_DATA_DIR", &self.data_dir);
+        paths::ensure_dirs(&self.data_dir).ok();
+
+        let mut facts_db = FactsDb::open(facts_db_path)
+            .with_context(|| format!("open facts.db at {}", facts_db_path.display()))?;
+
+        let registry = Arc::new(ProjectRegistry::new(
+            /* lru_capacity      */ 64,
+            /* write_batch_max   */ 1,
+            /* write_batch_window*/ Duration::from_millis(50),
+        ));
+        let project_state = registry
+            .get_or_open(project)
+            .with_context(|| format!("open project '{project}' for extraction"))?;
+        let read_conn = project_state
+            .open_read_conn()
+            .context("open read connection on project DB")?;
+
+        let extraction_cache = ExtractionCache::open(&self.data_dir)
+            .context("open extraction cache")?;
+        let embedding_cache = EmbeddingCache::open(&self.data_dir)
+            .context("open embedding cache")?;
+
+        // ---------- 2. Read all observations for the project ----------
+        let turns = read_turns(&read_conn).context("read observations into Turn list")?;
+        debug!(project, turn_count = turns.len(), "loaded turns from project DB");
+
+        if turns.is_empty() {
+            stats.elapsed_ms = t0.elapsed().as_millis();
+            return Ok(stats);
+        }
+
+        // ---------- 3. Slice into windows ----------
+        let windows = build_windows(&turns, self.window_size, self.window_stride);
+        stats.windows_total = windows.len();
+
+        // Cache key per window: deterministic JSON of the turn slice.
+        let window_keys: Vec<String> = windows
+            .iter()
+            .map(|w| serde_json::to_string(w).context("serialize window for cache key"))
+            .collect::<Result<Vec<_>>>()?;
+
+        // ---------- 4. Bulk cache lookup ----------
+        let key_refs: Vec<&str> = window_keys.iter().map(|s| s.as_str()).collect();
+        let (cache_hits, miss_indices) = extraction_cache
+            .get_many(&key_refs)
+            .context("extraction cache lookup")?;
+
+        // Tally cache hits / failed-marker hits up front. Misses are counted
+        // per spawned task because some may parse-fail and convert into
+        // `windows_failed` instead of `windows_extracted`.
+        for hit in &cache_hits {
+            match hit {
+                Some(CachedExtraction::Ok(_)) => stats.windows_cached += 1,
+                Some(CachedExtraction::Failed) => stats.windows_failed += 1,
+                None => {}
+            }
+        }
+
+        // ---------- 5. Fan out Haiku for misses ----------
+        let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
+        let mut handles: Vec<tokio::task::JoinHandle<Result<(usize, Result<Vec<Fact>>)>>> =
+            Vec::with_capacity(miss_indices.len());
+
+        for &i in &miss_indices {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .context("acquire haiku semaphore")?;
+            let claude = self.claude.clone();
+            let window = windows[i].clone();
+            let prompt = build_extraction_prompt(&window, None);
+            handles.push(tokio::spawn(async move {
+                // Hold the permit across the call, drop on completion.
+                let _permit = permit;
+                let raw = match claude.ask(&prompt, HAIKU_MODEL).await {
+                    Ok(r) => r,
+                    Err(e) => return Ok((i, Err(e))),
+                };
+                let parsed = parse_facts(&raw, &window);
+                Ok((i, parsed))
+            }));
+        }
+
+        // Collected per-miss results: (window_index, facts_or_failure).
+        let mut fresh_results: Vec<(usize, std::result::Result<Vec<Fact>, ()>)> =
+            Vec::with_capacity(miss_indices.len());
+        for h in handles {
+            match h.await.context("haiku task join")? {
+                Ok((i, Ok(facts))) => {
+                    if facts.is_empty() {
+                        // EH-4: parse_facts returned empty (either Haiku gave
+                        // us prose-only output or the slice was unparseable).
+                        // Mark as permanently failed so we don't reburn spend
+                        // on the next run.
+                        stats.windows_failed += 1;
+                        fresh_results.push((i, Err(())));
+                    } else {
+                        stats.windows_extracted += 1;
+                        fresh_results.push((i, Ok(facts)));
+                    }
+                }
+                Ok((i, Err(e))) => {
+                    warn!(window_idx = i, error = %e, "haiku call failed; marking window failed");
+                    stats.windows_failed += 1;
+                    fresh_results.push((i, Err(())));
+                }
+                Err(e) => {
+                    // Should be unreachable: the inner task body returns
+                    // anyhow::Ok(...) unconditionally.
+                    return Err(e).context("haiku task returned error");
+                }
+            }
+        }
+
+        // ---------- 6. Persist successful + failed extractions ----------
+        let mut put_items: Vec<(String, Vec<Fact>)> = Vec::new();
+        for (i, res) in &fresh_results {
+            match res {
+                Ok(facts) => put_items.push((window_keys[*i].clone(), facts.clone())),
+                Err(()) => {
+                    if let Err(e) = extraction_cache.put_failed(&window_keys[*i]) {
+                        warn!(window_idx = i, error = %e, "failed to persist failure marker");
+                    }
+                }
+            }
+        }
+        if !put_items.is_empty() {
+            extraction_cache
+                .put_many(&put_items)
+                .context("persist successful extractions")?;
+        }
+
+        // ---------- 7. Flatten facts (cached + fresh) ----------
+        let mut all_facts: Vec<Fact> = Vec::new();
+        // Cached hits first (in original window order).
+        for hit in cache_hits.iter() {
+            if let Some(CachedExtraction::Ok(facts)) = hit {
+                all_facts.extend(facts.iter().cloned());
+            }
+        }
+        // Then fresh successes.
+        for (_, res) in &fresh_results {
+            if let Ok(facts) = res {
+                all_facts.extend(facts.iter().cloned());
+            }
+        }
+
+        if all_facts.is_empty() {
+            stats.elapsed_ms = t0.elapsed().as_millis();
+            info!(
+                project,
+                ?stats,
+                "extract_project: no facts extracted"
+            );
+            return Ok(stats);
+        }
+
+        // ---------- 8. Embed facts ----------
+        let texts: Vec<String> = all_facts
+            .iter()
+            .map(|f| format!("{} {} {}", f.subject, f.predicate, f.object))
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let (emb_hits, emb_miss_indices) = embedding_cache
+            .get_many(&text_refs)
+            .context("embedding cache lookup")?;
+
+        let mut embeddings: Vec<Option<Vec<f32>>> = emb_hits;
+
+        if !emb_miss_indices.is_empty() {
+            let miss_texts: Vec<&str> =
+                emb_miss_indices.iter().map(|&i| text_refs[i]).collect();
+            let fresh = self
+                .embedder
+                .embed(&miss_texts)
+                .context("embed fact texts")?;
+            if fresh.len() != miss_texts.len() {
+                anyhow::bail!(
+                    "embedder returned {} vectors for {} inputs",
+                    fresh.len(),
+                    miss_texts.len()
+                );
+            }
+            // Persist freshly computed embeddings.
+            let put_items: Vec<(String, Vec<f32>)> = emb_miss_indices
+                .iter()
+                .zip(fresh.iter())
+                .map(|(&i, v)| (texts[i].clone(), v.clone()))
+                .collect();
+            embedding_cache
+                .put_many(&put_items)
+                .context("persist freshly embedded facts")?;
+            // Splice fresh vectors back into the per-fact Option<Vec<f32>>
+            // array at their original indices.
+            for (&i, v) in emb_miss_indices.iter().zip(fresh.into_iter()) {
+                embeddings[i] = Some(v);
+            }
+        }
+
+        // Build the writer batch. Any None at this point is a bug — a miss
+        // index that we just filled — but guard against it defensively.
+        let mut batch: Vec<FactWithEmbedding> = Vec::with_capacity(all_facts.len());
+        for (fact, emb) in all_facts.into_iter().zip(embeddings.into_iter()) {
+            match emb {
+                Some(embedding) => batch.push(FactWithEmbedding { fact, embedding }),
+                None => {
+                    warn!(
+                        subject = %fact.subject,
+                        predicate = %fact.predicate,
+                        "missing embedding for fact; skipping"
+                    );
+                }
+            }
+        }
+
+        // ---------- 9. Write to facts.db ----------
+        let written = insert_facts_for_project(&mut facts_db.conn, project, &batch)
+            .context("insert facts into facts.db")?;
+        stats.facts_written = written;
+
+        stats.elapsed_ms = t0.elapsed().as_millis();
+        info!(project, ?stats, "extract_project complete");
+        Ok(stats)
+    }
+}
+
+/// Read all live observations for the open project as `Turn`s, ordered by id.
+///
+/// Conventions (matching the LoCoMo ingest adapter):
+///   * `title` becomes `Turn::speaker`.
+///   * `content` becomes `Turn::text` (already prefixed `Speaker: ...` from
+///     the ingest side, which the extraction prompt tolerates).
+fn read_turns(conn: &rusqlite::Connection) -> Result<Vec<Turn>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, title, content
+               FROM observations
+              WHERE deleted_at IS NULL
+              ORDER BY id ASC",
+        )
+        .context("prepare observations select")?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let session_id: Option<String> = row.get(1)?;
+            let title: String = row.get(2)?;
+            let content: String = row.get(3)?;
+            Ok(Turn {
+                speaker: title,
+                text: content,
+                obs_id: id,
+                session_id,
+            })
+        })
+        .context("query observations")?;
+    let mut turns = Vec::new();
+    for r in rows {
+        turns.push(r.context("read observation row")?);
+    }
+    Ok(turns)
+}
+
+/// Build overlapping windows of `size` turns advancing by `stride` between
+/// starts. Stride is clamped to at least 1 so we always make progress; if
+/// fewer than `size` turns exist we still emit a single short window so we
+/// don't lose those facts entirely.
+fn build_windows(turns: &[Turn], size: usize, stride: usize) -> Vec<Vec<Turn>> {
+    if turns.is_empty() {
+        return Vec::new();
+    }
+    let stride = stride.max(1);
+    let size = size.max(1);
+
+    if turns.len() <= size {
+        return vec![turns.to_vec()];
+    }
+
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < turns.len() {
+        let end = (start + size).min(turns.len());
+        out.push(turns[start..end].to_vec());
+        if end == turns.len() {
+            break;
+        }
+        start += stride;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(idx: i64) -> Turn {
+        Turn {
+            speaker: format!("speaker-{idx}"),
+            text: format!("text-{idx}"),
+            obs_id: idx,
+            session_id: Some("s".into()),
+        }
+    }
+
+    #[test]
+    fn build_windows_short_input_returns_single_window() {
+        let turns: Vec<Turn> = (1..=4).map(turn).collect();
+        let w = build_windows(&turns, 6, 3);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].len(), 4);
+    }
+
+    #[test]
+    fn build_windows_overlaps_at_50_percent() {
+        let turns: Vec<Turn> = (1..=12).map(turn).collect();
+        let w = build_windows(&turns, 6, 3);
+        // Starts at 0, 3, 6 => windows of size 6, 6, 6 (last is 6..12).
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].first().unwrap().obs_id, 1);
+        assert_eq!(w[1].first().unwrap().obs_id, 4);
+        assert_eq!(w[2].first().unwrap().obs_id, 7);
+        assert_eq!(w[2].last().unwrap().obs_id, 12);
+    }
+
+    #[test]
+    fn build_windows_handles_uneven_tail() {
+        let turns: Vec<Turn> = (1..=10).map(turn).collect();
+        let w = build_windows(&turns, 6, 3);
+        // Starts at 0, 3, 6 => last window is [7..10] (size 4).
+        assert_eq!(w.len(), 3);
+        assert_eq!(w.last().unwrap().len(), 4);
+        assert_eq!(w.last().unwrap().last().unwrap().obs_id, 10);
+    }
+
+    #[test]
+    fn build_windows_empty_input() {
+        let w = build_windows(&[], 6, 3);
+        assert!(w.is_empty());
+    }
+}
