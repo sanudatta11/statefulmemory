@@ -12,9 +12,11 @@
 //! * [`HaikuExtractor`] (spec-task-14) — claude-4.5-haiku impl.
 //! * [`ClaudeClient`] trait + impls (this task).
 
+pub mod cache;
 pub mod claude_cli;
 pub mod prompt;
 
+pub use cache::{CachedExtraction, ExtractionCache};
 pub use prompt::{build_extraction_prompt, parse_facts};
 
 use serde::{Deserialize, Serialize};
