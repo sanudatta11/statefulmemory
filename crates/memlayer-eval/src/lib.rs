@@ -19,6 +19,7 @@ pub mod retrieve_facts;
 pub mod retrieve_hybrid;
 pub mod rrf;
 pub mod runner;
+pub mod scoring;
 pub mod vec_index;
 
 pub use runner::{BenchmarkKind, RunConfig, RunReport};

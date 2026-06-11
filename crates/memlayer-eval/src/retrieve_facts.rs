@@ -1,31 +1,37 @@
 // Generated with AI Coding Rules Hub
-//! Hybrid retrieval over `facts.db` with evidence expansion (spec-task-19).
+//! Hybrid retrieval over `facts.db` with evidence expansion.
 //!
-//! Pipeline:
+//! Pipeline (spec-task-19d, additive scoring):
 //!   1. Embed `query` (cache lookup → embedder on miss).
-//!   2. Open `facts.db`. **EH-5:** hard-fail with a remediation hint if the
-//!      file is missing — the runner should have called `eval extract` first.
+//!   2. Extract query entities via the heuristic tokenizer (no LLM at query
+//!      time — latency budget) and embed each one.
 //!   3. In parallel (`spawn_blocking`):
-//!        * BM25 top-100 over `facts_fts` filtered to `project`.
-//!        * Dense ANN top-100 over `facts_vec` filtered to `project` via a
-//!          join back to `facts`.
-//!   4. RRF-fuse the two ranked id lists (`k_const = 60`). **EH-6:** if dense
-//!      ANN is empty, log and fall back to BM25-only.
-//!   5. Fetch the top-`k` fact rows preserving fused order.
-//!   6. For each fact, expand its `evidence_obs_id` against the project's
-//!      storage DB via `retrieve::expand_evidence`. **EH-8:** orphaned
-//!      evidence (zero-row lookup) yields a fact-only hit, not an error.
+//!        * BM25 top-N over `facts_fts` filtered to `project` — returns
+//!          (fact_id, raw bm25 score).
+//!        * Dense ANN top-N over `facts_vec` joined to `facts` — returns
+//!          (fact_id, L2 distance).
+//!        * For each query entity: name match (SQL) AND vec ANN over
+//!          `entities_vec` at distance ≤ 0.7. Both paths feed
+//!          `entity_links` to find linked fact_ids; their union drives a
+//!          per-fact boost = 0.5 per matched query entity, capped at 1.0.
+//!   4. Build a score map via `scoring::build_score_map`. Combined score
+//!      is `sem + bm25 + entity_boost` (each in [0, 1]).
+//!   5. Sort facts by combined desc; take top-k.
+//!   6. Fetch full fact rows preserving order. **EH-8:** orphaned evidence
+//!      (zero-row lookup) yields a fact-only hit, not an error.
 //!
-//! Boundaries (spec-task-19 only):
-//!   * No entity boost / additive scoring (owned by spec-task-19d).
-//!   * No 4× over-fetch (owned by spec-task-19e). This task uses a flat 100
-//!     candidate window per retriever.
+//! Boundaries:
+//!   * No 4× over-fetch (owned by spec-task-19e). This task uses a flat
+//!     `CANDIDATES_PER_RETRIEVER` (=100) window per source.
+//!   * The `rrf` module is preserved for benchmarking and future modes;
+//!     this module no longer calls it.
 //!
 //! SC-10: this module never touches `memlayer-storage` migrations or schema.
 //! It only opens existing storage connections read-only via
 //! `ProjectRegistry::open_read_conn` to read raw observations.
+//! Spec links: TS-21, TS-22, SC-12, SC-13. Plan: P2 §4.5.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,9 +40,28 @@ use anyhow::{Context, Result};
 use rusqlite::params;
 
 use memlayer_embed::{cache::EmbeddingCache, Embedder};
+use memlayer_extract::entities::extract_heuristic_tokens;
 use memlayer_storage::ProjectRegistry;
 
+use crate::scoring::build_score_map;
 use crate::vec_index::open_with_vec;
+
+/// Window size per individual retriever. spec-task-19e replaces this with
+/// `max(k * 4, 60)`; for now we keep a flat 100 to match prior behaviour.
+const CANDIDATES_PER_RETRIEVER: i32 = 100;
+
+/// Max number of entity matches that contribute to a fact's boost. With
+/// `BOOST_PER_ENTITY = 0.5`, the cap of 1.0 is hit at 2 distinct matches.
+const BOOST_PER_ENTITY: f32 = 0.5;
+const ENTITY_BOOST_CAP: f32 = 1.0;
+
+/// L2 distance threshold for the entities_vec ANN match. With BGE-small's
+/// L2-normalized embeddings this corresponds roughly to cosine ≥ 0.5.
+/// Tunable; spec-task-19e may revisit.
+const ENTITY_VEC_DISTANCE_THRESHOLD: f64 = 0.7;
+
+/// Top-N entity matches per query entity (vec sim path).
+const ENTITY_VEC_TOP_N: i32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FactsRetrieveError {
@@ -46,18 +71,20 @@ pub enum FactsRetrieveError {
 
 /// Output of a hybrid facts retrieval call.
 pub struct FactsHybridResult {
-    /// Top-k formatted hits in fused-rank order. Each hit is the fact's
+    /// Top-k formatted hits in score-ranked order. Each hit is the fact's
     /// `[temporal] subject predicate object` line, optionally followed by
     /// the expanded raw-observation evidence rows joined with `\n`.
     pub hits: Vec<String>,
-    /// End-to-end latency (embed + BM25 + ANN + RRF + evidence expansion).
+    /// End-to-end latency (embed + BM25 + ANN + entity boost + scoring +
+    /// evidence expansion).
     pub latency: Duration,
-    /// Number of fact rows considered before fusion (sum of BM25 + ANN).
+    /// Number of fact rows considered before scoring (sum of BM25 + ANN +
+    /// entity-boosted ids).
     pub candidates_considered: usize,
 }
 
-/// Hybrid retrieval over `facts.db` for one project (one LoCoMo conversation
-/// or LME session). See module-level docs for the full pipeline.
+/// Hybrid retrieval over `facts.db` for one project. See module-level docs
+/// for the full pipeline.
 pub async fn retrieve_facts(
     data_dir: &Path,
     facts_db_path: &Path,
@@ -71,8 +98,8 @@ pub async fn retrieve_facts(
     let t0 = Instant::now();
 
     // EH-5: facts.db must already exist; the runner is responsible for the
-    // extract phase (`eval extract`). Surfacing this as an error keeps the
-    // failure mode observable instead of silently returning zero hits.
+    // extract phase (`eval extract`). Surface this as an error so the
+    // failure mode is observable instead of silently zero-hit.
     if !facts_db_path.exists() {
         return Err(FactsRetrieveError::FactsDbMissing {
             path: facts_db_path.to_path_buf(),
@@ -83,59 +110,101 @@ pub async fn retrieve_facts(
     // Storage paths must be initialised before the registry opens any DB.
     std::env::set_var("MEMLAYER_DATA_DIR", data_dir);
 
-    // 1. Embed the query (cache → fall through to embedder on miss).
-    let (mut hits_cache, _miss_idx) =
-        cache.get_many(&[query]).context("query cache lookup")?;
-    let query_vec: Vec<f32> = if let Some(v) = hits_cache[0].take() {
-        v
-    } else {
-        let mut vs = embedder
-            .embed(&[query])
-            .context("embed query (cache miss)")?;
-        let v = vs.remove(0);
-        cache
-            .put_many(&[(query.to_string(), v.clone())])
-            .context("populate cache after query embed")?;
-        v
-    };
+    // 1. Embed the query.
+    let query_vec = embed_with_cache(query, &embedder, &cache)
+        .context("embed query")?;
 
-    // 3. Parallel BM25 + ANN over blocking sqlite handles.
+    // 2. Heuristic entity extraction over the query. No LLM here — query
+    //    latency budget rules out Haiku at retrieval time.
+    let query_entities: Vec<String> = extract_heuristic_tokens(query);
+
+    // 3. Embed each query entity (cached). 1-3 entities is the typical
+    //    case so this stays cheap. We dedupe inside the heuristic, so the
+    //    list is already unique.
+    let mut query_entity_vecs: Vec<(String, Vec<f32>)> =
+        Vec::with_capacity(query_entities.len());
+    for ent in &query_entities {
+        let v = embed_with_cache(ent, &embedder, &cache)
+            .with_context(|| format!("embed query entity '{ent}'"))?;
+        query_entity_vecs.push((ent.clone(), v));
+    }
+
+    // 4. Parallel BM25 + dense ANN.
     let bm25_path = facts_db_path.to_path_buf();
     let bm25_proj = project.to_string();
     let bm25_query = query.to_string();
     let bm25_handle = tokio::task::spawn_blocking(move || {
-        bm25_top_n(&bm25_path, &bm25_proj, &bm25_query, 100)
+        bm25_top_n(&bm25_path, &bm25_proj, &bm25_query, CANDIDATES_PER_RETRIEVER)
     });
 
     let ann_path = facts_db_path.to_path_buf();
     let ann_proj = project.to_string();
     let ann_query_vec = query_vec.clone();
     let ann_handle = tokio::task::spawn_blocking(move || {
-        ann_top_n(&ann_path, &ann_proj, &ann_query_vec, 100)
+        ann_top_n(&ann_path, &ann_proj, &ann_query_vec, CANDIDATES_PER_RETRIEVER)
     });
 
-    let bm25_ids = bm25_handle.await.context("join facts BM25 task")??;
-    let ann_ids = ann_handle.await.context("join facts ANN task")??;
-    let candidates_considered = bm25_ids.len() + ann_ids.len();
+    let bm25_hits = bm25_handle.await.context("join facts BM25 task")??;
+    let dense_hits = ann_handle.await.context("join facts ANN task")??;
 
-    // 4. Fuse — or fall back to BM25 if dense returned nothing (EH-6).
-    let fused: Vec<u64> = if ann_ids.is_empty() {
+    // 5. Entity boost — both paths (name match + vec sim) feed entity_links.
+    let entity_boost_map = {
+        let path = facts_db_path.to_path_buf();
+        let proj = project.to_string();
+        let names = query_entities.clone();
+        let entity_vecs = query_entity_vecs.clone();
+        tokio::task::spawn_blocking(move || {
+            compute_entity_boost(&path, &proj, &names, &entity_vecs)
+        })
+        .await
+        .context("join entity boost task")??
+    };
+
+    let candidates_considered =
+        bm25_hits.len() + dense_hits.len() + entity_boost_map.len();
+
+    // EH-6: if dense ANN is empty AND BM25 is empty AND no entity matches,
+    // there's nothing to score. Return empty cleanly.
+    if bm25_hits.is_empty() && dense_hits.is_empty() && entity_boost_map.is_empty() {
+        return Ok(FactsHybridResult {
+            hits: Vec::new(),
+            latency: t0.elapsed(),
+            candidates_considered: 0,
+        });
+    }
+    if dense_hits.is_empty() {
         tracing::warn!(
             target: "memlayer_eval::retrieve_facts",
             project = %project,
-            "facts ANN returned 0 results; falling back to BM25-only ranking (EH-6)"
+            "facts ANN returned 0 results; relying on BM25 + entity boost only (EH-6)"
         );
-        bm25_ids
-    } else {
-        crate::rrf::rrf_fuse(&[bm25_ids, ann_ids], 60)
-    };
-    let top_k: Vec<u64> = fused.into_iter().take(k.max(0) as usize).collect();
+    }
 
-    // 5. Fetch the top-k fact rows, preserving fused order.
-    let fetched_facts = fetch_facts_by_ids(facts_db_path, &top_k)
+    // 6. Build the additive score map and rank.
+    let scored = build_score_map(&bm25_hits, &dense_hits, &entity_boost_map);
+    let mut ranked: Vec<(i64, f32)> = scored
+        .iter()
+        .map(|(id, sc)| (*id, sc.combined()))
+        .collect();
+    // Stable secondary sort by id keeps output deterministic on score ties.
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+
+    let k_usize = k.max(0) as usize;
+    let top_k_ids: Vec<u64> = ranked
+        .into_iter()
+        .take(k_usize)
+        .map(|(id, _)| id as u64)
+        .collect();
+
+    // 7. Fetch the top-k fact rows preserving rank order.
+    let fetched_facts = fetch_facts_by_ids(facts_db_path, &top_k_ids)
         .context("fetch facts by id")?;
 
-    // 6. Open the storage project DB read-only ONCE for evidence expansion.
+    // 8. Open the storage project DB read-only ONCE for evidence expansion.
     let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
     let project_state = registry
         .get_or_open(project)
@@ -163,9 +232,9 @@ pub async fn retrieve_facts(
                 .collect::<Vec<_>>()
                 .join("\n"),
             Ok(_) => {
-                // EH-8: orphan evidence_obs_id (no rows in storage). Emit the
-                // fact only — losing one fact's evidence shouldn't kill the
-                // whole retrieval.
+                // EH-8: orphan evidence_obs_id (no rows in storage). Emit
+                // the fact only — losing one fact's evidence shouldn't
+                // kill the whole retrieval.
                 tracing::warn!(
                     target: "memlayer_eval::retrieve_facts",
                     project = %project,
@@ -203,22 +272,41 @@ pub async fn retrieve_facts(
     })
 }
 
-/// BM25 top-N over `facts_fts` filtered to `project`. Returns fact ids in
-/// BM25-ranked order (best first). Equal column weights for now — entity
-/// boost is owned by spec-task-19d.
+/// Embed `text`, hitting the on-disk cache before the model.
+fn embed_with_cache(
+    text: &str,
+    embedder: &Arc<dyn Embedder>,
+    cache: &Arc<EmbeddingCache>,
+) -> Result<Vec<f32>> {
+    let (mut hits_cache, _miss_idx) = cache.get_many(&[text]).context("cache lookup")?;
+    if let Some(v) = hits_cache[0].take() {
+        return Ok(v);
+    }
+    let mut vs = embedder
+        .embed(&[text])
+        .context("embed (cache miss)")?;
+    let v = vs.remove(0);
+    cache
+        .put_many(&[(text.to_string(), v.clone())])
+        .context("populate cache after embed")?;
+    Ok(v)
+}
+
+/// BM25 top-N over `facts_fts` filtered to `project`. Returns
+/// `(fact_id, raw_bm25_score)` in BM25-ranked order (best first).
 fn bm25_top_n(
     facts_db_path: &Path,
     project: &str,
     query: &str,
     n: i32,
-) -> Result<Vec<u64>> {
+) -> Result<Vec<(i64, f64)>> {
     let conn = open_with_vec(facts_db_path).context("open facts.db for BM25")?;
     let fts_query = crate::retrieve::tokenize(query);
     let limit = n.clamp(1, 1000);
 
     let mut stmt = conn
         .prepare(
-            "SELECT f.id
+            "SELECT f.id, bm25(facts_fts, 1.0, 1.0, 1.0, 1.0)
                FROM facts_fts
                JOIN facts f ON f.id = facts_fts.rowid
               WHERE facts_fts MATCH ?1
@@ -229,37 +317,32 @@ fn bm25_top_n(
         .context("prepare facts BM25 SELECT")?;
     let rows = stmt
         .query_map(params![fts_query, project, limit], |row| {
-            let id: i64 = row.get(0)?;
-            Ok(id as u64)
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
         })
         .context("run facts BM25 SELECT")?;
-    let mut ids = Vec::new();
+    let mut out = Vec::new();
     for r in rows {
-        ids.push(r.context("read facts BM25 id row")?);
+        out.push(r.context("read facts BM25 row")?);
     }
-    Ok(ids)
+    Ok(out)
 }
 
-/// Dense ANN top-N against `facts_vec` filtered to `project` via a join back
-/// to `facts`. `vec0`'s `MATCH` operator on a `float[N]` column expects an
-/// `N*4`-byte little-endian BLOB.
+/// Dense ANN top-N against `facts_vec` filtered to `project`. Returns
+/// `(fact_id, distance)` ordered by distance asc. vec0's MATCH on a
+/// `float[N]` column expects an `N*4`-byte little-endian BLOB.
 fn ann_top_n(
     facts_db_path: &Path,
     project: &str,
     query_vec: &[f32],
     n: i32,
-) -> Result<Vec<u64>> {
+) -> Result<Vec<(i64, f64)>> {
     let conn = open_with_vec(facts_db_path).context("open facts.db for ANN")?;
     let bytes: Vec<u8> = query_vec.iter().flat_map(|f| f.to_le_bytes()).collect();
     let limit = n.clamp(1, 1000);
 
-    // facts_vec.rowid maps directly to facts.id (no separate id_map for
-    // the eval-side facts schema — see migrations_eval/V1__facts.sql).
-    // We over-fetch from the vec table by `k` and post-filter to `project`,
-    // because vec0 doesn't accept arbitrary WHERE predicates alongside MATCH.
     let mut stmt = conn
         .prepare(
-            "SELECT f.id
+            "SELECT f.id, distance
                FROM facts_vec v
                JOIN facts f ON f.id = v.rowid
               WHERE v.embedding MATCH ?1
@@ -270,20 +353,128 @@ fn ann_top_n(
         .context("prepare facts ANN SELECT")?;
     let rows = stmt
         .query_map(params![bytes, limit, project], |row| {
-            let id: i64 = row.get(0)?;
-            Ok(id as u64)
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
         })
         .context("run facts ANN SELECT")?;
-    let mut ids = Vec::new();
+    let mut out = Vec::new();
     for r in rows {
-        ids.push(r.context("read facts ANN id row")?);
+        out.push(r.context("read facts ANN row")?);
     }
-    Ok(ids)
+    Ok(out)
+}
+
+/// Compute the per-fact entity boost from query entities.
+///
+/// Two parallel paths feed `entity_links`:
+///   1. **Name match** (SQL): exact `(project, name)` lookup against
+///      `entities`. Cheap, deterministic, and covers direct mentions.
+///   2. **Vector match** (ANN): top-N over `entities_vec` at distance
+///      ≤ `ENTITY_VEC_DISTANCE_THRESHOLD`. Catches synonyms / paraphrases.
+///
+/// For each fact, we count the number of *distinct query entities* (by
+/// query-entity name, not by matched entity row) that resolve to a link.
+/// The boost is `BOOST_PER_ENTITY * count`, capped at `ENTITY_BOOST_CAP`.
+fn compute_entity_boost(
+    facts_db_path: &Path,
+    project: &str,
+    query_entity_names: &[String],
+    query_entity_vecs: &[(String, Vec<f32>)],
+) -> Result<HashMap<i64, f32>> {
+    if query_entity_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let conn = open_with_vec(facts_db_path).context("open facts.db for entity boost")?;
+
+    // For each query entity name, collect the set of fact_ids it links to
+    // (via either name match or vec ANN). We accumulate per-query-entity
+    // sets so we can compute "distinct query entities matching" per fact
+    // — the boost cap is on that count, not on the row count.
+    let mut per_query_entity_links: HashMap<String, HashSet<i64>> = HashMap::new();
+
+    // Path 1: exact name match.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT el.fact_id
+                   FROM entities e
+                   JOIN entity_links el ON el.entity_id = e.id
+                  WHERE e.project = ?1 AND e.name = ?2",
+            )
+            .context("prepare entity name-match SELECT")?;
+        for name in query_entity_names {
+            let rows = stmt
+                .query_map(params![project, name], |r| r.get::<_, i64>(0))
+                .context("run entity name-match SELECT")?;
+            let entry = per_query_entity_links
+                .entry(name.clone())
+                .or_default();
+            for r in rows {
+                let fact_id = r.context("read entity name-match row")?;
+                entry.insert(fact_id);
+            }
+        }
+    }
+
+    // Path 2: entities_vec ANN. For each query entity vec, top-N matches
+    // at distance ≤ threshold, then JOIN entity_links. We prepare per-query
+    // because vec0 binds a single query vector per statement execution.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT el.fact_id, ev.distance
+                   FROM entities_vec ev
+                   JOIN entities e ON e.id = ev.rowid
+                   JOIN entity_links el ON el.entity_id = e.id
+                  WHERE ev.embedding MATCH ?1
+                    AND k = ?2
+                    AND e.project = ?3
+                    AND ev.distance <= ?4
+                  ORDER BY ev.distance ASC",
+            )
+            .context("prepare entity vec ANN SELECT")?;
+        for (name, vec) in query_entity_vecs {
+            let bytes: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let rows = stmt
+                .query_map(
+                    params![
+                        bytes,
+                        ENTITY_VEC_TOP_N,
+                        project,
+                        ENTITY_VEC_DISTANCE_THRESHOLD,
+                    ],
+                    |r| Ok(r.get::<_, i64>(0)?),
+                )
+                .context("run entity vec ANN SELECT")?;
+            let entry = per_query_entity_links
+                .entry(name.clone())
+                .or_default();
+            for r in rows {
+                let fact_id = r.context("read entity vec ANN row")?;
+                entry.insert(fact_id);
+            }
+        }
+    }
+
+    // Aggregate: for each fact, count the number of distinct query entities
+    // that matched it (across both paths).
+    let mut per_fact_count: HashMap<i64, u32> = HashMap::new();
+    for fact_set in per_query_entity_links.values() {
+        for fact_id in fact_set {
+            *per_fact_count.entry(*fact_id).or_insert(0) += 1;
+        }
+    }
+
+    // Convert counts to capped boost values.
+    let mut out: HashMap<i64, f32> = HashMap::with_capacity(per_fact_count.len());
+    for (fact_id, count) in per_fact_count {
+        let boost = (BOOST_PER_ENTITY * count as f32).min(ENTITY_BOOST_CAP);
+        out.insert(fact_id, boost);
+    }
+    Ok(out)
 }
 
 /// Fetch the canonical fact rows for `ids`, preserving the input order.
 /// Returns `(id, subject, predicate, object, temporal, evidence_obs_id)`.
-/// Caller does not need to keep the connection alive — all data is owned.
 fn fetch_facts_by_ids(
     facts_db_path: &Path,
     ids: &[u64],
@@ -293,8 +484,6 @@ fn fetch_facts_by_ids(
     }
     let conn = open_with_vec(facts_db_path).context("open facts.db for fetch")?;
 
-    // Build "?,?,?,…" placeholder list. SQLite's bound-parameter limit is
-    // 32766 by default; our k is tiny so we never approach it.
     let placeholders = std::iter::repeat("?")
         .take(ids.len())
         .collect::<Vec<_>>()
@@ -330,8 +519,6 @@ fn fetch_facts_by_ids(
         by_id.insert(row.0, row);
     }
 
-    // Rebuild in fused order. Skip ids that vanished between fusion and the
-    // SELECT-back; the eval harness shouldn't crash on a stale snapshot.
     let mut out = Vec::with_capacity(ids.len());
     for &id in ids {
         if let Some(row) = by_id.remove(&(id as i64)) {
@@ -349,8 +536,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// `fetch_facts_by_ids` must preserve the order of its input id slice
-    /// regardless of how SQLite returns the underlying `IN (...)` rows. This
-    /// guards the contract relied on by RRF-fused output.
+    /// regardless of how SQLite returns the underlying `IN (...)` rows.
     #[test]
     fn fetch_facts_by_ids_preserves_input_order() {
         let tmp = TempDir::new().unwrap();
@@ -372,8 +558,6 @@ mod tests {
         }
         drop(db);
 
-        // Request rows out of insertion order. SQLite's IN (...) makes no
-        // ordering promise, so this exercises the HashMap rebuild.
         let ids = vec![3_u64, 1, 2];
         let rows = fetch_facts_by_ids(&path, &ids).expect("fetch");
         assert_eq!(rows.len(), 3);
@@ -388,7 +572,6 @@ mod tests {
         assert_eq!(rows[2].4, None);
     }
 
-    /// Missing ids are silently dropped (no error, no placeholder rows).
     #[test]
     fn fetch_facts_by_ids_skips_unknown_ids() {
         let tmp = TempDir::new().unwrap();
@@ -408,17 +591,14 @@ mod tests {
         assert_eq!(rows[0].0, 1);
     }
 
-    /// Empty id slice returns empty without opening the DB.
     #[test]
     fn fetch_facts_by_ids_empty_input() {
-        // Path doesn't even need to exist — the early return guards open.
         let rows = fetch_facts_by_ids(Path::new("/nonexistent/facts.db"), &[]).unwrap();
         assert!(rows.is_empty());
     }
 
     /// EH-5: `retrieve_facts` must hard-fail with `FactsDbMissing` when the
-    /// facts.db file is absent. This path doesn't need an embedder so we use
-    /// a stub.
+    /// facts.db file is absent.
     #[tokio::test]
     async fn retrieve_facts_eh5_missing_db() {
         struct StubEmbedder;
