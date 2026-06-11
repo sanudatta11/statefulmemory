@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod datasets;
+pub mod entities_writer;
 pub mod extract_pipeline;
 pub mod facts_db;
 pub mod facts_writer;
