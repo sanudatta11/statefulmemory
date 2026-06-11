@@ -152,6 +152,66 @@ pub fn insert_facts_for_project(
     Ok(written)
 }
 
+/// Same as `insert_facts_for_project` but returns the auto-generated fact
+/// IDs in input order. Used by the orchestrator (spec-task-19c) to wire
+/// entity extraction to the freshly-written rows without a second SELECT.
+pub fn insert_facts_for_project_returning_ids(
+    conn: &mut Connection,
+    project: &str,
+    batch: &[FactWithEmbedding],
+) -> Result<Vec<i64>> {
+    if batch.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let tx = conn.transaction().context("begin facts insert tx")?;
+    let mut ids: Vec<i64> = Vec::with_capacity(batch.len());
+
+    {
+        let mut ins_fact = tx
+            .prepare(
+                "INSERT INTO facts(project, evidence_obs_id, subject, predicate, \
+                                   object, temporal, salience, source_session) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .context("prepare facts insert")?;
+        let mut ins_vec = tx
+            .prepare("INSERT INTO facts_vec(rowid, embedding) VALUES (?1, ?2)")
+            .context("prepare facts_vec insert")?;
+
+        for fwe in batch {
+            let f = &fwe.fact;
+            ins_fact
+                .execute(params![
+                    project,
+                    f.evidence_obs_id,
+                    f.subject,
+                    f.predicate,
+                    f.object,
+                    f.temporal,
+                    f.salience as f64,
+                    f.source_session,
+                ])
+                .context("insert into facts")?;
+
+            let rowid: i64 = tx.last_insert_rowid();
+            ids.push(rowid);
+
+            let bytes: Vec<u8> = fwe
+                .embedding
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect();
+            ins_vec
+                .execute(params![rowid, bytes])
+                .context("insert into facts_vec")?;
+        }
+    }
+
+    tx.commit().context("commit facts insert tx")?;
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

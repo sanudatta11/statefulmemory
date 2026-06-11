@@ -36,11 +36,13 @@ use memlayer_embed::cache::EmbeddingCache;
 use memlayer_embed::Embedder;
 use memlayer_extract::cache::{CachedExtraction, ExtractionCache};
 use memlayer_extract::claude_cli::{ClaudeClient, HAIKU_MODEL};
+use memlayer_extract::entities::EntityExtractor;
 use memlayer_extract::{build_extraction_prompt, parse_facts, Fact, Turn};
 use memlayer_storage::ProjectRegistry;
 
+use crate::entities_writer::{bulk_upsert_entities, EntityRow};
 use crate::facts_db::FactsDb;
-use crate::facts_writer::{insert_facts_for_project, FactWithEmbedding};
+use crate::facts_writer::{insert_facts_for_project_returning_ids, FactWithEmbedding};
 
 const DEFAULT_CONCURRENCY: usize = 4;
 const DEFAULT_WINDOW_SIZE: usize = 6;
@@ -54,6 +56,7 @@ pub struct ExtractStats {
     pub windows_cached: usize,
     pub windows_failed: usize,
     pub facts_written: usize,
+    pub entities_written: usize,
     pub elapsed_ms: u128,
 }
 
@@ -65,6 +68,10 @@ pub struct ExtractPipeline {
     pub data_dir: PathBuf,
     pub claude: Arc<dyn ClaudeClient>,
     pub embedder: Arc<dyn Embedder>,
+    /// Optional entity extractor (spec-task-19c). When set, runs after fact
+    /// insert to populate the entities + entity_links + entities_vec tables.
+    /// When None, the pipeline behaves as in spec-task-18 (facts only).
+    pub entity_extractor: Option<Arc<dyn EntityExtractor>>,
     /// Concurrency cap for the Haiku fan-out (default 4).
     pub concurrency: usize,
     /// Window size in turns (default 6).
@@ -83,10 +90,17 @@ impl ExtractPipeline {
             data_dir: data_dir.into(),
             claude,
             embedder,
+            entity_extractor: None,
             concurrency: DEFAULT_CONCURRENCY,
             window_size: DEFAULT_WINDOW_SIZE,
             window_stride: DEFAULT_WINDOW_STRIDE,
         }
+    }
+
+    /// Builder-style setter for the entity extractor (spec-task-19c).
+    pub fn with_entity_extractor(mut self, e: Arc<dyn EntityExtractor>) -> Self {
+        self.entity_extractor = Some(e);
+        self
     }
 
     /// Extract facts for one project (one LoCoMo conversation, one LME
@@ -323,14 +337,134 @@ impl ExtractPipeline {
         }
 
         // ---------- 9. Write to facts.db ----------
-        let written = insert_facts_for_project(&mut facts_db.conn, project, &batch)
+        let fact_ids = insert_facts_for_project_returning_ids(&mut facts_db.conn, project, &batch)
             .context("insert facts into facts.db")?;
-        stats.facts_written = written;
+        stats.facts_written = fact_ids.len();
+
+        // ---------- 10. Entity extraction + writeback (spec-task-19c) ----------
+        if let Some(ext) = &self.entity_extractor {
+            let entity_count = extract_and_write_entities(
+                &mut facts_db.conn,
+                project,
+                &batch,
+                &fact_ids,
+                ext.as_ref(),
+                &self.embedder,
+                &embedding_cache,
+            )
+            .await
+            .context("extract + persist entities for project")?;
+            stats.entities_written = entity_count;
+        }
 
         stats.elapsed_ms = t0.elapsed().as_millis();
         info!(project, ?stats, "extract_project complete");
         Ok(stats)
     }
+}
+
+/// For each (fact, fact_id), run the entity extractor, dedup names per
+/// project, embed the unique names (cached), and bulk-upsert into
+/// `entities` + `entity_links` + `entities_vec`. Returns the count of
+/// distinct entities written.
+async fn extract_and_write_entities(
+    conn: &mut rusqlite::Connection,
+    project: &str,
+    batch: &[FactWithEmbedding],
+    fact_ids: &[i64],
+    extractor: &dyn EntityExtractor,
+    embedder: &Arc<dyn Embedder>,
+    embedding_cache: &EmbeddingCache,
+) -> Result<usize> {
+    use std::collections::BTreeMap;
+
+    if batch.is_empty() || fact_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // 1. Per-fact entity extraction. Sequential is fine here — each call is
+    //    cheap (heuristic) or already cached at the LLM client layer.
+    //    BTreeMap keeps deterministic ordering for downstream embedding.
+    let mut entity_to_fact_ids: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    for (fwe, &fact_id) in batch.iter().zip(fact_ids.iter()) {
+        let names = match extractor.extract(&fwe.fact).await {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(
+                    fact_id,
+                    subject = %fwe.fact.subject,
+                    error = %e,
+                    "entity extractor failed for fact; skipping"
+                );
+                continue;
+            }
+        };
+        for name in names {
+            if name.is_empty() {
+                continue;
+            }
+            entity_to_fact_ids
+                .entry(name)
+                .or_default()
+                .push(fact_id);
+        }
+    }
+
+    if entity_to_fact_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // 2. Embed the unique entity names (cached).
+    let names: Vec<String> = entity_to_fact_ids.keys().cloned().collect();
+    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let (cached, miss_indices) = embedding_cache
+        .get_many(&name_refs)
+        .context("entity-name cache lookup")?;
+    let mut embeddings: Vec<Option<Vec<f32>>> = cached;
+
+    if !miss_indices.is_empty() {
+        let miss_texts: Vec<&str> = miss_indices.iter().map(|&i| name_refs[i]).collect();
+        let fresh = embedder
+            .embed(&miss_texts)
+            .context("embed entity names")?;
+        if fresh.len() != miss_texts.len() {
+            anyhow::bail!(
+                "embedder returned {} vectors for {} entity names",
+                fresh.len(),
+                miss_texts.len()
+            );
+        }
+        let put_items: Vec<(String, Vec<f32>)> = miss_indices
+            .iter()
+            .zip(fresh.iter())
+            .map(|(&i, v)| (names[i].clone(), v.clone()))
+            .collect();
+        embedding_cache
+            .put_many(&put_items)
+            .context("persist entity-name embeddings")?;
+        for (&i, v) in miss_indices.iter().zip(fresh.into_iter()) {
+            embeddings[i] = Some(v);
+        }
+    }
+
+    // 3. Build EntityRow batch and bulk-upsert.
+    let mut rows: Vec<EntityRow> = Vec::with_capacity(names.len());
+    for (i, name) in names.into_iter().enumerate() {
+        let Some(embedding) = embeddings[i].take() else {
+            warn!(name = %name, "missing embedding for entity name; skipping");
+            continue;
+        };
+        let fact_ids = entity_to_fact_ids.remove(&name).unwrap_or_default();
+        rows.push(EntityRow {
+            name,
+            embedding,
+            linked_fact_ids: fact_ids,
+            kind: None,
+        });
+    }
+    let written = bulk_upsert_entities(conn, project, &rows)
+        .context("bulk upsert entities")?;
+    Ok(written)
 }
 
 /// Read all live observations for the open project as `Turn`s, ordered by id.
