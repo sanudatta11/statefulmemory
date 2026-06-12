@@ -76,6 +76,13 @@ enum Commands {
         /// Optional: stop after extracting N projects (cheap smoke-test).
         #[arg(long)]
         project_limit: Option<usize>,
+
+        /// Optional: extract only this exact project (e.g.
+        /// `--project locomo-conv-26`). Wins over `--project-limit`.
+        /// Use when you need to target the conversations the smoke
+        /// queries actually hit.
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Ingest-only (no LLM calls). Use this to pre-populate BEAM at scale.
@@ -176,8 +183,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Extract { benchmark, data_dir, limit, project_limit } => {
-            run_extract(benchmark, &data_dir, limit, project_limit).await?;
+        Commands::Extract { benchmark, data_dir, limit, project_limit, project } => {
+            run_extract(benchmark, &data_dir, limit, project_limit, project).await?;
         }
 
         Commands::Summarize { reports, out } => {
@@ -228,6 +235,7 @@ async fn run_extract(
     data_dir: &std::path::Path,
     limit: Option<usize>,
     project_limit: Option<usize>,
+    project_filter: Option<String>,
 ) -> Result<()> {
     use std::sync::Arc;
     use memlayer_embed::BgeSmallEmbedder;
@@ -273,13 +281,24 @@ async fn run_extract(
         .iter()
         .filter_map(|m| if seen.insert(m.project.clone()) { Some(m.project.clone()) } else { None })
         .collect();
-    let projects: Vec<String> = match project_limit {
-        Some(n) => {
+    let projects: Vec<String> = match (project_filter.as_ref(), project_limit) {
+        (Some(name), _) => {
+            // Explicit --project wins. If the name isn't in the dataset,
+            // bail with a clear error rather than silently extracting nothing.
+            if !all_projects.iter().any(|p| p == name) {
+                anyhow::bail!(
+                    "--project '{name}' not found in {benchmark:?} dataset. Available projects: {}",
+                    all_projects.join(", ")
+                );
+            }
+            vec![name.clone()]
+        }
+        (None, Some(n)) => {
             let mut sorted = all_projects;
             sorted.sort_by_key(|p| counts.get(p).copied().unwrap_or(0));
             sorted.into_iter().take(n).collect()
         }
-        None => all_projects,
+        (None, None) => all_projects,
     };
 
     let total_projects = projects.len();
