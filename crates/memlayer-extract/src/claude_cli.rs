@@ -49,7 +49,7 @@ impl Default for ClaudeCliClient {
 impl ClaudeClient for ClaudeCliClient {
     async fn ask(&self, prompt: &str, model: &str) -> Result<String> {
         let child = Command::new("claude")
-            .args(["-p", prompt, "--model", model])
+            .args(["-p", prompt, "--model", model, "--output-format", "text"])
             // Same proxy strip as memlayer-eval/src/judge.rs:46-51 — Bedrock SDK
             // doesn't speak socks5h, which Capital One's awsproxy sets.
             .env_remove("ALL_PROXY")
