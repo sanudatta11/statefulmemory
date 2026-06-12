@@ -13,8 +13,8 @@ use tracing::debug;
 
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(120);
 
-const ANSWER_MODEL: &str = "sonnet";
-const JUDGE_MODEL: &str = "haiku";
+const ANSWER_MODEL: &str = "claude-4.6-sonnet";
+const JUDGE_MODEL: &str = "claude-4.5-haiku";
 
 pub struct JudgeClient;
 
