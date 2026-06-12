@@ -20,7 +20,7 @@ use tracing::debug;
 /// Timeout for a single Claude CLI call (Bedrock proxy can be slow).
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub const HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
+pub const HAIKU_MODEL: &str = "haiku";
 
 /// Abstract Claude client. Real impl shells out; mock returns canned output.
 #[async_trait]
