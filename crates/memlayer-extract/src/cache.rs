@@ -73,7 +73,7 @@ impl ExtractionCache {
             .context("set journal_mode=WAL")?;
         conn.pragma(None, "synchronous", "NORMAL", |_| Ok(()))
             .context("set synchronous=NORMAL")?;
-        conn.execute(SCHEMA, [])
+        conn.execute_batch(SCHEMA)
             .context("create extraction cache schema")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
