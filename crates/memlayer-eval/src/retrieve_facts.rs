@@ -312,12 +312,12 @@ fn bm25_top_n(
 
     let mut stmt = conn
         .prepare(
-            "SELECT f.id, bm25(facts_fts, 1.0, 1.0, 1.0, 1.0)
+            "SELECT f.id, bm25(facts_fts, 5.0, 1.0, 3.0, 0.5)
                FROM facts_fts
                JOIN facts f ON f.id = facts_fts.rowid
               WHERE facts_fts MATCH ?1
                 AND f.project = ?2
-              ORDER BY bm25(facts_fts, 1.0, 1.0, 1.0, 1.0) ASC
+              ORDER BY bm25(facts_fts, 5.0, 1.0, 3.0, 0.5) ASC
               LIMIT ?3",
         )
         .context("prepare facts BM25 SELECT")?;

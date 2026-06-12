@@ -200,6 +200,13 @@ pub async fn run(
                 // remediation message; if facts.db is missing entirely we fall
                 // back to the P1 retrieve_hybrid (raw observations + RRF) so
                 // a fresh checkout still runs without `eval extract`.
+                //
+                // Fallback path: if retrieve_facts returns 0 hits (the file
+                // exists but the queried project has no facts — e.g. partial
+                // extraction), we cascade to retrieve_hybrid against raw
+                // observations. Without this fallback, a project with raw
+                // obs but no facts scores 0% even though BM25+dense over
+                // the obs would have answered correctly.
                 let facts_db_path = facts_db_path_for(cfg.benchmark, &cfg.data_dir);
                 if facts_db_path.exists() {
                     let ret = crate::retrieve_facts::retrieve_facts(
@@ -214,8 +221,28 @@ pub async fn run(
                     )
                     .await
                     .with_context(|| format!("facts retrieve for query '{}'", q.id))?;
-                    let us = ret.latency.as_micros() as u64;
-                    (ret.hits, us)
+                    if ret.hits.is_empty() {
+                        info!(
+                            query_id = %q.id,
+                            project = %project,
+                            "facts retrieve returned 0 hits — falling back to hybrid over raw observations"
+                        );
+                        let fallback = crate::retrieve_hybrid::retrieve_hybrid(
+                            &cfg.data_dir,
+                            &project,
+                            &q.question,
+                            cfg.k,
+                            embedder.clone(),
+                            cache.clone(),
+                        )
+                        .await
+                        .with_context(|| format!("hybrid fallback for query '{}'", q.id))?;
+                        let us = (ret.latency + fallback.latency).as_micros() as u64;
+                        (fallback.hits, us)
+                    } else {
+                        let us = ret.latency.as_micros() as u64;
+                        (ret.hits, us)
+                    }
                 } else {
                     let ret = crate::retrieve_hybrid::retrieve_hybrid(
                         &cfg.data_dir,
