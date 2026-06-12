@@ -186,12 +186,49 @@ impl ExtractPipeline {
             "starting extraction"
         );
 
-        // ---------- 5. Fan out Haiku for misses ----------
+        if miss_indices.is_empty() {
+            // All windows were cache hits — nothing to fan out.
+            stats.elapsed_ms = t0.elapsed().as_millis();
+            return Ok(stats);
+        }
+
+        // ---------- 5a. Probe: run first miss synchronously ----------
+        // If the very first Haiku call returns empty (bad model ID, auth
+        // failure, rate-limit), bail immediately rather than spawning
+        // hundreds of tasks that will all fail identically.
+        {
+            let probe_idx = miss_indices[0];
+            let probe_window = &windows[probe_idx];
+            let probe_prompt = build_extraction_prompt(probe_window, None);
+            info!(project, window = probe_idx, "probe: testing first window before fan-out");
+            let probe_raw = self.claude.ask(&probe_prompt, HAIKU_MODEL).await
+                .with_context(|| format!("probe window {probe_idx} failed"))?;
+            let probe_facts = parse_facts(&probe_raw, probe_window);
+            if probe_facts.is_empty() {
+                // Cache the failure marker and abort — no point running the rest.
+                let _ = extraction_cache.put_failed(&window_keys[probe_idx]);
+                stats.windows_failed += 1;
+                stats.elapsed_ms = t0.elapsed().as_millis();
+                warn!(
+                    project,
+                    window = probe_idx,
+                    "probe window returned empty facts — aborting fan-out (check model ID / auth)"
+                );
+                return Ok(stats);
+            }
+            info!(project, window = probe_idx, facts = probe_facts.len(), "probe ok — proceeding with fan-out");
+            // Persist probe result now; fan-out loop skips index 0.
+            extraction_cache.put_many(&[(window_keys[probe_idx].clone(), probe_facts)])
+                .context("cache probe result")?;
+            stats.windows_extracted += 1;
+        }
+
+        // ---------- 5b. Fan out Haiku for remaining misses ----------
         let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
         let mut handles: Vec<tokio::task::JoinHandle<Result<(usize, Result<Vec<Fact>>)>>> =
-            Vec::with_capacity(miss_indices.len());
+            Vec::with_capacity(miss_indices.len().saturating_sub(1));
 
-        for (task_n, &i) in miss_indices.iter().enumerate() {
+        for (task_n, &i) in miss_indices.iter().enumerate().skip(1) {
             let permit = sem
                 .clone()
                 .acquire_owned()
