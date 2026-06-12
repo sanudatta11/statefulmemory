@@ -17,6 +17,7 @@ pub mod prompt;
 pub mod retrieve;
 pub mod retrieve_facts;
 pub mod retrieve_hybrid;
+pub mod rerank;
 pub mod rrf;
 pub mod runner;
 pub mod scoring;

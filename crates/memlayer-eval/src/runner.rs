@@ -67,6 +67,10 @@ pub struct QueryResult {
     pub retrieval_us: u64,
     pub end_to_end_us: u64,
     pub prompt_tokens: usize,
+    /// Rerank stage latency (Haiku call + parse). None when rerank is
+    /// disabled for the run; spec-task-23 / SC-7.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_us: Option<u64>,
 }
 
 /// Aggregated benchmark report.
@@ -81,6 +85,12 @@ pub struct RunReport {
     pub retrieval_p95_ms: f64,
     pub end_to_end_p50_ms: f64,
     pub end_to_end_p95_ms: f64,
+    /// Reported separately so SC-5 (retrieval p50 < 50ms) is not gated
+    /// by the rerank LLM call. None when rerank is disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_p50_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_p95_ms: Option<f64>,
     pub query_results: Vec<QueryResult>,
 }
 
@@ -96,7 +106,14 @@ impl RunReport {
         md.push_str(&format!("| Retrieval p50 | {:.2}ms |\n", self.retrieval_p50_ms));
         md.push_str(&format!("| Retrieval p95 | {:.2}ms |\n", self.retrieval_p95_ms));
         md.push_str(&format!("| End-to-end p50 | {:.2}ms |\n", self.end_to_end_p50_ms));
-        md.push_str(&format!("| End-to-end p95 | {:.2}ms |\n\n", self.end_to_end_p95_ms));
+        md.push_str(&format!("| End-to-end p95 | {:.2}ms |\n", self.end_to_end_p95_ms));
+        if let Some(p50) = self.rerank_p50_ms {
+            md.push_str(&format!("| Rerank p50 | {:.2}ms |\n", p50));
+        }
+        if let Some(p95) = self.rerank_p95_ms {
+            md.push_str(&format!("| Rerank p95 | {:.2}ms |\n", p95));
+        }
+        md.push_str("\n");
         md.push_str("## Per-query results\n\n");
         md.push_str("| id | correct | ret_ms | e2e_ms | tokens |\n|---|---|---|---|---|\n");
         for q in &self.query_results {
@@ -128,6 +145,18 @@ pub async fn run(
 
     // --- Evaluate ---
     let judge = JudgeClient::new().context("create judge client")?;
+
+    // Reuse the same shell-out client used by extraction so rerank shares
+    // the proxy-strip + timeout machinery. Built once and reused per query.
+    let rerank_claude: Option<std::sync::Arc<dyn memlayer_extract::claude_cli::ClaudeClient>> =
+        if cfg.retrieval.rerank {
+            Some(std::sync::Arc::new(
+                memlayer_extract::claude_cli::ClaudeCliClient::new(),
+            ))
+        } else {
+            None
+        };
+
     let queries_to_run: Vec<_> = match cfg.limit {
         Some(n) => queries.into_iter().take(n).collect(),
         None    => queries,
@@ -183,38 +212,30 @@ pub async fn run(
 
         // Retrieve — branch on mode. HybridRerank uses Hybrid for now;
         // the rerank stage lands in spec-task-21 (P3).
-        let (hits, retrieval_us) = match cfg.retrieval.mode {
+        let (hits, retrieval_us, rerank_us) = match cfg.retrieval.mode {
             RetrievalMode::Bm25 => {
                 let ret = retrieve(&cfg.data_dir, &project, &q.question, cfg.k)
                     .with_context(|| format!("retrieve for query '{}'", q.id))?;
                 let us = ret.latency.as_micros() as u64;
-                (ret.hits, us)
+                (ret.hits, us, None)
             }
             RetrievalMode::Hybrid | RetrievalMode::HybridRerank => {
                 let (embedder, cache) = hybrid_stack.as_ref().expect(
                     "hybrid_stack initialised when mode is Hybrid or HybridRerank",
                 );
-                // Prefer the P2 facts path when facts.db exists at the
-                // benchmark-conventional location (data_dir/<benchmark>/facts.db).
-                // EH-5 inside retrieve_facts catches missing files with a clear
-                // remediation message; if facts.db is missing entirely we fall
-                // back to the P1 retrieve_hybrid (raw observations + RRF) so
-                // a fresh checkout still runs without `eval extract`.
-                //
-                // Fallback path: if retrieve_facts returns 0 hits (the file
-                // exists but the queried project has no facts — e.g. partial
-                // extraction), we cascade to retrieve_hybrid against raw
-                // observations. Without this fallback, a project with raw
-                // obs but no facts scores 0% even though BM25+dense over
-                // the obs would have answered correctly.
+                // Over-fetch when reranking so the LLM has more candidates
+                // to reorder. 3x is the locked-grill choice — enough range
+                // to surface buried correct facts without ballooning the
+                // rerank prompt past Haiku's preferred ~30-item ceiling.
+                let retrieve_k = if cfg.retrieval.rerank { cfg.k * 3 } else { cfg.k };
                 let facts_db_path = facts_db_path_for(cfg.benchmark, &cfg.data_dir);
-                if facts_db_path.exists() {
+                let (raw_hits, raw_retrieval_us) = if facts_db_path.exists() {
                     let ret = crate::retrieve_facts::retrieve_facts(
                         &cfg.data_dir,
                         &facts_db_path,
                         &project,
                         &q.question,
-                        cfg.k,
+                        retrieve_k,
                         cfg.retrieval.evidence_window,
                         embedder.clone(),
                         cache.clone(),
@@ -231,7 +252,7 @@ pub async fn run(
                             &cfg.data_dir,
                             &project,
                             &q.question,
-                            cfg.k,
+                            retrieve_k,
                             embedder.clone(),
                             cache.clone(),
                         )
@@ -240,22 +261,41 @@ pub async fn run(
                         let us = (ret.latency + fallback.latency).as_micros() as u64;
                         (fallback.hits, us)
                     } else {
-                        let us = ret.latency.as_micros() as u64;
-                        (ret.hits, us)
+                        (ret.hits, ret.latency.as_micros() as u64)
                     }
                 } else {
                     let ret = crate::retrieve_hybrid::retrieve_hybrid(
                         &cfg.data_dir,
                         &project,
                         &q.question,
-                        cfg.k,
+                        retrieve_k,
                         embedder.clone(),
                         cache.clone(),
                     )
                     .await
                     .with_context(|| format!("hybrid retrieve for query '{}'", q.id))?;
-                    let us = ret.latency.as_micros() as u64;
-                    (ret.hits, us)
+                    (ret.hits, ret.latency.as_micros() as u64)
+                };
+
+                // Rerank stage: run only when configured AND we have more
+                // candidates than the target k. Tracked separately from
+                // retrieval latency so SC-5 (retrieval p50 < 50ms) is
+                // measured cleanly even with rerank enabled.
+                if let Some(claude) = rerank_claude.as_ref() {
+                    let (reranked, rerank_dur) = crate::rerank::rerank(
+                        claude.clone(),
+                        &raw_hits,
+                        &q.question,
+                        cfg.k as usize,
+                    )
+                    .await
+                    .with_context(|| format!("rerank for query '{}'", q.id))?;
+                    (reranked, raw_retrieval_us, Some(rerank_dur.as_micros() as u64))
+                } else {
+                    // No rerank: trim over-fetched candidates back to k.
+                    let trimmed: Vec<String> =
+                        raw_hits.into_iter().take(cfg.k as usize).collect();
+                    (trimmed, raw_retrieval_us, None)
                 }
             }
         };
@@ -294,6 +334,7 @@ pub async fn run(
             correct = correct,
             hits = hits.len(),
             retrieval_ms = (retrieval_us as f64) / 1000.0,
+            rerank_ms = rerank_us.map(|us| (us as f64) / 1000.0).unwrap_or(0.0),
             e2e_ms = (end_to_end_us as f64) / 1000.0,
             "query complete"
         );
@@ -312,7 +353,9 @@ pub async fn run(
                 },
                 "k": cfg.k,
                 "evidence_window": cfg.retrieval.evidence_window,
+                "rerank_enabled": cfg.retrieval.rerank,
                 "retrieval_us": retrieval_us,
+                "rerank_us": rerank_us,
                 "hits_count": hits.len(),
                 "hits": hits,
                 "answer_prompt_system": system,
@@ -337,6 +380,7 @@ pub async fn run(
             retrieval_us,
             end_to_end_us,
             prompt_tokens,
+            rerank_us,
         });
     }
 
@@ -412,6 +456,16 @@ fn build_report(
     let e2e_p50 = percentile_ms(&mut results.iter().map(|r| r.end_to_end_us).collect::<Vec<_>>(), 50);
     let e2e_p95 = percentile_ms(&mut results.iter().map(|r| r.end_to_end_us).collect::<Vec<_>>(), 95);
 
+    let rerank_samples: Vec<u64> = results.iter().filter_map(|r| r.rerank_us).collect();
+    let (rerank_p50_ms, rerank_p95_ms) = if rerank_samples.is_empty() {
+        (None, None)
+    } else {
+        (
+            Some(percentile_ms(&mut rerank_samples.clone(), 50)),
+            Some(percentile_ms(&mut rerank_samples.clone(), 95)),
+        )
+    };
+
     RunReport {
         benchmark: format!("{kind:?} ({mode_tag}, w={evidence_window})"),
         total_queries: total,
@@ -422,6 +476,8 @@ fn build_report(
         retrieval_p95_ms: retrieval_p95,
         end_to_end_p50_ms: e2e_p50,
         end_to_end_p95_ms: e2e_p95,
+        rerank_p50_ms,
+        rerank_p95_ms,
         query_results: results,
     }
 }

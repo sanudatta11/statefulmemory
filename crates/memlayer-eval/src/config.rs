@@ -46,8 +46,36 @@ impl Default for RetrievalConfig {
     }
 }
 
-/// Stub: filled out in P3 (spec-task-22). For now returns defaults
-/// so callers compile.
-pub fn default_profile(_b: BenchmarkKind) -> RetrievalConfig {
-    RetrievalConfig::default()
+/// Per-benchmark default retrieval profile (spec-task-22, P3).
+///
+/// LoCoMo + LongMemEval are conversational benchmarks where reranking
+/// pays off: top-30 candidates get reordered by Haiku before the answer
+/// LLM sees them. Evidence-window expansion adds surrounding turns so
+/// the judge has conversational context.
+///
+/// BEAM (1M / 10M observations) is a recall benchmark where the LLM
+/// rerank cost would dominate end-to-end latency. Stay on plain hybrid
+/// (BM25 + dense, no rerank) and skip evidence expansion (BEAM facts
+/// are atomic — no surrounding session to pull).
+pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
+    match b {
+        BenchmarkKind::Locomo => RetrievalConfig {
+            mode: RetrievalMode::HybridRerank,
+            k: 10,
+            evidence_window: 2,
+            rerank: true,
+        },
+        BenchmarkKind::Longmemeval => RetrievalConfig {
+            mode: RetrievalMode::HybridRerank,
+            k: 10,
+            evidence_window: 4,
+            rerank: true,
+        },
+        BenchmarkKind::Beam1m | BenchmarkKind::Beam10m => RetrievalConfig {
+            mode: RetrievalMode::Hybrid,
+            k: 10,
+            evidence_window: 0,
+            rerank: false,
+        },
+    }
 }
