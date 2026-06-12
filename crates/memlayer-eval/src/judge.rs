@@ -42,7 +42,7 @@ impl JudgeClient {
 }
 
 async fn call_claude(prompt: &str, model: &str, _max_tokens: u32) -> Result<String> {
-    let mut child = Command::new("claude")
+    let child = Command::new("claude")
         .args(["-p", prompt, "--model", model])
         // The Bedrock SDK used by Claude Code doesn't support socks5h:// proxies,
         // and Capital One's awsproxy sets ALL_PROXY/FTP_PROXY/GRPC_PROXY=socks5h://...

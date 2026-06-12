@@ -203,7 +203,8 @@ impl ExtractPipeline {
             info!(project, window = probe_idx, "probe: testing first window before fan-out");
             let probe_raw = self.claude.ask(&probe_prompt, HAIKU_MODEL).await
                 .with_context(|| format!("probe window {probe_idx} failed"))?;
-            let probe_facts = parse_facts(&probe_raw, probe_window);
+            let probe_facts = parse_facts(&probe_raw, probe_window)
+                .unwrap_or_default();
             if probe_facts.is_empty() {
                 // Cache the failure marker and abort — no point running the rest.
                 let _ = extraction_cache.put_failed(&window_keys[probe_idx]);
