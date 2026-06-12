@@ -289,6 +289,15 @@ pub async fn run(
 
         let end_to_end_us = t_start.elapsed().as_micros() as u64;
 
+        info!(
+            id = %q.id,
+            correct = correct,
+            hits = hits.len(),
+            retrieval_ms = (retrieval_us as f64) / 1000.0,
+            e2e_ms = (end_to_end_us as f64) / 1000.0,
+            "query complete"
+        );
+
         if let Some(w) = trace_writer.as_mut() {
             use std::io::Write;
             let entry = serde_json::json!({
