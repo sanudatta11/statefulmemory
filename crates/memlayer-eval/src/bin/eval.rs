@@ -252,14 +252,24 @@ async fn run_extract(
         .with_entity_extractor(entity_extractor);
 
     // Distinct project names in input order, capped by --project-limit.
+    // When project_limit is set, prefer the smallest projects (fewest memories →
+    // fewest extraction windows → fastest smoke-test feedback).
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for m in &memories {
+        *counts.entry(m.project.clone()).or_insert(0) += 1;
+    }
     let mut seen = std::collections::HashSet::new();
     let all_projects: Vec<String> = memories
         .iter()
         .filter_map(|m| if seen.insert(m.project.clone()) { Some(m.project.clone()) } else { None })
         .collect();
     let projects: Vec<String> = match project_limit {
-        Some(n) => all_projects.into_iter().take(n).collect(),
-        None    => all_projects,
+        Some(n) => {
+            let mut sorted = all_projects;
+            sorted.sort_by_key(|p| counts.get(p).copied().unwrap_or(0));
+            sorted.into_iter().take(n).collect()
+        }
+        None => all_projects,
     };
 
     let total_projects = projects.len();
@@ -300,7 +310,10 @@ async fn run_extract(
         total_entities,
         total_failed,
     );
-    println!("Now run: cargo run --release --bin eval -- run --benchmark {benchmark:?} --mode hybrid --out reports/p2-smoke.md");
+    let bench_cli = clap::ValueEnum::to_possible_value(&benchmark)
+        .map(|v| v.get_name().to_string())
+        .unwrap_or_else(|| format!("{benchmark:?}").to_lowercase());
+    println!("Now run: cargo run --release --bin eval -- run --benchmark {bench_cli} --mode hybrid --out reports/p2-smoke.md");
 
     Ok(())
 }

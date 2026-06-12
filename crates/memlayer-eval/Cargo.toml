@@ -28,6 +28,7 @@ uuid        = { workspace = true }
 chrono      = { workspace = true }
 anyhow      = { workspace = true }
 thiserror   = { workspace = true }
+sha2        = { workspace = true }
 
 # Token counting (tiktoken-compatible BPE, used for prompt-size metrics)
 tiktoken-rs = "0.6"

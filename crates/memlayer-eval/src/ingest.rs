@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use tracing::info;
 
@@ -58,7 +59,7 @@ pub async fn ingest_memories(
     >> = Vec::new();
 
     // Phase 1: fire all writes, collecting reply receivers.
-    for mem in memories {
+    for (idx, mem) in memories.iter().enumerate() {
         let project = match project_cache.get(&mem.project) {
             Some(p) => p.clone(),
             None => {
@@ -84,12 +85,33 @@ pub async fn ingest_memories(
             session_replies.push(reply_rx);
         }
 
+        // Deterministic sync_id so re-ingest is idempotent. Storage dedups on
+        // sync_id; a fresh UUID per call would re-insert every observation
+        // and shift extraction window keys, blowing the extraction cache.
+        let sync_id = {
+            let mut h = Sha256::new();
+            h.update(mem.project.as_bytes());
+            h.update(b"\x00");
+            h.update(mem.session_id.as_bytes());
+            h.update(b"\x00");
+            h.update(mem.obs_type.as_bytes());
+            h.update(b"\x00");
+            h.update(mem.title.as_bytes());
+            h.update(b"\x00");
+            h.update(mem.content.as_bytes());
+            h.update(b"\x00");
+            h.update(mem.topic_key.as_deref().unwrap_or("").as_bytes());
+            h.update(b"\x00");
+            h.update(&(idx as u64).to_le_bytes());
+            format!("{:x}", h.finalize())
+        };
+
         let (reply_tx, reply_rx) = oneshot::channel();
         project
             .write
             .send(WriteRequest::SaveObservation {
                 input: SaveObservationInput {
-                    sync_id: Some(uuid::Uuid::new_v4().to_string()),
+                    sync_id: Some(sync_id),
                     session_id: mem.session_id.clone(),
                     r#type: mem.obs_type.clone(),
                     title: mem.title.clone(),

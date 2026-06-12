@@ -44,7 +44,7 @@ use crate::entities_writer::{bulk_upsert_entities, EntityRow};
 use crate::facts_db::FactsDb;
 use crate::facts_writer::{insert_facts_for_project_returning_ids, FactWithEmbedding};
 
-const DEFAULT_CONCURRENCY: usize = 4;
+const DEFAULT_CONCURRENCY: usize = 8;
 const DEFAULT_WINDOW_SIZE: usize = 6;
 const DEFAULT_WINDOW_STRIDE: usize = 3;
 
