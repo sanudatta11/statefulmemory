@@ -20,7 +20,7 @@ use tracing::debug;
 /// Timeout for a single Claude CLI call (Bedrock proxy can be slow).
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub const HAIKU_MODEL: &str = "claude-4.5-haiku";
+pub const HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
 
 /// Abstract Claude client. Real impl shells out; mock returns canned output.
 #[async_trait]
@@ -81,6 +81,14 @@ impl ClaudeClient for ClaudeCliClient {
             .context("claude CLI output was not valid UTF-8")?
             .trim()
             .to_string();
+        if text.is_empty() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "claude CLI returned empty response for model '{}' (bad model ID?): stderr={}",
+                model,
+                stderr
+            );
+        }
         debug!(model, response_len = text.len(), "claude CLI ok");
         Ok(text)
     }
