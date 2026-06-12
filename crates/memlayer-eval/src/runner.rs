@@ -50,6 +50,10 @@ pub struct RunConfig {
     /// Currently `mode` and `evidence_window` are recorded for reporting only;
     /// future tasks (spec-task-12/19) branch on these fields.
     pub retrieval: RetrievalConfig,
+    /// Optional path to write per-query JSONL trace (full prompts, hits,
+    /// answers, judge verdicts). One JSON object per line; suitable for
+    /// `jq`. None = no trace file.
+    pub trace_path: Option<PathBuf>,
 }
 
 /// Per-query result.
@@ -154,6 +158,22 @@ pub async fn run(
 
     let mut results: Vec<QueryResult> = Vec::with_capacity(queries_to_run.len());
 
+    // Optional per-query trace writer. JSONL: one self-describing JSON object
+    // per line containing question, project, hits, prompts, raw LLM outputs,
+    // and judge verdict. Used for debugging accuracy regressions.
+    let mut trace_writer: Option<std::io::BufWriter<std::fs::File>> = match &cfg.trace_path {
+        Some(p) => {
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let f = std::fs::File::create(p)
+                .with_context(|| format!("create trace file {}", p.display()))?;
+            info!(trace = %p.display(), "writing per-query trace JSONL");
+            Some(std::io::BufWriter::new(f))
+        }
+        None => None,
+    };
+
     // Run queries sequentially (add semaphore for concurrency if needed).
     for q in &queries_to_run {
         let t_start = Instant::now();
@@ -241,6 +261,36 @@ pub async fn run(
         };
 
         let end_to_end_us = t_start.elapsed().as_micros() as u64;
+
+        if let Some(w) = trace_writer.as_mut() {
+            use std::io::Write;
+            let entry = serde_json::json!({
+                "id": q.id,
+                "project": project,
+                "question": q.question,
+                "gold_answer": q.gold_answer,
+                "mode": match cfg.retrieval.mode {
+                    RetrievalMode::Bm25 => "bm25",
+                    RetrievalMode::Hybrid => "hybrid",
+                    RetrievalMode::HybridRerank => "hybrid-rerank",
+                },
+                "k": cfg.k,
+                "evidence_window": cfg.retrieval.evidence_window,
+                "retrieval_us": retrieval_us,
+                "hits_count": hits.len(),
+                "hits": hits,
+                "answer_prompt_system": system,
+                "answer_prompt_user": user_msg,
+                "answer_prompt_tokens": prompt_tokens,
+                "model_answer": model_answer,
+                "judge_prompt": judge_prompt,
+                "correct": correct,
+                "end_to_end_us": end_to_end_us,
+            });
+            if let Err(e) = writeln!(w, "{}", entry) {
+                warn!(query_id = %q.id, error = %e, "failed to write trace entry");
+            }
+        }
 
         results.push(QueryResult {
             id: q.id.clone(),

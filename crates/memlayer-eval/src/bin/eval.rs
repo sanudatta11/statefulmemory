@@ -121,6 +121,15 @@ async fn main() -> Result<()> {
                 rerank: matches!(mode, RetrievalMode::HybridRerank),
             };
 
+            // Auto-derive trace file path from --out: foo.md -> foo.trace.jsonl.
+            // Captures full per-query trace (hits, prompts, LLM I/O, verdicts).
+            let trace_path = {
+                let stem = out.file_stem().map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "report".to_string());
+                let parent = out.parent().unwrap_or(std::path::Path::new("."));
+                Some(parent.join(format!("{stem}.trace.jsonl")))
+            };
+
             let cfg = RunConfig {
                 benchmark,
                 data_dir: data_dir.clone(),
@@ -130,6 +139,7 @@ async fn main() -> Result<()> {
                 output_path: out,
                 skip_ingest,
                 retrieval,
+                trace_path,
             };
 
             let report = memlayer_eval::runner::run(&cfg, memories, queries).await?;
