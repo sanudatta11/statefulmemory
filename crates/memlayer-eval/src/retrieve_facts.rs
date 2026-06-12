@@ -46,9 +46,14 @@ use memlayer_storage::ProjectRegistry;
 use crate::scoring::build_score_map;
 use crate::vec_index::open_with_vec;
 
-/// Window size per individual retriever. spec-task-19e replaces this with
-/// `max(k * 4, 60)`; for now we keep a flat 100 to match prior behaviour.
-const CANDIDATES_PER_RETRIEVER: i32 = 100;
+/// Over-fetch policy: pull `max(k * 4, 60)` candidates per retriever before
+/// rescoring. Mirrors Mem0's design (audit, spec §3) — recall improves
+/// roughly free at this scale because additive scoring rebalances the
+/// inflated candidate pool. spec-task-19e / TS-23 pins this formula.
+fn over_fetch_n(k: i32) -> i32 {
+    let from_k = k.saturating_mul(4);
+    from_k.max(60)
+}
 
 /// Max number of entity matches that contribute to a fact's boost. With
 /// `BOOST_PER_ENTITY = 0.5`, the cap of 1.0 is hit at 2 distinct matches.
@@ -129,19 +134,20 @@ pub async fn retrieve_facts(
         query_entity_vecs.push((ent.clone(), v));
     }
 
-    // 4. Parallel BM25 + dense ANN.
+    // 4. Parallel BM25 + dense ANN. Over-fetch per spec-task-19e / TS-23.
+    let n = over_fetch_n(k);
     let bm25_path = facts_db_path.to_path_buf();
     let bm25_proj = project.to_string();
     let bm25_query = query.to_string();
     let bm25_handle = tokio::task::spawn_blocking(move || {
-        bm25_top_n(&bm25_path, &bm25_proj, &bm25_query, CANDIDATES_PER_RETRIEVER)
+        bm25_top_n(&bm25_path, &bm25_proj, &bm25_query, n)
     });
 
     let ann_path = facts_db_path.to_path_buf();
     let ann_proj = project.to_string();
     let ann_query_vec = query_vec.clone();
     let ann_handle = tokio::task::spawn_blocking(move || {
-        ann_top_n(&ann_path, &ann_proj, &ann_query_vec, CANDIDATES_PER_RETRIEVER)
+        ann_top_n(&ann_path, &ann_proj, &ann_query_vec, n)
     });
 
     let bm25_hits = bm25_handle.await.context("join facts BM25 task")??;
@@ -534,6 +540,20 @@ mod tests {
     use crate::facts_db::FactsDb;
     use rusqlite::params;
     use tempfile::TempDir;
+
+    #[test]
+    fn ts23_over_fetch_uses_4x_with_floor_60() {
+        // k=10 -> 4*10=40 -> clamped up to 60.
+        assert_eq!(over_fetch_n(10), 60);
+        // k=20 -> 4*20=80 -> 80 (above floor).
+        assert_eq!(over_fetch_n(20), 80);
+        // k=1 -> 4 -> floor 60.
+        assert_eq!(over_fetch_n(1), 60);
+        // k=100 -> 400.
+        assert_eq!(over_fetch_n(100), 400);
+        // k=0 -> 0 -> floor 60.
+        assert_eq!(over_fetch_n(0), 60);
+    }
 
     /// `fetch_facts_by_ids` must preserve the order of its input id slice
     /// regardless of how SQLite returns the underlying `IN (...)` rows.
