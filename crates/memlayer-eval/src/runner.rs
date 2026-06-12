@@ -174,18 +174,42 @@ pub async fn run(
                 let (embedder, cache) = hybrid_stack.as_ref().expect(
                     "hybrid_stack initialised when mode is Hybrid or HybridRerank",
                 );
-                let ret = crate::retrieve_hybrid::retrieve_hybrid(
-                    &cfg.data_dir,
-                    &project,
-                    &q.question,
-                    cfg.k,
-                    embedder.clone(),
-                    cache.clone(),
-                )
-                .await
-                .with_context(|| format!("hybrid retrieve for query '{}'", q.id))?;
-                let us = ret.latency.as_micros() as u64;
-                (ret.hits, us)
+                // Prefer the P2 facts path when facts.db exists at the
+                // benchmark-conventional location (data_dir/<benchmark>/facts.db).
+                // EH-5 inside retrieve_facts catches missing files with a clear
+                // remediation message; if facts.db is missing entirely we fall
+                // back to the P1 retrieve_hybrid (raw observations + RRF) so
+                // a fresh checkout still runs without `eval extract`.
+                let facts_db_path = facts_db_path_for(cfg.benchmark, &cfg.data_dir);
+                if facts_db_path.exists() {
+                    let ret = crate::retrieve_facts::retrieve_facts(
+                        &cfg.data_dir,
+                        &facts_db_path,
+                        &project,
+                        &q.question,
+                        cfg.k,
+                        cfg.retrieval.evidence_window,
+                        embedder.clone(),
+                        cache.clone(),
+                    )
+                    .await
+                    .with_context(|| format!("facts retrieve for query '{}'", q.id))?;
+                    let us = ret.latency.as_micros() as u64;
+                    (ret.hits, us)
+                } else {
+                    let ret = crate::retrieve_hybrid::retrieve_hybrid(
+                        &cfg.data_dir,
+                        &project,
+                        &q.question,
+                        cfg.k,
+                        embedder.clone(),
+                        cache.clone(),
+                    )
+                    .await
+                    .with_context(|| format!("hybrid retrieve for query '{}'", q.id))?;
+                    let us = ret.latency.as_micros() as u64;
+                    (ret.hits, us)
+                }
             }
         };
 
@@ -266,6 +290,19 @@ fn infer_project(kind: BenchmarkKind, query_id: &str) -> String {
         BenchmarkKind::Beam1m  => "beam-1m".to_string(),
         BenchmarkKind::Beam10m => "beam-10m".to_string(),
     }
+}
+
+/// Conventional path for the eval-side facts.db for a benchmark:
+/// `<data_dir>/<benchmark_kind_lower>/facts.db`. Used by both `eval extract`
+/// (writes here) and the runner's hybrid path (reads from here).
+pub fn facts_db_path_for(kind: BenchmarkKind, data_dir: &std::path::Path) -> PathBuf {
+    let name = match kind {
+        BenchmarkKind::Locomo => "locomo",
+        BenchmarkKind::Longmemeval => "longmemeval",
+        BenchmarkKind::Beam1m => "beam-1m",
+        BenchmarkKind::Beam10m => "beam-10m",
+    };
+    data_dir.join(name).join("facts.db")
 }
 
 fn build_report(

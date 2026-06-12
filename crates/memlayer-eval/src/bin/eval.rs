@@ -162,8 +162,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Extract { benchmark, .. } => {
-            println!("extraction for {:?} not yet implemented (spec-task-20)", benchmark);
+        Commands::Extract { benchmark, data_dir, limit } => {
+            run_extract(benchmark, &data_dir, limit).await?;
         }
 
         Commands::Summarize { reports, out } => {
@@ -196,6 +196,104 @@ fn load_dataset(
             bail!("Use `eval prepare --benchmark beam-10m` first, then `eval run --skip-ingest`.")
         }
     }
+}
+
+/// Active `eval extract` subcommand (spec-task-20).
+///
+/// 1. Load the dataset (limit optional).
+/// 2. Ensure the eval-side observations are ingested for each project so
+///    extract_project has something to read.
+/// 3. Open the facts.db at the conventional `<data_dir>/<benchmark>/facts.db`.
+/// 4. Build an ExtractPipeline (real Claude CLI client + BGE embedder +
+///    heuristic entity extractor by default).
+/// 5. For each unique project name in the dataset, call
+///    `extract_pipeline.extract_project(project, &facts_db_path)`.
+/// 6. Print rolled-up stats.
+async fn run_extract(
+    benchmark: BenchmarkKind,
+    data_dir: &std::path::Path,
+    limit: Option<usize>,
+) -> Result<()> {
+    use std::sync::Arc;
+    use memlayer_embed::BgeSmallEmbedder;
+    use memlayer_eval::extract_pipeline::ExtractPipeline;
+    use memlayer_extract::claude_cli::ClaudeCliClient;
+    use memlayer_extract::entities::HeuristicEntityExtractor;
+
+    let lim = limit.unwrap_or(usize::MAX);
+    let (memories, _queries) = load_dataset(benchmark, &data_dir.to_path_buf(), lim)?;
+
+    if memories.is_empty() {
+        println!("No memories loaded for {:?}; nothing to extract.", benchmark);
+        return Ok(());
+    }
+
+    // Ensure observations exist for each project (idempotent — skips if
+    // already ingested with same sync_ids).
+    println!("Ingesting {} observations into storage projects...", memories.len());
+    memlayer_eval::ingest::ingest_memories(data_dir, &memories, 500).await?;
+
+    let facts_db_path = memlayer_eval::runner::facts_db_path_for(benchmark, data_dir);
+    println!("Facts DB: {}", facts_db_path.display());
+
+    let claude = Arc::new(ClaudeCliClient::new());
+    let embedder = Arc::new(
+        BgeSmallEmbedder::try_new()
+            .map_err(|e| anyhow::anyhow!("load BGE-small embedder: {e}"))?,
+    );
+    let entity_extractor = Arc::new(HeuristicEntityExtractor::new());
+
+    let pipeline = ExtractPipeline::new(data_dir.to_path_buf(), claude, embedder)
+        .with_entity_extractor(entity_extractor);
+
+    // Distinct project names in input order.
+    let mut seen = std::collections::HashSet::new();
+    let projects: Vec<String> = memories
+        .iter()
+        .filter_map(|m| if seen.insert(m.project.clone()) { Some(m.project.clone()) } else { None })
+        .collect();
+
+    let total_projects = projects.len();
+    println!("Extracting facts for {total_projects} project(s)...");
+
+    let mut total_facts = 0usize;
+    let mut total_entities = 0usize;
+    let mut total_failed = 0usize;
+    let t0 = std::time::Instant::now();
+
+    for (i, project) in projects.iter().enumerate() {
+        match pipeline.extract_project(project, &facts_db_path).await {
+            Ok(stats) => {
+                println!(
+                    "  [{:>3}/{}] {project}: facts={} entities={} cached={} failed={} ({:?})",
+                    i + 1,
+                    total_projects,
+                    stats.facts_written,
+                    stats.entities_written,
+                    stats.windows_cached,
+                    stats.windows_failed,
+                    std::time::Duration::from_millis(stats.elapsed_ms as u64),
+                );
+                total_facts += stats.facts_written;
+                total_entities += stats.entities_written;
+                total_failed += stats.windows_failed;
+            }
+            Err(e) => {
+                eprintln!("  [{:>3}/{}] {project}: ERROR {e:#}", i + 1, total_projects);
+            }
+        }
+    }
+
+    println!(
+        "\nExtraction complete in {:?}. facts={} entities={} failed_windows={}",
+        t0.elapsed(),
+        total_facts,
+        total_entities,
+        total_failed,
+    );
+    println!("Now run: cargo run --release --bin eval -- run --benchmark {benchmark:?} --mode hybrid --out reports/p2-smoke.md");
+
+    Ok(())
 }
 
 fn summarize_reports(reports_dir: &PathBuf, out: &PathBuf) -> Result<()> {
