@@ -11,6 +11,7 @@
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -50,6 +51,8 @@ impl ClaudeClient for ClaudeCliClient {
     async fn ask(&self, prompt: &str, model: &str) -> Result<String> {
         let child = Command::new("claude")
             .args(["-p", prompt, "--model", model, "--output-format", "text"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             // Same proxy strip as memlayer-eval/src/judge.rs:46-51 — Bedrock SDK
             // doesn't speak socks5h, which Capital One's awsproxy sets.
             .env_remove("ALL_PROXY")

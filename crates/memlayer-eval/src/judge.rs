@@ -6,6 +6,7 @@
 //! Invocation: `claude -p "<prompt>" --model <model>`
 
 use anyhow::{bail, Context, Result};
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -44,6 +45,8 @@ impl JudgeClient {
 async fn call_claude(prompt: &str, model: &str, _max_tokens: u32) -> Result<String> {
     let child = Command::new("claude")
         .args(["-p", prompt, "--model", model, "--output-format", "text"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         // The Bedrock SDK used by Claude Code doesn't support socks5h:// proxies,
         // and Capital One's awsproxy sets ALL_PROXY/FTP_PROXY/GRPC_PROXY=socks5h://...
         // HTTPS_PROXY is an HTTP proxy and works fine; just clear the SOCKS ones.
