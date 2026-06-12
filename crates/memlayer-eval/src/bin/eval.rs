@@ -69,9 +69,13 @@ enum Commands {
         #[arg(long, default_value = "data")]
         data_dir: PathBuf,
 
-        /// Optional: limit to first N conversations for cheap iteration.
+        /// Optional: limit to first N queries (smoke-test mode).
         #[arg(long)]
         limit: Option<usize>,
+
+        /// Optional: stop after extracting N projects (cheap smoke-test).
+        #[arg(long)]
+        project_limit: Option<usize>,
     },
 
     /// Ingest-only (no LLM calls). Use this to pre-populate BEAM at scale.
@@ -162,8 +166,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Extract { benchmark, data_dir, limit } => {
-            run_extract(benchmark, &data_dir, limit).await?;
+        Commands::Extract { benchmark, data_dir, limit, project_limit } => {
+            run_extract(benchmark, &data_dir, limit, project_limit).await?;
         }
 
         Commands::Summarize { reports, out } => {
@@ -213,6 +217,7 @@ async fn run_extract(
     benchmark: BenchmarkKind,
     data_dir: &std::path::Path,
     limit: Option<usize>,
+    project_limit: Option<usize>,
 ) -> Result<()> {
     use std::sync::Arc;
     use memlayer_embed::BgeSmallEmbedder;
@@ -246,12 +251,16 @@ async fn run_extract(
     let pipeline = ExtractPipeline::new(data_dir.to_path_buf(), claude, embedder)
         .with_entity_extractor(entity_extractor);
 
-    // Distinct project names in input order.
+    // Distinct project names in input order, capped by --project-limit.
     let mut seen = std::collections::HashSet::new();
-    let projects: Vec<String> = memories
+    let all_projects: Vec<String> = memories
         .iter()
         .filter_map(|m| if seen.insert(m.project.clone()) { Some(m.project.clone()) } else { None })
         .collect();
+    let projects: Vec<String> = match project_limit {
+        Some(n) => all_projects.into_iter().take(n).collect(),
+        None    => all_projects,
+    };
 
     let total_projects = projects.len();
     println!("Extracting facts for {total_projects} project(s)...");

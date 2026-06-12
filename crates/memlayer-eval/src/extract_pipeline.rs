@@ -178,12 +178,20 @@ impl ExtractPipeline {
             }
         }
 
+        info!(
+            project,
+            windows_total = windows.len(),
+            cache_hits = stats.windows_cached,
+            misses = miss_indices.len(),
+            "starting extraction"
+        );
+
         // ---------- 5. Fan out Haiku for misses ----------
         let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
         let mut handles: Vec<tokio::task::JoinHandle<Result<(usize, Result<Vec<Fact>>)>>> =
             Vec::with_capacity(miss_indices.len());
 
-        for &i in &miss_indices {
+        for (task_n, &i) in miss_indices.iter().enumerate() {
             let permit = sem
                 .clone()
                 .acquire_owned()
@@ -192,13 +200,33 @@ impl ExtractPipeline {
             let claude = self.claude.clone();
             let window = windows[i].clone();
             let prompt = build_extraction_prompt(&window, None);
+            let project_name = project.to_string();
+            let total_misses = miss_indices.len();
             handles.push(tokio::spawn(async move {
                 // Hold the permit across the call, drop on completion.
                 let _permit = permit;
+                info!(
+                    project = %project_name,
+                    window = i,
+                    task = task_n,
+                    total = total_misses,
+                    "calling claude haiku"
+                );
+                let t = std::time::Instant::now();
                 let raw = match claude.ask(&prompt, HAIKU_MODEL).await {
                     Ok(r) => r,
-                    Err(e) => return Ok((i, Err(e))),
+                    Err(e) => {
+                        warn!(project = %project_name, window = i, error = %e, "claude call failed");
+                        return Ok((i, Err(e)));
+                    }
                 };
+                info!(
+                    project = %project_name,
+                    window = i,
+                    elapsed_ms = t.elapsed().as_millis(),
+                    response_len = raw.len(),
+                    "claude haiku responded"
+                );
                 let parsed = parse_facts(&raw, &window);
                 Ok((i, parsed))
             }));
@@ -215,9 +243,11 @@ impl ExtractPipeline {
                         // us prose-only output or the slice was unparseable).
                         // Mark as permanently failed so we don't reburn spend
                         // on the next run.
+                        warn!(project, window_idx = i, "parse_facts returned empty; marking window failed (EH-4)");
                         stats.windows_failed += 1;
                         fresh_results.push((i, Err(())));
                     } else {
+                        info!(project, window_idx = i, facts = facts.len(), "extracted facts");
                         stats.windows_extracted += 1;
                         fresh_results.push((i, Ok(facts)));
                     }

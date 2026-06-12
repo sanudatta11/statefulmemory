@@ -6,8 +6,12 @@
 //! Invocation: `claude -p "<prompt>" --model <model>`
 
 use anyhow::{bail, Context, Result};
+use std::time::Duration;
 use tokio::process::Command;
+use tokio::time::timeout;
 use tracing::debug;
+
+const CLAUDE_TIMEOUT: Duration = Duration::from_secs(120);
 
 const ANSWER_MODEL: &str = "claude-4.6-sonnet";
 const JUDGE_MODEL: &str = "claude-4.5-haiku";
@@ -38,7 +42,7 @@ impl JudgeClient {
 }
 
 async fn call_claude(prompt: &str, model: &str, _max_tokens: u32) -> Result<String> {
-    let output = Command::new("claude")
+    let mut child = Command::new("claude")
         .args(["-p", prompt, "--model", model])
         // The Bedrock SDK used by Claude Code doesn't support socks5h:// proxies,
         // and Capital One's awsproxy sets ALL_PROXY/FTP_PROXY/GRPC_PROXY=socks5h://...
@@ -49,9 +53,13 @@ async fn call_claude(prompt: &str, model: &str, _max_tokens: u32) -> Result<Stri
         .env_remove("ftp_proxy")
         .env_remove("GRPC_PROXY")
         .env_remove("grpc_proxy")
-        .output()
-        .await
+        .spawn()
         .context("spawn claude CLI — is `claude` on PATH?")?;
+
+    let output = timeout(CLAUDE_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| anyhow::anyhow!("claude CLI timed out after {}s", CLAUDE_TIMEOUT.as_secs()))?
+        .context("wait for claude CLI")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
