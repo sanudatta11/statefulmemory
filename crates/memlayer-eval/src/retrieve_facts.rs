@@ -88,6 +88,11 @@ pub struct FactsHybridResult {
     /// Number of fact rows considered before scoring (sum of BM25 + ANN +
     /// entity-boosted ids).
     pub candidates_considered: usize,
+    /// Score delta between rank-1 and rank-2 after fusion + quality
+    /// modifiers. Used by the runner to gate the LLM rerank call —
+    /// when this is large the top hit is unambiguous and rerank is a
+    /// waste of money. None when fewer than 2 hits were returned.
+    pub top2_delta: Option<f32>,
 }
 
 /// Hybrid retrieval over `facts.db` for one project. See module-level docs
@@ -179,6 +184,7 @@ pub async fn retrieve_facts(
             hits: Vec::new(),
             latency: t0.elapsed(),
             candidates_considered: 0,
+            top2_delta: None,
         });
     }
     if dense_hits.is_empty() {
@@ -250,6 +256,15 @@ pub async fn retrieve_facts(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.cmp(&b.0))
     });
+
+    // Top-2 score delta — surfaced for the rerank-on-ambiguity gate
+    // (P5 spec-task-31): the runner skips the LLM rerank call when
+    // this delta is large (clear winner).
+    let top2_delta = if ranked.len() >= 2 {
+        Some((ranked[0].1 - ranked[1].1).max(0.0))
+    } else {
+        None
+    };
 
     let k_usize = k.max(0) as usize;
     let top_k_ids: Vec<u64> = ranked
@@ -327,6 +342,7 @@ pub async fn retrieve_facts(
         hits: formatted,
         latency: t0.elapsed(),
         candidates_considered,
+        top2_delta,
     })
 }
 

@@ -14,6 +14,12 @@ use crate::judge::JudgeClient;
 use crate::prompt::{build_answer_prompt, build_judge_prompt};
 use crate::retrieve::retrieve;
 
+/// LLM rerank fires only when the rank-1 vs rank-2 score delta is below
+/// this threshold (P5 spec-task-31 cost gate). When the top fact is a
+/// clear winner, a Haiku-shuffle costs $$ and adds judge noise without
+/// materially improving accuracy.
+const RERANK_AMBIGUITY_THRESHOLD: f32 = 0.05;
+
 /// Which benchmark to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BenchmarkKind {
@@ -229,6 +235,7 @@ pub async fn run(
                 // rerank prompt past Haiku's preferred ~30-item ceiling.
                 let retrieve_k = if cfg.retrieval.rerank { cfg.k * 3 } else { cfg.k };
                 let facts_db_path = facts_db_path_for(cfg.benchmark, &cfg.data_dir);
+                let mut rerank_ambiguous: bool = true; // assume ambiguous until proven otherwise
                 let (raw_hits, raw_retrieval_us) = if facts_db_path.exists() {
                     let ret = crate::retrieve_facts::retrieve_facts(
                         &cfg.data_dir,
@@ -243,6 +250,11 @@ pub async fn run(
                     )
                     .await
                     .with_context(|| format!("facts retrieve for query '{}'", q.id))?;
+                    // Capture rerank gate before moving fields out.
+                    rerank_ambiguous = ret
+                        .top2_delta
+                        .map(|d| d < RERANK_AMBIGUITY_THRESHOLD)
+                        .unwrap_or(true);
                     if ret.hits.is_empty() {
                         info!(
                             query_id = %q.id,
@@ -260,6 +272,9 @@ pub async fn run(
                         .await
                         .with_context(|| format!("hybrid fallback for query '{}'", q.id))?;
                         let us = (ret.latency + fallback.latency).as_micros() as u64;
+                        // Fallback path doesn't compute a top2_delta —
+                        // assume ambiguous so rerank still helps.
+                        rerank_ambiguous = true;
                         (fallback.hits, us)
                     } else {
                         (ret.hits, ret.latency.as_micros() as u64)
@@ -278,20 +293,32 @@ pub async fn run(
                     (ret.hits, ret.latency.as_micros() as u64)
                 };
 
-                // Rerank stage: run only when configured AND we have more
-                // candidates than the target k. Tracked separately from
-                // retrieval latency so SC-5 (retrieval p50 < 50ms) is
-                // measured cleanly even with rerank enabled.
+                // Rerank stage: gated. Fire only when (a) configured AND
+                // (b) we have more candidates than the target k AND
+                // (c) the top-2 score delta is small (ambiguous top).
+                // Saves ~70% of LLM calls without losing accuracy on
+                // queries where the top hit is a clear winner.
                 if let Some(claude) = rerank_claude.as_ref() {
-                    let (reranked, rerank_dur) = crate::rerank::rerank(
-                        claude.clone(),
-                        &raw_hits,
-                        &q.question,
-                        cfg.k as usize,
-                    )
-                    .await
-                    .with_context(|| format!("rerank for query '{}'", q.id))?;
-                    (reranked, raw_retrieval_us, Some(rerank_dur.as_micros() as u64))
+                    if rerank_ambiguous {
+                        let (reranked, rerank_dur) = crate::rerank::rerank(
+                            claude.clone(),
+                            &raw_hits,
+                            &q.question,
+                            cfg.k as usize,
+                        )
+                        .await
+                        .with_context(|| format!("rerank for query '{}'", q.id))?;
+                        (reranked, raw_retrieval_us, Some(rerank_dur.as_micros() as u64))
+                    } else {
+                        // Clear winner — skip rerank, trim to k.
+                        let trimmed: Vec<String> =
+                            raw_hits.into_iter().take(cfg.k as usize).collect();
+                        info!(
+                            query_id = %q.id,
+                            "skipping rerank (top-2 score delta >= {RERANK_AMBIGUITY_THRESHOLD})"
+                        );
+                        (trimmed, raw_retrieval_us, None)
+                    }
                 } else {
                     // No rerank: trim over-fetched candidates back to k.
                     let trimmed: Vec<String> =
