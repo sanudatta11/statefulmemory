@@ -39,14 +39,17 @@ pub const DEFAULT_CONTRADICTION_TIEBREAK: f32 = 0.25;
 
 /// Per-fact additive score components.
 ///
-/// `sem`, `bm25`, `entity_boost` form the additive base. The remaining
-/// fields are quality modifiers populated by [`apply_quality_modifiers`].
-/// `combined()` rolls them all together.
+/// `sem`, `bm25`, `entity_boost`, `entity_walk_boost` form the additive
+/// base. The remaining fields are quality modifiers populated by
+/// [`apply_quality_modifiers`]. `combined()` rolls them all together.
 #[derive(Debug, Clone)]
 pub struct ScoreComponents {
     pub sem: f32,
     pub bm25: f32,
     pub entity_boost: f32,
+    /// 2-hop entity-walk boost (P5 spec-task-31). 0.0 when no walk path
+    /// surfaces this fact. Capped at [`crate::entity_walk::WALK_BOOST_CAP`].
+    pub entity_walk_boost: f32,
 
     /// `max(raw_salience, salience_floor)`. Defaults to 1.0 so the
     /// pre-P5 additive sum is preserved when no quality data is fed in.
@@ -72,6 +75,7 @@ impl Default for ScoreComponents {
             sem: 0.0,
             bm25: 0.0,
             entity_boost: 0.0,
+            entity_walk_boost: 0.0,
             salience_factor: 1.0,
             decay_factor: 1.0,
             contradiction_factor: 1.0,
@@ -84,7 +88,7 @@ impl Default for ScoreComponents {
 impl ScoreComponents {
     /// Final ranking score for this fact. Caller sorts descending.
     pub fn combined(&self) -> f32 {
-        let base = self.sem + self.bm25 + self.entity_boost;
+        let base = self.sem + self.bm25 + self.entity_boost + self.entity_walk_boost;
         base * self.salience_factor * self.decay_factor * self.contradiction_factor
             + self.tiebreak_bonus
     }

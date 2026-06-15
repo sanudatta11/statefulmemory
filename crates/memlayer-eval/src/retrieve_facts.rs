@@ -194,6 +194,9 @@ pub async fn retrieve_facts(
     //    (Mem0 formula) keyed off query token count. P5 spec-task-27/29/30:
     //    salience multiplier (0.3 floor) + time-decay (λ from config) +
     //    contradiction penalty (0.5× both, +0.25 to higher-salience).
+    //    P5 spec-task-31: entity-walk 2-hop adds entity_walk_boost to
+    //    the additive base — surfaces facts connected via shared
+    //    co-entities even when no direct BM25/dense/boost hit fires.
     let query_token_count = query.split_whitespace().count();
     let mut scored = build_score_map(
         &bm25_hits,
@@ -201,6 +204,27 @@ pub async fn retrieve_facts(
         &entity_boost_map,
         Bm25Norm::AdaptiveSigmoid { query_token_count },
     );
+
+    // Entity-walk 2-hop boost: fold into the score map BEFORE quality
+    // modifiers so salience/decay/contradiction multiply through the
+    // walk contribution as well.
+    let walk_boosts = crate::entity_walk::compute_entity_walk_boost(
+        facts_db_path,
+        project,
+        &query_entities,
+    )
+    .context("entity-walk 2-hop boost")?;
+    if !walk_boosts.is_empty() {
+        for (fact_id, boost) in &walk_boosts {
+            scored.entry(*fact_id).or_default().entity_walk_boost = *boost;
+        }
+        tracing::debug!(
+            target: "memlayer_eval::retrieve_facts",
+            project = %project,
+            walk_facts = walk_boosts.len(),
+            "entity-walk 2-hop populated boosts"
+        );
+    }
 
     // Fetch fact metadata for every scored id so the quality modifiers
     // have salience + temporal + (subject, predicate, object) to work
