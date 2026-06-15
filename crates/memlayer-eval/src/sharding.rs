@@ -81,6 +81,45 @@ pub fn merge_shard_results(
     all
 }
 
+/// Fan a per-shard query out across `0..shard_count` workers via
+/// `tokio::task::spawn_blocking` (the actual query is sync SQLite),
+/// collect the per-shard top-K, and merge to a global top-K. The
+/// caller supplies a closure that, given a shard index, returns a
+/// `Vec<(id, distance)>` for that shard's top-`k_per_shard` hits.
+///
+/// On any per-shard error the whole call returns the error — this
+/// surfaces SQLite issues (missing shard file, schema mismatch)
+/// loudly rather than silently dropping recall.
+///
+/// Latency is gated by the slowest shard. With 16 evenly-loaded
+/// shards on an 8-core box the wall time is roughly `single_db / 8`
+/// (compute) plus the merge (negligible — k_per_shard caps at ~15).
+pub async fn parallel_query<F>(
+    shard_count: usize,
+    k: usize,
+    query_fn: F,
+) -> anyhow::Result<Vec<(i64, f32)>>
+where
+    F: Fn(usize) -> anyhow::Result<Vec<(i64, f32)>> + Clone + Send + Sync + 'static,
+{
+    use tokio::task::spawn_blocking;
+
+    let shard_count = shard_count.max(1);
+    let mut handles = Vec::with_capacity(shard_count);
+    for shard_idx in 0..shard_count {
+        let f = query_fn.clone();
+        handles.push(spawn_blocking(move || f(shard_idx)));
+    }
+    let mut shards: Vec<Vec<(i64, f32)>> = Vec::with_capacity(shard_count);
+    for h in handles {
+        let res = h
+            .await
+            .map_err(|e| anyhow::anyhow!("shard worker join failure: {e}"))??;
+        shards.push(res);
+    }
+    Ok(merge_shard_results(shards, k))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

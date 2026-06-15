@@ -10,10 +10,12 @@
 //! Used by extract_pipeline (spec-task-18).
 
 use anyhow::{Context, Result};
+use memlayer_embed::quantize::{calibrate_scale, f32_to_int8};
 use memlayer_extract::Fact;
 use rusqlite::{params, Connection};
 
 /// One fact with its associated f32 embedding (typically BGE-small, 384-dim).
+#[derive(Clone)]
 pub struct FactWithEmbedding {
     pub fact: Fact,
     pub embedding: Vec<f32>,
@@ -164,6 +166,30 @@ pub fn insert_facts_for_project_returning_ids(
         return Ok(Vec::new());
     }
 
+    // P4 spec-task-24: env-gated int8 path. When MEMLAYER_VEC_INT8=1
+    // we write to facts_vec_int8 instead of facts_vec. Calibration is
+    // a single max-abs pass over this batch's embeddings — adequate
+    // because BGE-small embeddings are unit-normalized and the corpus
+    // distribution is stable. The scale is stored alongside as a
+    // schema_meta key so retrieval can dequantize symmetrically.
+    let int8_mode = std::env::var("MEMLAYER_VEC_INT8")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let int8_scale: Option<f32> = if int8_mode {
+        let refs: Vec<&[f32]> = batch.iter().map(|f| f.embedding.as_slice()).collect();
+        let s = calibrate_scale(&refs);
+        // Persist scale (idempotent) so retrieve can dequantize.
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES('vec_int8_scale', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![format!("{s}")],
+        )
+        .context("persist vec_int8_scale")?;
+        Some(s)
+    } else {
+        None
+    };
+
     let tx = conn.transaction().context("begin facts insert tx")?;
     let mut ids: Vec<i64> = Vec::with_capacity(batch.len());
 
@@ -180,9 +206,24 @@ pub fn insert_facts_for_project_returning_ids(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .context("prepare facts insert")?;
-        let mut ins_vec = tx
+        let mut ins_vec_f32 = tx
             .prepare("INSERT INTO facts_vec(rowid, embedding) VALUES (?1, ?2)")
             .context("prepare facts_vec insert")?;
+        // facts_vec_int8 is created by V5 migration; if not present
+        // (older DB), the prepare itself will fail and we fall back to
+        // f32 with a warn log per call.
+        let int8_stmt = if int8_mode {
+            match tx.prepare("INSERT INTO facts_vec_int8(rowid, embedding) VALUES (?1, ?2)") {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(error = %e, "facts_vec_int8 not available; writes go to facts_vec (f32)");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut ins_vec_int8 = int8_stmt;
         let mut find_existing = tx
             .prepare(
                 "SELECT id FROM facts \
@@ -211,18 +252,28 @@ pub fn insert_facts_for_project_returning_ids(
 
             let rowid: i64 = if inserted {
                 let id = tx.last_insert_rowid();
-                let bytes: Vec<u8> = fwe
-                    .embedding
-                    .iter()
-                    .flat_map(|x| x.to_le_bytes())
-                    .collect();
-                ins_vec
-                    .execute(params![id, bytes])
-                    .context("insert into facts_vec")?;
+                match (&mut ins_vec_int8, int8_scale) {
+                    (Some(stmt), Some(scale)) => {
+                        let q = f32_to_int8(&fwe.embedding, scale);
+                        // sqlite-vec int8 BLOB is just the raw int8
+                        // bytes; cast i8 → u8 preserves the bit pattern.
+                        let bytes: Vec<u8> = q.iter().map(|&x| x as u8).collect();
+                        stmt.execute(params![id, bytes])
+                            .context("insert into facts_vec_int8")?;
+                    }
+                    _ => {
+                        let bytes: Vec<u8> = fwe
+                            .embedding
+                            .iter()
+                            .flat_map(|x| x.to_le_bytes())
+                            .collect();
+                        ins_vec_f32
+                            .execute(params![id, bytes])
+                            .context("insert into facts_vec")?;
+                    }
+                }
                 id
             } else {
-                // Canonical key conflict — fetch the pre-existing fact id
-                // so the caller's entity_links wiring still has a target.
                 find_existing
                     .query_row(params![project, f.subject, f.predicate], |r| {
                         r.get::<_, i64>(0)

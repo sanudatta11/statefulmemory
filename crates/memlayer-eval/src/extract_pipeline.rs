@@ -89,6 +89,16 @@ pub struct ExtractPipeline {
     pub window_size: usize,
     /// Window stride in turns (default 3 = 50% overlap).
     pub window_stride: usize,
+    /// Number of facts.db shards (P4 spec-task-26). Default 1 = single
+    /// `<benchmark>/facts.db` (LoCoMo / LongMemEval). When >1, each fact
+    /// is routed to `<benchmark>-vec/shard-NN.db` via
+    /// [`ShardRouter::shard_for(evidence_obs_id)`]. Used by BEAM-1M / 10M
+    /// where a single facts.db saturates SQLite's page cache.
+    pub shards: usize,
+    /// Base directory for shard files when `shards > 1`. Defaults to
+    /// `<data_dir>/<benchmark-tag>-vec/`. The pipeline is benchmark-
+    /// agnostic so the caller (CLI) sets this when wiring BEAM.
+    pub shard_dir: Option<PathBuf>,
 }
 
 /// Per-fact salience threshold for upgrading entity extraction from
@@ -113,6 +123,8 @@ impl ExtractPipeline {
             concurrency: DEFAULT_CONCURRENCY,
             window_size: DEFAULT_WINDOW_SIZE,
             window_stride: DEFAULT_WINDOW_STRIDE,
+            shards: 1,
+            shard_dir: None,
         }
     }
 
@@ -133,6 +145,22 @@ impl ExtractPipeline {
     /// (P5 spec-task-27d). One Haiku call per session.
     pub fn with_session_summaries(mut self, enabled: bool) -> Self {
         self.session_summaries = enabled;
+        self
+    }
+
+    /// Builder-style setter for sharded extraction (P4 spec-task-26).
+    /// `shards <= 1` keeps the single-DB path. `shards > 1` requires a
+    /// `shard_dir` to be set via [`Self::with_shard_dir`].
+    pub fn with_shards(mut self, shards: usize) -> Self {
+        self.shards = shards.max(1);
+        self
+    }
+
+    /// Set the shard directory for sharded BEAM extraction. Files
+    /// written there are named `shard-NN.db` (zero-padded) per
+    /// [`ShardRouter::shard_path`].
+    pub fn with_shard_dir(mut self, dir: PathBuf) -> Self {
+        self.shard_dir = Some(dir);
         self
     }
 
@@ -438,12 +466,61 @@ impl ExtractPipeline {
         }
 
         // ---------- 9. Write to facts.db ----------
-        let fact_ids = insert_facts_for_project_returning_ids(&mut facts_db.conn, project, &batch)
-            .context("insert facts into facts.db")?;
+        // P4 spec-task-26: when shards > 1, group facts by
+        // ShardRouter::shard_for(evidence_obs_id) and write each
+        // sub-batch into its own `<shard_dir>/shard-NN.db`. fact_ids
+        // are stitched back into original input order so subsequent
+        // entity_links / session_summary code keeps working unchanged.
+        // The single-shard path is byte-identical to before.
+        let fact_ids: Vec<i64> = if self.shards > 1 && self.shard_dir.is_some() {
+            use crate::sharding::ShardRouter;
+            use std::collections::HashMap;
+            let router = ShardRouter::new(self.shards);
+            let shard_dir = self.shard_dir.as_ref().unwrap();
+            // Group input indices by shard.
+            let mut by_shard: HashMap<usize, Vec<usize>> = HashMap::new();
+            for (i, fwe) in batch.iter().enumerate() {
+                let s = router.shard_for(fwe.fact.evidence_obs_id);
+                by_shard.entry(s).or_default().push(i);
+            }
+            let mut id_by_input: Vec<i64> = vec![0; batch.len()];
+            for (shard_idx, indices) in by_shard {
+                let shard_path = router.shard_path(shard_dir, shard_idx);
+                let mut shard_db = FactsDb::open(&shard_path).with_context(|| {
+                    format!("open shard at {}", shard_path.display())
+                })?;
+                let sub_batch: Vec<FactWithEmbedding> =
+                    indices.iter().map(|&i| batch[i].clone()).collect();
+                let sub_ids = insert_facts_for_project_returning_ids(
+                    &mut shard_db.conn,
+                    project,
+                    &sub_batch,
+                )
+                .with_context(|| format!("shard-{shard_idx:02} insert"))?;
+                for (out_pos, &id) in indices.iter().zip(sub_ids.iter()) {
+                    id_by_input[*out_pos] = id;
+                }
+            }
+            id_by_input
+        } else {
+            insert_facts_for_project_returning_ids(&mut facts_db.conn, project, &batch)
+                .context("insert facts into facts.db")?
+        };
         stats.facts_written = fact_ids.len();
 
         // ---------- 10. Entity extraction + writeback (spec-task-19c) ----------
-        if let Some(ext) = &self.entity_extractor {
+        // Sharded mode skips entity + summary post-processing — those
+        // tables live in the primary facts.db and would point at ids
+        // that exist only in per-shard DBs. BEAM (the sharded use
+        // case) doesn't use facts at all per spec §6, so this is a
+        // no-op trade-off.
+        if self.shards > 1 {
+            warn!(
+                project,
+                shards = self.shards,
+                "skipping entity_links + session_summaries in sharded extraction"
+            );
+        } else if let Some(ext) = &self.entity_extractor {
             let entity_count = extract_and_write_entities(
                 &mut facts_db.conn,
                 project,
@@ -460,7 +537,7 @@ impl ExtractPipeline {
         }
 
         // ---------- 11. Session-summary facts (P5 spec-task-27d) ----------
-        if self.session_summaries && !batch.is_empty() {
+        if self.shards <= 1 && self.session_summaries && !batch.is_empty() {
             match write_session_summaries(
                 &mut facts_db.conn,
                 project,

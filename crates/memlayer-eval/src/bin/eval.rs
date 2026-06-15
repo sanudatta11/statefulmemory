@@ -102,6 +102,14 @@ enum Commands {
         /// run. Default off — turn on for full-benchmark runs.
         #[arg(long, default_value_t = false)]
         session_summaries: bool,
+
+        /// Number of facts.db shards (P4 spec-task-26). 1 = single
+        /// `<benchmark>/facts.db`. N>1 routes each fact via
+        /// `ShardRouter::shard_for(evidence_obs_id)` into
+        /// `<data_dir>/<benchmark>-vec/shard-NN.db`. Used by BEAM-1M
+        /// / 10M; LoCoMo / LongMemEval should stay at 1.
+        #[arg(long, default_value_t = 1)]
+        shards: usize,
     },
 
     /// Ingest-only (no LLM calls). Use this to pre-populate BEAM at scale.
@@ -204,8 +212,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Extract { benchmark, data_dir, limit, project_limit, project, haiku_entities, session_summaries } => {
-            run_extract(benchmark, &data_dir, limit, project_limit, project, haiku_entities, session_summaries).await?;
+        Commands::Extract { benchmark, data_dir, limit, project_limit, project, haiku_entities, session_summaries, shards } => {
+            run_extract(benchmark, &data_dir, limit, project_limit, project, haiku_entities, session_summaries, shards).await?;
         }
 
         Commands::Summarize { reports, out } => {
@@ -259,6 +267,7 @@ async fn run_extract(
     project_filter: Option<String>,
     haiku_entities: bool,
     session_summaries: bool,
+    shards: usize,
 ) -> Result<()> {
     use std::sync::Arc;
     use memlayer_embed::BgeSmallEmbedder;
@@ -291,7 +300,13 @@ async fn run_extract(
 
     let mut pipeline = ExtractPipeline::new(data_dir.to_path_buf(), claude.clone(), embedder)
         .with_entity_extractor(entity_extractor)
-        .with_session_summaries(session_summaries);
+        .with_session_summaries(session_summaries)
+        .with_shards(shards);
+    if shards > 1 {
+        let shard_dir = data_dir.join(format!("{benchmark:?}-vec").to_lowercase());
+        std::fs::create_dir_all(&shard_dir).ok();
+        pipeline = pipeline.with_shard_dir(shard_dir);
+    }
     if haiku_entities {
         let haiku_ext = Arc::new(HaikuEntityExtractor::new(claude));
         pipeline = pipeline.with_haiku_entity_extractor(haiku_ext);
