@@ -89,6 +89,19 @@ enum Commands {
         /// queries actually hit.
         #[arg(long)]
         project: Option<String>,
+
+        /// Use Haiku for entity extraction on facts whose salience >=
+        /// 0.85 (P5 spec-task-27c). Costs more LLM calls (~15% of
+        /// facts) but captures richer entity sets on high-quality
+        /// facts. Default off — smoke path stays cheap.
+        #[arg(long, default_value_t = false)]
+        haiku_entities: bool,
+
+        /// Emit one session-summary fact per source_session via a
+        /// single Haiku call (P5 spec-task-27d). Adds ~$0.50/LoCoMo
+        /// run. Default off — turn on for full-benchmark runs.
+        #[arg(long, default_value_t = false)]
+        session_summaries: bool,
     },
 
     /// Ingest-only (no LLM calls). Use this to pre-populate BEAM at scale.
@@ -191,8 +204,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Extract { benchmark, data_dir, limit, project_limit, project } => {
-            run_extract(benchmark, &data_dir, limit, project_limit, project).await?;
+        Commands::Extract { benchmark, data_dir, limit, project_limit, project, haiku_entities, session_summaries } => {
+            run_extract(benchmark, &data_dir, limit, project_limit, project, haiku_entities, session_summaries).await?;
         }
 
         Commands::Summarize { reports, out } => {
@@ -244,12 +257,14 @@ async fn run_extract(
     limit: Option<usize>,
     project_limit: Option<usize>,
     project_filter: Option<String>,
+    haiku_entities: bool,
+    session_summaries: bool,
 ) -> Result<()> {
     use std::sync::Arc;
     use memlayer_embed::BgeSmallEmbedder;
     use memlayer_eval::extract_pipeline::ExtractPipeline;
     use memlayer_extract::claude_cli::ClaudeCliClient;
-    use memlayer_extract::entities::HeuristicEntityExtractor;
+    use memlayer_extract::entities::{HaikuEntityExtractor, HeuristicEntityExtractor};
 
     let lim = limit.unwrap_or(usize::MAX);
     let (memories, _queries) = load_dataset(benchmark, &data_dir.to_path_buf(), lim)?;
@@ -274,8 +289,13 @@ async fn run_extract(
     );
     let entity_extractor = Arc::new(HeuristicEntityExtractor::new());
 
-    let pipeline = ExtractPipeline::new(data_dir.to_path_buf(), claude, embedder)
-        .with_entity_extractor(entity_extractor);
+    let mut pipeline = ExtractPipeline::new(data_dir.to_path_buf(), claude.clone(), embedder)
+        .with_entity_extractor(entity_extractor)
+        .with_session_summaries(session_summaries);
+    if haiku_entities {
+        let haiku_ext = Arc::new(HaikuEntityExtractor::new(claude));
+        pipeline = pipeline.with_haiku_entity_extractor(haiku_ext);
+    }
 
     // Distinct project names in input order, capped by --project-limit.
     // When project_limit is set, prefer the smallest projects (fewest memories →
