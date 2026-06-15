@@ -126,6 +126,7 @@ async fn main() -> Result<()> {
                 k,
                 evidence_window,
                 rerank: matches!(mode, RetrievalMode::HybridRerank),
+                decay_lambda: memlayer_eval::scoring::DEFAULT_DECAY_LAMBDA,
             };
 
             // Auto-derive trace file path from --out: foo.md -> foo.trace.jsonl.

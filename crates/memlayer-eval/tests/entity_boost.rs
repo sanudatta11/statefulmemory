@@ -188,6 +188,7 @@ async fn ts21_entity_name_match_boosts_linked_fact_above_unlinked() {
         0,
         embedder,
         cache,
+        0.005,
     )
     .await
     .expect("retrieve_facts must succeed");

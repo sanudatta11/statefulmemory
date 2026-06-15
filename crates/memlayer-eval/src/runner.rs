@@ -239,6 +239,7 @@ pub async fn run(
                         cfg.retrieval.evidence_window,
                         embedder.clone(),
                         cache.clone(),
+                        cfg.retrieval.decay_lambda,
                     )
                     .await
                     .with_context(|| format!("facts retrieve for query '{}'", q.id))?;

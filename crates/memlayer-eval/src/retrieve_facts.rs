@@ -43,7 +43,9 @@ use memlayer_embed::{cache::EmbeddingCache, Embedder};
 use memlayer_extract::entities::extract_heuristic_tokens;
 use memlayer_storage::ProjectRegistry;
 
-use crate::scoring::build_score_map;
+use crate::scoring::{
+    apply_quality_modifiers, build_score_map, Bm25Norm, FactMeta, QualityConfig,
+};
 use crate::vec_index::open_with_vec;
 
 /// Over-fetch policy: pull `max(k * 4, 60)` candidates per retriever before
@@ -99,6 +101,7 @@ pub async fn retrieve_facts(
     evidence_window: u8,
     embedder: Arc<dyn Embedder>,
     cache: Arc<EmbeddingCache>,
+    decay_lambda: f64,
 ) -> Result<FactsHybridResult> {
     let t0 = Instant::now();
 
@@ -187,7 +190,32 @@ pub async fn retrieve_facts(
     }
 
     // 6. Build the additive score map and rank.
-    let scored = build_score_map(&bm25_hits, &dense_hits, &entity_boost_map);
+    //    P5 spec-task-28: BM25 normalization is now an adaptive sigmoid
+    //    (Mem0 formula) keyed off query token count. P5 spec-task-27/29/30:
+    //    salience multiplier (0.3 floor) + time-decay (λ from config) +
+    //    contradiction penalty (0.5× both, +0.25 to higher-salience).
+    let query_token_count = query.split_whitespace().count();
+    let mut scored = build_score_map(
+        &bm25_hits,
+        &dense_hits,
+        &entity_boost_map,
+        Bm25Norm::AdaptiveSigmoid { query_token_count },
+    );
+
+    // Fetch fact metadata for every scored id so the quality modifiers
+    // have salience + temporal + (subject, predicate, object) to work
+    // with. Single SELECT keyed by IN-list.
+    let scored_ids: Vec<i64> = scored.keys().copied().collect();
+    let meta_by_id = fetch_meta_for_ids(facts_db_path, &scored_ids)
+        .context("fetch fact meta for scoring")?;
+    let now_unix = chrono::Utc::now().timestamp();
+    let quality_cfg = QualityConfig {
+        decay_lambda,
+        now_unix,
+        ..QualityConfig::with_now(now_unix)
+    };
+    apply_quality_modifiers(&mut scored, &meta_by_id, &quality_cfg);
+
     let mut ranked: Vec<(i64, f32)> = scored
         .iter()
         .map(|(id, sc)| (*id, sc.combined()))
@@ -534,6 +562,98 @@ fn fetch_facts_by_ids(
     Ok(out)
 }
 
+/// Fetch (salience, temporal, subject, predicate, object) for every id
+/// in the score map. Used by P5 quality modifiers (spec-task-27/29/30).
+/// Single SELECT — facts.db is local SQLite, the IN-list is bounded by
+/// over-fetch (~60 ids).
+fn fetch_meta_for_ids(
+    facts_db_path: &Path,
+    ids: &[i64],
+) -> Result<HashMap<i64, FactMeta>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let conn = open_with_vec(facts_db_path).context("open facts.db for meta fetch")?;
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, salience, temporal, subject, predicate, object \
+           FROM facts \
+          WHERE id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql).context("prepare meta SELECT")?;
+    let id_params: Vec<rusqlite::types::Value> = ids
+        .iter()
+        .map(|i| rusqlite::types::Value::Integer(*i))
+        .collect();
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(id_params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .context("run meta SELECT")?;
+    let mut out: HashMap<i64, FactMeta> = HashMap::with_capacity(ids.len());
+    for r in rows {
+        let (id, salience, temporal, subject, predicate, object) =
+            r.context("read meta row")?;
+        let temporal_unix = temporal.as_deref().and_then(parse_temporal_to_unix);
+        out.insert(
+            id,
+            FactMeta {
+                salience: salience as f32,
+                temporal_unix,
+                subject,
+                predicate,
+                object,
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Parse the extractor's temporal text into a unix timestamp. Tolerant
+/// to several formats the prompt has produced in practice:
+///   - `"2023-05-25"` → 2023-05-25 00:00 UTC
+///   - `"[2023-05-25]"` → same, brackets stripped
+///   - `"2023-05"` → 2023-05-01 00:00 UTC
+///   - `"2023"` → 2023-01-01 00:00 UTC
+/// Anything we can't parse returns None (decay disabled for that fact).
+fn parse_temporal_to_unix(raw: &str) -> Option<i64> {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+    let s = raw
+        .trim()
+        .trim_matches(|c: char| c == '[' || c == ']')
+        .trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Full date.
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(NaiveDateTime::new(d, NaiveTime::MIN).and_utc().timestamp());
+    }
+    // Year-month.
+    if let Ok(d) = NaiveDate::parse_from_str(&format!("{s}-01"), "%Y-%m-%d") {
+        return Some(NaiveDateTime::new(d, NaiveTime::MIN).and_utc().timestamp());
+    }
+    // Year only.
+    if let Ok(year) = s.parse::<i32>() {
+        if (1900..3000).contains(&year) {
+            if let Some(d) = NaiveDate::from_ymd_opt(year, 1, 1) {
+                return Some(NaiveDateTime::new(d, NaiveTime::MIN).and_utc().timestamp());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +763,7 @@ mod tests {
             1,
             embedder,
             cache,
+            0.005,
         )
         .await
         .expect_err("must reject missing facts.db");
