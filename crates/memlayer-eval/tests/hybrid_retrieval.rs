@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use memlayer_embed::{BgeSmallEmbedder, Embedder, EmbeddingCache};
+use memlayer_embed::{cache::EmbeddingCache, BgeSmallEmbedder, Embedder};
 use memlayer_eval::{
     datasets::EvalMemory,
     ingest::ingest_memories,

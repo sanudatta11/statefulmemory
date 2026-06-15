@@ -77,6 +77,7 @@ pub enum FactsRetrieveError {
 }
 
 /// Output of a hybrid facts retrieval call.
+#[derive(Debug)]
 pub struct FactsHybridResult {
     /// Top-k formatted hits in score-ranked order. Each hit is the fact's
     /// `[temporal] subject predicate object` line, optionally followed by
@@ -785,6 +786,9 @@ mod tests {
         impl Embedder for StubEmbedder {
             fn embed(&self, _texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
                 Ok(vec![vec![0.0; 384]])
+            }
+            fn dim(&self) -> usize {
+                384
             }
         }
 

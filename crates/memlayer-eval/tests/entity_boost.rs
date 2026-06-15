@@ -44,6 +44,9 @@ impl Embedder for ConstantEmbedder {
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|_| vec![0.5_f32; 384]).collect())
     }
+    fn dim(&self) -> usize {
+        384
+    }
 }
 
 fn fresh_data_dir(label: &str) -> PathBuf {

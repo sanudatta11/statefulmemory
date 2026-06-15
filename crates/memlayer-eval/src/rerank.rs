@@ -92,7 +92,7 @@ pub async fn rerank(
 /// lines so the prompt stays under ~6KB even with 30 candidates — Haiku
 /// with full evidence-window expansion would otherwise blow past the
 /// context budget.
-pub(crate) fn build_rerank_prompt(
+pub fn build_rerank_prompt(
     candidates: &[String],
     question: &str,
     top_k: usize,
@@ -135,7 +135,7 @@ pub(crate) fn build_rerank_prompt(
 ///   - numbered list: `"1.\n2.\n3.\n..."` (extracts the leading numbers)
 ///   - prose prefix: `"top: 1,2,3 then ..."`
 ///   - garbage: `"I don't know"` → empty Vec
-pub(crate) fn parse_rerank_indices(raw: &str, max: usize) -> Vec<usize> {
+pub fn parse_rerank_indices(raw: &str, max: usize) -> Vec<usize> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     let mut current = String::new();

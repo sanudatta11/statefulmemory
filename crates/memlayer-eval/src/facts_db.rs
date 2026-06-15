@@ -71,7 +71,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "1");
+        assert_eq!(v, "5");
 
         // Re-opening must be idempotent (refinery records applied versions).
         drop(db);
@@ -100,12 +100,14 @@ mod tests {
             .unwrap();
 
         // The trigger should have populated facts_fts. MATCH on the unique
-        // object string proves the row is FTS-indexed.
+        // object string proves the row is FTS-indexed. Quote the term so
+        // FTS5 treats hyphens as a phrase rather than parsing the parts
+        // as column-prefix syntax.
         let count: i64 = db
             .conn
             .query_row(
                 "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH ?1",
-                params!["LGBTQ-support-uniqueneedle"],
+                params!["\"LGBTQ-support-uniqueneedle\""],
                 |r| r.get(0),
             )
             .unwrap();

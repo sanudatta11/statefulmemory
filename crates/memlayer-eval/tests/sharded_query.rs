@@ -24,7 +24,7 @@ fn lcg(state: &mut u64) -> f32 {
 
 #[test]
 fn ts13_sharded_topk_equals_single_db_topk() {
-    let mut state: u64 = 0x5EEDS;
+    let mut state: u64 = 0x5EED_BEEF;
 
     // Generate 100k (id, distance) pairs.
     let all: Vec<(i64, f32)> = (0..N)
