@@ -59,6 +59,12 @@ enum Commands {
         /// Evidence window (±N raw observations around each hit).
         #[arg(long, default_value_t = 2)]
         evidence_window: u8,
+
+        /// Number of facts.db shards. 1 = single DB (LoCoMo / LongMemEval
+        /// default). N>1 routes facts to <data_dir>/<benchmark>-vec/shard-NN.db
+        /// via FNV-based shard_for(obs_id) — used by BEAM-1M / 10M.
+        #[arg(long, default_value_t = 1)]
+        shards: usize,
     },
 
     /// Extract facts from a benchmark dataset (P2: not yet implemented).
@@ -117,7 +123,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { benchmark, k, limit, data_dir, out, skip_ingest, mode, evidence_window } => {
+        Commands::Run { benchmark, k, limit, data_dir, out, skip_ingest, mode, evidence_window, shards } => {
             std::fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new("."))).ok();
             let (memories, queries) = load_dataset(benchmark, &data_dir, limit.unwrap_or(usize::MAX))?;
 
@@ -148,6 +154,7 @@ async fn main() -> Result<()> {
                 skip_ingest,
                 retrieval,
                 trace_path,
+                shards,
             };
 
             let report = memlayer_eval::runner::run(&cfg, memories, queries).await?;

@@ -60,6 +60,11 @@ pub struct RunConfig {
     /// answers, judge verdicts). One JSON object per line; suitable for
     /// `jq`. None = no trace file.
     pub trace_path: Option<PathBuf>,
+    /// Number of facts.db shards (P4 spec-task-26). 1 = single DB (the
+    /// LoCoMo / LongMemEval path). N>1 enables the BEAM sharded layout
+    /// — extract routes by `ShardRouter::shard_for(obs_id)`, retrieval
+    /// fans out per-shard then merges via `merge_shard_results`.
+    pub shards: usize,
 }
 
 /// Per-query result.

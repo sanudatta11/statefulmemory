@@ -72,6 +72,17 @@ pub struct ExtractPipeline {
     /// insert to populate the entities + entity_links + entities_vec tables.
     /// When None, the pipeline behaves as in spec-task-18 (facts only).
     pub entity_extractor: Option<Arc<dyn EntityExtractor>>,
+    /// Optional Haiku-backed entity extractor (P5 spec-task-27c). Used
+    /// only on facts whose salience >= [`HAIKU_ENTITY_THRESHOLD`] —
+    /// roughly the top 15% of extractions where richer entity capture
+    /// is worth the LLM call. When None, all facts use
+    /// `entity_extractor` (heuristic by default).
+    pub haiku_entity_extractor: Option<Arc<dyn EntityExtractor>>,
+    /// When true, after per-window extraction the pipeline groups facts
+    /// by `source_session` and emits one session-summary fact per
+    /// session via a single Haiku call (P5 spec-task-27d). Off by
+    /// default to keep the smoke path cheap.
+    pub session_summaries: bool,
     /// Concurrency cap for the Haiku fan-out (default 4).
     pub concurrency: usize,
     /// Window size in turns (default 6).
@@ -79,6 +90,12 @@ pub struct ExtractPipeline {
     /// Window stride in turns (default 3 = 50% overlap).
     pub window_stride: usize,
 }
+
+/// Per-fact salience threshold for upgrading entity extraction from
+/// the heuristic to Haiku. Locked-grill choice: ~15% of LoCoMo facts
+/// land at or above this. Tightening (e.g. 0.9) cuts cost; loosening
+/// (e.g. 0.75) catches more entities at higher LLM spend.
+pub const HAIKU_ENTITY_THRESHOLD: f32 = 0.85;
 
 impl ExtractPipeline {
     pub fn new(
@@ -91,6 +108,8 @@ impl ExtractPipeline {
             claude,
             embedder,
             entity_extractor: None,
+            haiku_entity_extractor: None,
+            session_summaries: false,
             concurrency: DEFAULT_CONCURRENCY,
             window_size: DEFAULT_WINDOW_SIZE,
             window_stride: DEFAULT_WINDOW_STRIDE,
@@ -100,6 +119,20 @@ impl ExtractPipeline {
     /// Builder-style setter for the entity extractor (spec-task-19c).
     pub fn with_entity_extractor(mut self, e: Arc<dyn EntityExtractor>) -> Self {
         self.entity_extractor = Some(e);
+        self
+    }
+
+    /// Builder-style setter for the Haiku-backed entity extractor used
+    /// on high-salience facts (P5 spec-task-27c).
+    pub fn with_haiku_entity_extractor(mut self, e: Arc<dyn EntityExtractor>) -> Self {
+        self.haiku_entity_extractor = Some(e);
+        self
+    }
+
+    /// Builder-style setter to enable session-summary tier facts
+    /// (P5 spec-task-27d). One Haiku call per session.
+    pub fn with_session_summaries(mut self, enabled: bool) -> Self {
+        self.session_summaries = enabled;
         self
     }
 
@@ -417,12 +450,36 @@ impl ExtractPipeline {
                 &batch,
                 &fact_ids,
                 ext.as_ref(),
+                self.haiku_entity_extractor.as_deref(),
                 &self.embedder,
                 &embedding_cache,
             )
             .await
             .context("extract + persist entities for project")?;
             stats.entities_written = entity_count;
+        }
+
+        // ---------- 11. Session-summary facts (P5 spec-task-27d) ----------
+        if self.session_summaries && !batch.is_empty() {
+            match write_session_summaries(
+                &mut facts_db.conn,
+                project,
+                &batch,
+                &fact_ids,
+                self.claude.as_ref(),
+                &self.embedder,
+                &embedding_cache,
+            )
+            .await
+            {
+                Ok(written) => {
+                    info!(project, session_summaries = written, "wrote session-tier facts");
+                    stats.facts_written += written;
+                }
+                Err(e) => {
+                    warn!(project, error = %e, "session-summary pass failed; non-fatal");
+                }
+            }
         }
 
         stats.elapsed_ms = t0.elapsed().as_millis();
@@ -441,6 +498,7 @@ async fn extract_and_write_entities(
     batch: &[FactWithEmbedding],
     fact_ids: &[i64],
     extractor: &dyn EntityExtractor,
+    haiku_extractor: Option<&dyn EntityExtractor>,
     embedder: &Arc<dyn Embedder>,
     embedding_cache: &EmbeddingCache,
 ) -> Result<usize> {
@@ -453,9 +511,16 @@ async fn extract_and_write_entities(
     // 1. Per-fact entity extraction. Sequential is fine here — each call is
     //    cheap (heuristic) or already cached at the LLM client layer.
     //    BTreeMap keeps deterministic ordering for downstream embedding.
+    //    P5 spec-task-27c: facts whose salience >= HAIKU_ENTITY_THRESHOLD
+    //    use the Haiku extractor (when configured); the rest use the
+    //    heuristic. ~15% of facts hit the threshold, capping cost.
     let mut entity_to_fact_ids: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     for (fwe, &fact_id) in batch.iter().zip(fact_ids.iter()) {
-        let names = match extractor.extract(&fwe.fact).await {
+        let chosen: &dyn EntityExtractor = match (haiku_extractor, fwe.fact.salience) {
+            (Some(h), s) if s >= HAIKU_ENTITY_THRESHOLD => h,
+            _ => extractor,
+        };
+        let names = match chosen.extract(&fwe.fact).await {
             Ok(n) => n,
             Err(e) => {
                 warn!(
@@ -647,4 +712,164 @@ mod tests {
         let w = build_windows(&[], 6, 3);
         assert!(w.is_empty());
     }
+}
+
+/// Group window-tier facts by `source_session`, ask Haiku for a 2-3
+/// sentence summary per session, and insert each summary as a single
+/// `tier='session'` fact. One Haiku call per session — caps the cost
+/// at ~$0.50/benchmark for LoCoMo's ~70 sessions.
+///
+/// Failures (Haiku error, embedding error, insert error) are logged
+/// but non-fatal: the per-window facts already extracted remain valid.
+///
+/// Returns the count of session-tier facts written. Session entries
+/// with fewer than 3 source facts are skipped (not enough signal).
+async fn write_session_summaries(
+    conn: &mut rusqlite::Connection,
+    project: &str,
+    batch: &[FactWithEmbedding],
+    fact_ids: &[i64],
+    claude: &dyn ClaudeClient,
+    embedder: &Arc<dyn Embedder>,
+    embedding_cache: &EmbeddingCache,
+) -> Result<usize> {
+    use std::collections::HashMap;
+
+    if batch.len() != fact_ids.len() || batch.is_empty() {
+        return Ok(0);
+    }
+
+    // 1. Group facts by source_session, drop facts without one.
+    let mut by_session: HashMap<String, Vec<&FactWithEmbedding>> = HashMap::new();
+    for fwe in batch {
+        if let Some(sess) = &fwe.fact.source_session {
+            by_session.entry(sess.clone()).or_default().push(fwe);
+        }
+    }
+
+    let mut written = 0usize;
+    for (session, facts) in by_session {
+        if facts.len() < 3 {
+            continue;
+        }
+        // 2. Top 5 by salience as Haiku context.
+        let mut top: Vec<&FactWithEmbedding> = facts.clone();
+        top.sort_by(|a, b| {
+            b.fact
+                .salience
+                .partial_cmp(&a.fact.salience)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        top.truncate(5);
+        let mean_salience: f32 = top.iter().map(|f| f.fact.salience).sum::<f32>()
+            / top.len() as f32;
+
+        let context: String = top
+            .iter()
+            .map(|f| {
+                let temp = f
+                    .fact
+                    .temporal
+                    .as_deref()
+                    .map(|t| format!("[{t}] "))
+                    .unwrap_or_default();
+                format!("- {}{} {} {}", temp, f.fact.subject, f.fact.predicate, f.fact.object)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "Summarize this conversation session in 2-3 short sentences. \
+             Focus on what was decided, learned, or shared.\n\n\
+             Top facts from the session:\n{context}\n\n\
+             Respond with ONLY the summary text. No prose preamble, no bullets."
+        );
+
+        // 3. Haiku call. Failures are non-fatal — log and skip this session.
+        let summary = match claude
+            .ask(&prompt, memlayer_extract::claude_cli::HAIKU_MODEL)
+            .await
+        {
+            Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+            Ok(_) => {
+                warn!(project, session = %session, "session summary returned empty");
+                continue;
+            }
+            Err(e) => {
+                warn!(project, session = %session, error = %e, "session summary Haiku call failed");
+                continue;
+            }
+        };
+
+        // 4. Embed the summary text (cached) so it's first-class in
+        //    facts_vec / facts_fts and shows up in retrieval.
+        let embedding = match embed_summary(embedder, embedding_cache, &summary) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(project, session = %session, error = %e, "embed summary failed");
+                continue;
+            }
+        };
+
+        // 5. Insert via direct SQL — bypasses canonical-key dedup since
+        //    session summaries have a unique (project, predicate, object)
+        //    combo by construction.
+        let tx = conn.transaction().context("begin session summary tx")?;
+        let inserted = {
+            let mut ins_fact = tx
+                .prepare(
+                    "INSERT OR IGNORE INTO facts(project, evidence_obs_id, subject, predicate, \
+                                                  object, temporal, salience, source_session, tier) \
+                     VALUES (?1, 0, ?2, 'session_summary', ?3, NULL, ?4, ?5, 'session')",
+                )
+                .context("prepare session summary insert")?;
+            let changes_before = tx.changes();
+            ins_fact
+                .execute(rusqlite::params![
+                    project,
+                    project,
+                    summary,
+                    mean_salience as f64,
+                    session,
+                ])
+                .context("insert session summary")?;
+            tx.changes() > changes_before
+        };
+        if inserted {
+            let rowid = tx.last_insert_rowid();
+            let bytes: Vec<u8> = embedding.iter().flat_map(|x| x.to_le_bytes()).collect();
+            tx.execute(
+                "INSERT INTO facts_vec(rowid, embedding) VALUES (?1, ?2)",
+                rusqlite::params![rowid, bytes],
+            )
+            .context("insert session summary into facts_vec")?;
+            written += 1;
+        }
+        tx.commit().context("commit session summary tx")?;
+    }
+    Ok(written)
+}
+
+/// Embed text via the cache, falling back to a fresh embed on miss.
+fn embed_summary(
+    embedder: &Arc<dyn Embedder>,
+    cache: &EmbeddingCache,
+    text: &str,
+) -> Result<Vec<f32>> {
+    let (cached, misses) = cache
+        .get_many(&[text])
+        .context("read embedding cache")?;
+    if misses.is_empty() {
+        if let Some(v) = cached.into_iter().next().flatten() {
+            return Ok(v);
+        }
+    }
+    let mut vs = embedder
+        .embed(&[text])
+        .context("embed session summary")?;
+    let v = vs.remove(0);
+    cache
+        .put_many(&[(text.to_string(), v.clone())])
+        .context("cache session summary embedding")?;
+    Ok(v)
 }

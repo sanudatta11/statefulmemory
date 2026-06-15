@@ -168,19 +168,33 @@ pub fn insert_facts_for_project_returning_ids(
     let mut ids: Vec<i64> = Vec::with_capacity(batch.len());
 
     {
+        // P5 spec-task-27b: INSERT OR IGNORE + a fallback SELECT for the
+        // pre-existing fact id. The unique index on (project,
+        // lower(subject||predicate)) silently rejects re-extracted dupes;
+        // we then surface the original fact's id so entity_links from
+        // this extraction batch still wire to a valid row.
         let mut ins_fact = tx
             .prepare(
-                "INSERT INTO facts(project, evidence_obs_id, subject, predicate, \
-                                   object, temporal, salience, source_session) \
+                "INSERT OR IGNORE INTO facts(project, evidence_obs_id, subject, predicate, \
+                                             object, temporal, salience, source_session) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .context("prepare facts insert")?;
         let mut ins_vec = tx
             .prepare("INSERT INTO facts_vec(rowid, embedding) VALUES (?1, ?2)")
             .context("prepare facts_vec insert")?;
+        let mut find_existing = tx
+            .prepare(
+                "SELECT id FROM facts \
+                  WHERE project = ?1 \
+                    AND lower(subject || '|' || predicate) = lower(?2 || '|' || ?3) \
+                  LIMIT 1",
+            )
+            .context("prepare facts canonical SELECT")?;
 
         for fwe in batch {
             let f = &fwe.fact;
+            let changes_before = tx.changes();
             ins_fact
                 .execute(params![
                     project,
@@ -193,18 +207,29 @@ pub fn insert_facts_for_project_returning_ids(
                     f.source_session,
                 ])
                 .context("insert into facts")?;
+            let inserted = tx.changes() > changes_before;
 
-            let rowid: i64 = tx.last_insert_rowid();
+            let rowid: i64 = if inserted {
+                let id = tx.last_insert_rowid();
+                let bytes: Vec<u8> = fwe
+                    .embedding
+                    .iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect();
+                ins_vec
+                    .execute(params![id, bytes])
+                    .context("insert into facts_vec")?;
+                id
+            } else {
+                // Canonical key conflict — fetch the pre-existing fact id
+                // so the caller's entity_links wiring still has a target.
+                find_existing
+                    .query_row(params![project, f.subject, f.predicate], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .context("look up canonical fact id after upsert")?
+            };
             ids.push(rowid);
-
-            let bytes: Vec<u8> = fwe
-                .embedding
-                .iter()
-                .flat_map(|x| x.to_le_bytes())
-                .collect();
-            ins_vec
-                .execute(params![rowid, bytes])
-                .context("insert into facts_vec")?;
         }
     }
 
