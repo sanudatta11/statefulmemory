@@ -42,7 +42,7 @@ fn ts20_v2_migration_applies_cleanly() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "2");
+    assert_eq!(v, "5");
 
     for name in &["entities", "entity_links"] {
         let count: i64 = db

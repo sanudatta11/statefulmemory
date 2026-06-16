@@ -215,6 +215,10 @@ pub async fn run(
     };
 
     // Run queries sequentially (add semaphore for concurrency if needed).
+    let total_queries = queries_to_run.len();
+    let run_t0 = Instant::now();
+    let mut correct_so_far = 0usize;
+    let mut completed = 0usize;
     for q in &queries_to_run {
         let t_start = Instant::now();
 
@@ -362,13 +366,26 @@ pub async fn run(
 
         let end_to_end_us = t_start.elapsed().as_micros() as u64;
 
+        completed += 1;
+        if correct {
+            correct_so_far += 1;
+        }
+        let acc_pct = (correct_so_far as f64 / completed as f64) * 100.0;
+        let elapsed = run_t0.elapsed();
+        let secs = elapsed.as_secs_f64().max(0.001);
+        let remaining = total_queries.saturating_sub(completed);
+        let eta_s = ((secs / completed as f64) * remaining as f64) as u64;
+
         info!(
+            progress = format!("{completed}/{total_queries}"),
             id = %q.id,
             correct = correct,
+            acc_pct = format!("{acc_pct:.1}"),
             hits = hits.len(),
             retrieval_ms = (retrieval_us as f64) / 1000.0,
             rerank_ms = rerank_us.map(|us| (us as f64) / 1000.0).unwrap_or(0.0),
             e2e_ms = (end_to_end_us as f64) / 1000.0,
+            eta_s = eta_s,
             "query complete"
         );
 

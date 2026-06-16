@@ -286,25 +286,39 @@ impl ExtractPipeline {
         }
 
         // ---------- 5b. Fan out Haiku for remaining misses ----------
+        // We use an mpsc channel rather than collecting JoinHandles so the
+        // main loop sees results as-completed rather than in spawn order.
+        // Critical: the semaphore acquire happens *inside* each spawned
+        // task, not in the spawn loop. If we acquired before spawning, the
+        // spawn loop would block on permits and the receiver wouldn't
+        // start draining until nearly the end of the run — which silently
+        // suppresses every progress line. Acquiring inside lets the spawn
+        // loop fire off all N tasks in milliseconds; tasks queue at the
+        // semaphore inside their own futures.
         let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
-        let mut handles: Vec<tokio::task::JoinHandle<Result<(usize, Result<Vec<Fact>>)>>> =
-            Vec::with_capacity(miss_indices.len().saturating_sub(1));
+        let total_to_spawn = miss_indices.len().saturating_sub(1);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Result<Vec<Fact>>)>();
 
         for (task_n, &i) in miss_indices.iter().enumerate().skip(1) {
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .context("acquire haiku semaphore")?;
+            let sem = sem.clone();
             let claude = self.claude.clone();
             let window = windows[i].clone();
             let prompt = build_extraction_prompt(&window, None);
             let project_name = project.to_string();
             let total_misses = miss_indices.len();
-            handles.push(tokio::spawn(async move {
-                // Hold the permit across the call, drop on completion.
-                let _permit = permit;
-                info!(
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let _permit = match sem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        // Semaphore closed — should be unreachable while we
+                        // hold the Arc; bail without sending so the receiver
+                        // sees fewer messages than expected (caller will
+                        // notice via stats).
+                        return;
+                    }
+                };
+                debug!(
                     project = %project_name,
                     window = i,
                     task = task_n,
@@ -316,10 +330,11 @@ impl ExtractPipeline {
                     Ok(r) => r,
                     Err(e) => {
                         warn!(project = %project_name, window = i, error = %e, "claude call failed");
-                        return Ok((i, Err(e)));
+                        let _ = tx.send((i, Err(e)));
+                        return;
                     }
                 };
-                info!(
+                debug!(
                     project = %project_name,
                     window = i,
                     elapsed_ms = t.elapsed().as_millis(),
@@ -327,16 +342,23 @@ impl ExtractPipeline {
                     "claude haiku responded"
                 );
                 let parsed = parse_facts(&raw, &window);
-                Ok((i, parsed))
-            }));
+                let _ = tx.send((i, parsed));
+            });
         }
+        // Drop our local sender so the receiver loop terminates once all
+        // spawned tasks have dropped their clones.
+        drop(tx);
 
         // Collected per-miss results: (window_index, facts_or_failure).
         let mut fresh_results: Vec<(usize, std::result::Result<Vec<Fact>, ()>)> =
             Vec::with_capacity(miss_indices.len());
-        for h in handles {
-            match h.await.context("haiku task join")? {
-                Ok((i, Ok(facts))) => {
+        let total_handles = total_to_spawn;
+        let progress_t0 = std::time::Instant::now();
+        let mut completed = 0usize;
+        let mut last_log_at = std::time::Instant::now();
+        while let Some((i, result)) = rx.recv().await {
+            match result {
+                Ok(facts) => {
                     if facts.is_empty() {
                         // EH-4: parse_facts returned empty (either Haiku gave
                         // us prose-only output or the slice was unparseable).
@@ -346,21 +368,50 @@ impl ExtractPipeline {
                         stats.windows_failed += 1;
                         fresh_results.push((i, Err(())));
                     } else {
-                        info!(project, window_idx = i, facts = facts.len(), "extracted facts");
+                        debug!(project, window_idx = i, facts = facts.len(), "extracted facts");
                         stats.windows_extracted += 1;
                         fresh_results.push((i, Ok(facts)));
                     }
                 }
-                Ok((i, Err(e))) => {
+                Err(e) => {
                     warn!(window_idx = i, error = %e, "haiku call failed; marking window failed");
                     stats.windows_failed += 1;
                     fresh_results.push((i, Err(())));
                 }
-                Err(e) => {
-                    // Should be unreachable: the inner task body returns
-                    // anyhow::Ok(...) unconditionally.
-                    return Err(e).context("haiku task returned error");
-                }
+            }
+            completed += 1;
+            // Aggregate progress line — emit every completion for the first 5
+            // (so the user sees movement immediately), then every 10 windows
+            // OR at least every 30 seconds. This keeps the log readable on
+            // 1.5k-window benchmarks while guaranteeing visible heartbeat
+            // when calls are slow.
+            let since_last = last_log_at.elapsed();
+            let should_log = completed <= 5
+                || completed == total_handles
+                || completed % 10 == 0
+                || since_last.as_secs() >= 30;
+            if should_log {
+                let elapsed = progress_t0.elapsed();
+                let secs = elapsed.as_secs_f64().max(0.001);
+                let rate_per_min = (completed as f64 / secs) * 60.0;
+                let remaining = total_handles.saturating_sub(completed);
+                let eta_s = if completed > 0 {
+                    (secs / completed as f64) * remaining as f64
+                } else {
+                    0.0
+                };
+                info!(
+                    project,
+                    done = completed,
+                    total = total_handles,
+                    extracted = stats.windows_extracted,
+                    failed = stats.windows_failed,
+                    elapsed_s = elapsed.as_secs(),
+                    rate_per_min = format!("{rate_per_min:.1}"),
+                    eta_s = eta_s as u64,
+                    "extract progress"
+                );
+                last_log_at = std::time::Instant::now();
             }
         }
 

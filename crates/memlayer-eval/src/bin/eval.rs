@@ -137,9 +137,17 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    // Build filter: honor RUST_LOG when set, otherwise default to info.
+    // Either way, we *append* directives that silence the per-connection
+    // migration chatter from refinery and rusqlite — these flood the log
+    // every time facts.db is opened (one open per query). To re-enable
+    // them, set e.g. RUST_LOG=info,refinery_core=info.
+    let base = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = base
+        .add_directive("refinery=warn".parse()?)
+        .add_directive("refinery_core=warn".parse()?)
+        .add_directive("rusqlite=warn".parse()?);
+    fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
 
