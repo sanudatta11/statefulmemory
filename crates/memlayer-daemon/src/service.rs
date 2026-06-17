@@ -38,7 +38,7 @@ use memlayer_storage::{
     write::{
         ObservationKey, ObservationPatch, PromptKey, SaveObservationInput, WriteRequest,
     },
-    ProjectRegistry, ProjectState,
+    GlobalDb, ProjectRegistry, ProjectState,
 };
 
 use crate::admin_guard;
@@ -70,6 +70,11 @@ pub struct DaemonState {
     pub last_sync_errors: Arc<Mutex<HashMap<String, String>>>,
     /// Per-project last export timestamp (RFC3339), set by SyncExport.
     pub last_export_at: Arc<Mutex<HashMap<String, String>>>,
+    /// Cross-project mirror DB (`~/.memlayer/global.sqlite`). The daemon
+    /// upserts every successful save into this DB so `--all-projects`
+    /// search has a single BM25-ranked corpus to query. Mirror failures
+    /// are logged via tracing and DO NOT fail the per-project save.
+    pub global_db: Option<Arc<Mutex<GlobalDb>>>,
 }
 
 #[derive(Clone)]
@@ -225,6 +230,23 @@ impl Memlayer for MemlayerService {
         map(project.write.send(WriteRequest::SaveObservation { input, reply: tx }))?;
         let obs = rx.await.map_err(|_| Status::internal("write thread crashed"))?;
         let obs = map(obs)?;
+
+        // Mirror into the global DB so --all-projects search has a single
+        // BM25-ranked view across every memlayer-tracked repo. Failure here
+        // MUST NOT fail the per-project save (the source of truth has
+        // already committed). Errors are logged via tracing only.
+        if let Some(global) = &self.state.global_db {
+            let mut guard = global.lock();
+            if let Err(e) = guard.upsert_observation(&r.project_name, &obs) {
+                tracing::warn!(
+                    error = %e,
+                    project = %r.project_name,
+                    obs_id = obs.id,
+                    "global mirror upsert failed (per-project save still committed)",
+                );
+            }
+        }
+
         // Pass superseded observations (if any) in similar_observations so the
         // CLI can surface "Superseded observation #N: <title>" to the user.
         let superseded: Vec<memlayer_proto::Observation> = obs

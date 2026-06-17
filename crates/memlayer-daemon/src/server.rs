@@ -58,6 +58,19 @@ pub async fn run(cfg: Config) -> Result<()> {
     // (filesystem permissions are the UDS trust boundary).
     let token_store = Some(Arc::new(TokenStore::open(paths::tokens_db_path())?));
 
+    // Cross-project global mirror DB. We only fail-soft: if the global DB
+    // cannot be opened (disk full, permissions, schema corruption), the
+    // daemon keeps running with `global_db: None` so per-project saves
+    // continue to work. `--all-projects` search will return empty in that
+    // case rather than blocking the daemon.
+    let global_db = match memlayer_storage::GlobalDb::open(&cfg.data_dir) {
+        Ok(db) => Some(Arc::new(Mutex::new(db))),
+        Err(e) => {
+            tracing::warn!(error = %e, "global mirror DB unavailable — --all-projects search disabled");
+            None
+        }
+    };
+
     // Daemon shared state.
     let in_flight = Arc::new(AtomicU64::new(0));
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
@@ -73,6 +86,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         export_mutexes: Arc::new(Mutex::new(HashMap::new())),
         last_sync_errors: Arc::new(Mutex::new(HashMap::new())),
         last_export_at: Arc::new(Mutex::new(HashMap::new())),
+        global_db,
     });
     let svc = MemlayerService::new(state.clone());
 
