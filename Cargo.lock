@@ -1827,6 +1827,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
  "fs2",
  "is-terminal",
  "memlayer-client",

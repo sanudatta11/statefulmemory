@@ -4,7 +4,8 @@
 //!
 //! Supports:
 //!   Claude Code  — ~/.claude/skills/memlayer/SKILL.md  (skill)
-//!   Windsurf     — ~/.codeium/windsurf/memories/memlayer-memory.md  (global rule)
+//!   Claude Code  — ~/CLAUDE.md  (global instructions, append block)
+//!   Windsurf     — ~/.codeium/windsurf/rules/memlayer-memory.md  (global rule)
 //!   Cursor       — ~/.cursor/rules/memlayer.mdc  (global rule)
 //!   GitHub Copilot — ~/.github/copilot-instructions.md  (append block)
 //!
@@ -112,9 +113,21 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
         Err(e)    => eprintln!("  warn: Cursor install failed: {e}"),
     }
 
+    // ── Claude Code global instructions (~/CLAUDE.md) ───────────────────────
+    // Append-idempotent block so the memlayer protocol is in Claude Code's
+    // user-level instructions even before any skill loads. Preserves any
+    // existing content (e.g. AI Coding Rules Hub) by only rewriting the
+    // delimited memlayer block.
+    let claude_md = home.join("CLAUDE.md");
+    match install_block(&claude_md, AGENT_RULE) {
+        Ok(true)  => installed.push(format!("Claude Code (CLAUDE.md) {}", claude_md.display())),
+        Ok(false) => skipped.push("Claude Code (CLAUDE.md) (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: ~/CLAUDE.md install failed: {e}"),
+    }
+
     // ── GitHub Copilot ──────────────────────────────────────────────────────
     let copilot_path = home.join(".github").join("copilot-instructions.md");
-    match install_copilot_block(&copilot_path) {
+    match install_block(&copilot_path, AGENT_RULE) {
         Ok(true)  => installed.push(format!("Copilot (global)      {}", copilot_path.display())),
         Ok(false) => skipped.push("Copilot (global)      (unchanged)".into()),
         Err(e)    => eprintln!("  warn: Copilot install failed: {e}"),
@@ -167,12 +180,12 @@ fn install_file(path: &PathBuf, content: &str) -> std::io::Result<bool> {
 }
 
 /// Append-or-replace the memlayer block in a file that may have other content.
-fn install_copilot_block(path: &PathBuf) -> std::io::Result<bool> {
+fn install_block(path: &PathBuf, body: &str) -> std::io::Result<bool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let block = format!("{BLOCK_START}\n{AGENT_RULE}\n{BLOCK_END}\n");
+    let block = format!("{BLOCK_START}\n{body}\n{BLOCK_END}\n");
 
     let existing = if path.exists() {
         fs::read_to_string(path)?
