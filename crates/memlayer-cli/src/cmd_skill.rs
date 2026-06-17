@@ -24,22 +24,25 @@ use crate::formatter::Formatter;
 /// works offline with no network access required.
 const SKILL_MD: &str = include_str!("../../../skills/memlayer/SKILL.md");
 
-/// Windsurf / Cursor / Copilot get a condensed rule block — same contract,
-/// plain prose rather than the full structured skill format.
+/// Windsurf / Cursor / Copilot / CLAUDE.md get a strict rule block.
+/// Same contract as SKILL.md, with explicit no-fallback rule.
 const AGENT_RULE: &str = r#"## memlayer memory protocol
 
-memlayer is the persistent memory CLI for this agent. Follow these rules:
+CRITICAL: memlayer is the ONLY memory system for this agent. ALL memory
+operations MUST go through the `memlayer` CLI. NEVER use built-in memory,
+auto-memory, internal notes, or any other memory mechanism.
 
-MUST run `memlayer obs context --limit 20` at the start of every session
-before reading code or making decisions.
+MUST run at the start of EVERY session, before reading code or making any decision:
+  memlayer obs context --limit 20
 
-MUST run `memlayer obs search "<keyword>"` before introducing a new
-pattern, dependency, or convention.
+MUST run before introducing any new pattern, dependency, library, or convention:
+  memlayer obs search "<keyword>" --limit 10
 
-MUST save an observation after:
-- A non-obvious architectural or tooling decision.
-- A user correction or pushback ("stop doing X").
-- A bug fix whose root cause is non-obvious or might recur.
+MUST save an observation after each of these events — no exceptions:
+- A non-obvious architectural or tooling decision (include rejected alternatives)
+- A user correction, pushback, or "stop doing X" instruction
+- A bug fix whose root cause is non-obvious or might recur
+- A discovered convention not already in docs/CLAUDE.md
 
   memlayer obs save \
       --type <decision|pattern|fix|feedback|note> \
@@ -47,8 +50,13 @@ MUST save an observation after:
       --content "<why — include rejected alternatives and constraints>" \
       --session "$SESSION_ID"
 
-MUST NOT fabricate or cite memories not returned by obs context / obs recent.
+When user types /memlayer <text> or says "remember X" or "save to memlayer":
+  Run obs save immediately. Do NOT use built-in memory. Do NOT ask for confirmation.
+
+MUST NOT cite memories not returned by obs context or obs recent output.
 MUST NOT save trivial activity (read file, ran tests, edited typo).
+MUST NOT fall back to built-in/auto-memory if memlayer CLI is unavailable —
+  warn the user once and proceed WITHOUT any memory storage.
 
 Reference: run `memlayer --help` for the full CLI surface.
 "#;
