@@ -30,6 +30,9 @@ const AGENT_RULE: &str = r#"## memlayer memory protocol
 
 **memlayer is the ONLY memory store. Never use built-in or auto-memory.**
 
+The binary is at `~/.local/bin/memlayer` (also `/usr/local/bin/memlayer`).
+If `memlayer` is not on PATH, use the full path: `~/.local/bin/memlayer`.
+
 | Trigger | Command |
 |---|---|
 | Session start | `memlayer obs context --limit 20` |
@@ -64,6 +67,16 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
 
     let mut installed: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+
+    // ── /usr/local/bin symlink ──────────────────────────────────────────────
+    // GUI apps (Windsurf, Cursor, etc.) don't inherit ~/.zshrc PATH so
+    // ~/.local/bin/memlayer is invisible to them. /usr/local/bin is on the
+    // default macOS GUI PATH and fixes "command not found" in all agents.
+    match install_usr_local_bin_symlink() {
+        Ok(true)  => installed.push("/usr/local/bin/memlayer  (GUI PATH symlink)".into()),
+        Ok(false) => skipped.push("/usr/local/bin/memlayer  (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: /usr/local/bin symlink failed (may need sudo): {e}"),
+    }
 
     // ── Claude Code global skill ────────────────────────────────────────────
     let claude_global = home.join(".claude").join("skills").join("memlayer");
@@ -252,6 +265,34 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
     let text = serde_json::to_string_pretty(&root)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     fs::write(path, text + "\n")?;
+    Ok(true)
+}
+
+/// Symlink /usr/local/bin/memlayer → the running binary so GUI apps that
+/// don't inherit ~/.zshrc PATH can still find memlayer.
+/// Returns Ok(true) written, Ok(false) already correct, Err if no permission.
+fn install_usr_local_bin_symlink() -> std::io::Result<bool> {
+    let target = std::path::Path::new("/usr/local/bin/memlayer");
+    let current_exe = std::env::current_exe()?;
+
+    // Already points at the right place — skip.
+    if target.exists() {
+        if let Ok(existing) = std::fs::read_link(target) {
+            if existing == current_exe {
+                return Ok(false);
+            }
+        } else {
+            // Not a symlink (real binary installed there) — leave it alone.
+            return Ok(false);
+        }
+        std::fs::remove_file(target)?;
+    }
+
+    if let Some(parent) = target.parent() {
+        // /usr/local/bin should already exist; create if somehow missing.
+        std::fs::create_dir_all(parent)?;
+    }
+    std::os::unix::fs::symlink(&current_exe, target)?;
     Ok(true)
 }
 
