@@ -13,6 +13,7 @@ pub mod cursor;
 pub mod db;
 pub mod dedupe;
 pub mod diskmon;
+pub mod global;
 pub mod models;
 pub mod pragmas;
 pub mod projects_admin;
@@ -25,6 +26,7 @@ pub mod sync_state;
 pub mod write;
 
 pub use db::{open_read, open_write, Migrate};
+pub use global::{GlobalDb, GlobalHit, ManifestRow};
 pub use models::{Observation, Prompt, Session};
 pub use registry::{ProjectConfig, ProjectRegistry, ProjectState};
 pub use sync_state::{ExportedIds, UpsertOutcome};
