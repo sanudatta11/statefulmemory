@@ -368,6 +368,21 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
         "memlayer session summarize \"$CLAUDE_SESSION_ID\" --auto",
     );
 
+    // PreToolUse hooks for Grep + Read — surface relevant prior memlayer
+    // observations before the agent runs the search/read. Matcher-keyed
+    // (different shape than SessionStart/Stop). Idempotent on (matcher,
+    // memlayer-prefixed command).
+    ensure_pretool_hook(
+        &mut root,
+        "Grep",
+        "memlayer hook pre-tool --tool Grep --pattern \"$CLAUDE_TOOL_INPUT_pattern\"",
+    );
+    ensure_pretool_hook(
+        &mut root,
+        "Read",
+        "memlayer hook pre-tool --tool Read --path \"$CLAUDE_TOOL_INPUT_file_path\"",
+    );
+
     if root == original {
         return Ok(false);
     }
@@ -425,6 +440,70 @@ fn ensure_hook(root: &mut serde_json::Value, event: &str, cmd: &str) {
     event_arr.push(json!({
         "hooks": [
             { "type": "command", "command": cmd, "timeout": 30 }
+        ]
+    }));
+}
+
+/// Ensure a `PreToolUse` hook with a matcher-keyed shape exists. PreToolUse
+/// blocks are different from SessionStart/Stop: each block has a `matcher`
+/// field naming the tool to fire for. Two memlayer matchers (Grep, Read)
+/// coexist, so idempotency is per-`(matcher, memlayer-prefixed command)`,
+/// not per-event.
+///
+/// Schema appended:
+/// ```json
+/// { "matcher": "<matcher>",
+///   "hooks": [{ "type":"command", "command":<cmd>, "timeout":1 }] }
+/// ```
+/// Timeout is 1s — hooks must never delay the agent's tool call (memlayer's
+/// own internal hook command also enforces 500ms).
+fn ensure_pretool_hook(root: &mut serde_json::Value, matcher: &str, cmd: &str) {
+    use serde_json::{json, Value};
+
+    let obj = match root.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .expect("hooks must be an object");
+
+    let pretool_arr = hooks
+        .entry("PreToolUse".to_string())
+        .or_insert_with(|| Value::Array(vec![]))
+        .as_array_mut()
+        .expect("PreToolUse entry must be an array");
+
+    // Idempotency: search for an existing block with the same matcher AND
+    // any inner hook command starting with "memlayer ". If found, skip.
+    let already_present = pretool_arr.iter().any(|block| {
+        let block_matcher = block.get("matcher").and_then(|m| m.as_str());
+        if block_matcher != Some(matcher) {
+            return false;
+        }
+        block
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|inner| {
+                inner.iter().any(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.trim_start().starts_with("memlayer "))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    });
+    if already_present {
+        return;
+    }
+
+    pretool_arr.push(json!({
+        "matcher": matcher,
+        "hooks": [
+            { "type": "command", "command": cmd, "timeout": 1 }
         ]
     }));
 }
@@ -529,4 +608,80 @@ fn install_block(path: &PathBuf, body: &str) -> std::io::Result<bool> {
     }
     fs::write(path, new_content)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ensure_pretool_hook_inserts_grep_entry() {
+        let mut root = json\!({});
+        ensure_pretool_hook(
+            &mut root,
+            "Grep",
+            "memlayer hook pre-tool --tool Grep --pattern \"$X\"",
+        );
+        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq\!(arr.len(), 1);
+        assert_eq\!(arr[0]["matcher"].as_str(), Some("Grep"));
+        let inner = arr[0]["hooks"].as_array().unwrap();
+        assert_eq\!(inner.len(), 1);
+        assert\!(inner[0]["command"]
+            .as_str()
+            .unwrap()
+            .starts_with("memlayer hook"));
+    }
+
+    #[test]
+    fn ensure_pretool_hook_inserts_read_alongside_grep() {
+        let mut root = json\!({});
+        ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
+        ensure_pretool_hook(&mut root, "Read", "memlayer hook pre-tool --tool Read --path y");
+        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq\!(arr.len(), 2);
+        let matchers: Vec<&str> = arr
+            .iter()
+            .filter_map(|b| b["matcher"].as_str())
+            .collect();
+        assert\!(matchers.contains(&"Grep"));
+        assert\!(matchers.contains(&"Read"));
+    }
+
+    #[test]
+    fn ensure_pretool_hook_idempotent_per_matcher() {
+        let mut root = json\!({});
+        ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
+        ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
+        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+        let grep_blocks: Vec<_> = arr
+            .iter()
+            .filter(|b| b["matcher"].as_str() == Some("Grep"))
+            .collect();
+        assert_eq\!(
+            grep_blocks.len(),
+            1,
+            "re-invoking ensure_pretool_hook for Grep must NOT duplicate the entry",
+        );
+    }
+
+    #[test]
+    fn ensure_pretool_hook_preserves_user_matchers() {
+        let mut root = json\!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "Bash", "hooks": [{ "type": "command", "command": "user-thing" }] }
+                ]
+            }
+        });
+        ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
+        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq\!(arr.len(), 2);
+        let bash_intact = arr.iter().any(|b| {
+            b["matcher"].as_str() == Some("Bash")
+                && b["hooks"][0]["command"].as_str() == Some("user-thing")
+        });
+        assert\!(bash_intact, "user's Bash matcher must be preserved");
+    }
 }
