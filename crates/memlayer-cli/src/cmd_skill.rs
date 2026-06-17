@@ -62,45 +62,61 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
 
     let mut installed: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
 
-    // ── Claude Code (global) ────────────────────────────────────────────────
-    let claude_dir = home.join(".claude").join("skills").join("memlayer");
-    match install_file(&claude_dir.join("SKILL.md"), SKILL_MD) {
-        Ok(true)  => installed.push("Claude Code  ~/.claude/skills/memlayer/SKILL.md".into()),
-        Ok(false) => skipped.push("Claude Code  (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Claude Code install failed: {e}"),
+    // ── Claude Code global ──────────────────────────────────────────────────
+    let claude_global = home.join(".claude").join("skills").join("memlayer");
+    match install_file(&claude_global.join("SKILL.md"), SKILL_MD) {
+        Ok(true)  => installed.push("Claude Code (global)  ~/.claude/skills/memlayer/SKILL.md".into()),
+        Ok(false) => skipped.push("Claude Code (global)  (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Claude Code global install failed: {e}"),
     }
 
-    // ── Windsurf ────────────────────────────────────────────────────────────
-    // Global Windsurf rules: ~/.codeium/windsurf/rules/*.md
-    // Each file appears in the Windsurf settings GUI as a named rule.
-    let windsurf_path = home.join(".codeium").join("windsurf").join("rules").join("memlayer-memory.md");
-    match install_file(&windsurf_path, AGENT_RULE) {
-        Ok(true)  => installed.push(format!("Windsurf     {}", windsurf_path.display())),
-        Ok(false) => skipped.push("Windsurf     (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Windsurf install failed: {e}"),
+    // ── Claude Code local (CWD) ─────────────────────────────────────────────
+    // Also install into .claude/skills/ in the current repo so the skill is
+    // active even in sessions that predate the global install, or in
+    // environments where the global path isn't picked up.
+    let claude_local = cwd.join(".claude").join("skills").join("memlayer");
+    match install_file(&claude_local.join("SKILL.md"), SKILL_MD) {
+        Ok(true)  => installed.push(format!("Claude Code (local)   {}/.claude/skills/memlayer/SKILL.md", cwd.display())),
+        Ok(false) => skipped.push("Claude Code (local)   (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Claude Code local install failed: {e}"),
     }
 
-    // ── Cursor ──────────────────────────────────────────────────────────────
-    // Cursor reads global rules from ~/.cursor/rules/*.mdc
-    let cursor_dir = home.join(".cursor").join("rules");
-    let cursor_path = cursor_dir.join("memlayer.mdc");
+    // ── Windsurf global ─────────────────────────────────────────────────────
+    // ~/.codeium/windsurf/rules/*.md — shown in the Windsurf settings GUI.
+    let windsurf_global = home.join(".codeium").join("windsurf").join("rules").join("memlayer-memory.md");
+    match install_file(&windsurf_global, AGENT_RULE) {
+        Ok(true)  => installed.push(format!("Windsurf (global)     {}", windsurf_global.display())),
+        Ok(false) => skipped.push("Windsurf (global)     (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Windsurf global install failed: {e}"),
+    }
+
+    // ── Windsurf local (CWD) ────────────────────────────────────────────────
+    // Per-repo rules in .windsurf/rules/*.md — Windsurf also loads these.
+    let windsurf_local = cwd.join(".windsurf").join("rules").join("memlayer-memory.md");
+    match install_file(&windsurf_local, AGENT_RULE) {
+        Ok(true)  => installed.push(format!("Windsurf (local)      {}", windsurf_local.display())),
+        Ok(false) => skipped.push("Windsurf (local)      (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Windsurf local install failed: {e}"),
+    }
+
+    // ── Cursor global ───────────────────────────────────────────────────────
+    let cursor_path = home.join(".cursor").join("rules").join("memlayer.mdc");
     match install_file(&cursor_path, &format!("---\ndescription: memlayer memory protocol\nalwaysApply: true\n---\n\n{AGENT_RULE}")) {
-        Ok(true)  => installed.push(format!("Cursor       {}", cursor_path.display())),
-        Ok(false) => skipped.push("Cursor       (unchanged)".into()),
+        Ok(true)  => installed.push(format!("Cursor (global)       {}", cursor_path.display())),
+        Ok(false) => skipped.push("Cursor (global)       (unchanged)".into()),
         Err(e)    => eprintln!("  warn: Cursor install failed: {e}"),
     }
 
     // ── GitHub Copilot ──────────────────────────────────────────────────────
-    // Copilot reads ~/.github/copilot-instructions.md; we append/replace a
-    // clearly-marked block so the file's existing content is preserved.
     let copilot_path = home.join(".github").join("copilot-instructions.md");
     match install_copilot_block(&copilot_path) {
-        Ok(true)  => installed.push(format!("Copilot      {}", copilot_path.display())),
-        Ok(false) => skipped.push("Copilot      (unchanged)".into()),
+        Ok(true)  => installed.push(format!("Copilot (global)      {}", copilot_path.display())),
+        Ok(false) => skipped.push("Copilot (global)      (unchanged)".into()),
         Err(e)    => eprintln!("  warn: Copilot install failed: {e}"),
     }
 
