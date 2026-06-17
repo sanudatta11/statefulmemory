@@ -10,11 +10,13 @@
 
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use memlayer_proto as p;
 use tonic::transport::Channel;
 use tonic::Status;
 
+use crate::audit::{self, AuditEntry, HitMeta};
 use crate::cli::{
     ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsGetArgs, ObsListArgs, ObsRecentArgs,
     ObsSaveArgs, ObsSearchArgs, ObsSuggestTopicKeyArgs, ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
@@ -96,6 +98,7 @@ async fn save(
     _quiet: bool,
     a: ObsSaveArgs,
 ) -> Result<(), VerbError> {
+    let started = Instant::now();
     let content = if a.content == "-" {
         read_capped(io::stdin().lock(), MAX_CONTENT_CHARS)
             .map_err(|m| VerbError::Usage(m.to_string()))?
@@ -116,6 +119,15 @@ async fn save(
     };
     let resp = client.save_observation(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "obs.save",
+        project: Some(project_name),
+        result_count: resp.observation.as_ref().map(|_| 1),
+        duration_ms: started.elapsed().as_millis(),
+        query: None,
+        top_hits: None,
+    });
     // Inform the user if any conflicting observations were superseded.
     for old in &resp.similar_observations {
         if old.id > 0 {
@@ -173,6 +185,7 @@ async fn get(
     fmt: Formatter,
     a: ObsGetArgs,
 ) -> Result<(), VerbError> {
+    let started = Instant::now();
     let key = parse_obs_key(&a.id);
     let req = p::GetObservationRequest {
         project_name: project_name.to_string(),
@@ -183,6 +196,15 @@ async fn get(
     };
     let resp = client.get_observation(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "obs.get",
+        project: Some(project_name),
+        result_count: resp.observation.as_ref().map(|_| 1),
+        duration_ms: started.elapsed().as_millis(),
+        query: None,
+        top_hits: None,
+    });
     Ok(())
 }
 
@@ -192,6 +214,8 @@ async fn search(
     fmt: Formatter,
     a: ObsSearchArgs,
 ) -> Result<(), VerbError> {
+    let started = Instant::now();
+    let query_for_audit = a.query.clone();
     let req = p::SearchObservationsRequest {
         project_name: project_name.to_string(),
         query: a.query,
@@ -202,6 +226,25 @@ async fn search(
     };
     let resp = client.search_observations(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "obs.search",
+        project: Some(project_name),
+        result_count: Some(resp.observations.len()),
+        duration_ms: started.elapsed().as_millis(),
+        query: audit::full_mode_enabled().then_some(query_for_audit),
+        top_hits: audit::full_mode_enabled().then(|| {
+            resp.observations
+                .iter()
+                .take(10)
+                .map(|o| HitMeta {
+                    id: o.id,
+                    r#type: o.r#type.clone(),
+                    title: o.title.clone(),
+                })
+                .collect()
+        }),
+    });
     Ok(())
 }
 
@@ -211,6 +254,7 @@ async fn recent(
     fmt: Formatter,
     a: ObsRecentArgs,
 ) -> Result<(), VerbError> {
+    let started = Instant::now();
     let req = p::RecentObservationsRequest {
         project_name: project_name.to_string(),
         limit: a.limit,
@@ -218,6 +262,25 @@ async fn recent(
     };
     let resp = client.recent_observations(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "obs.recent",
+        project: Some(project_name),
+        result_count: Some(resp.observations.len()),
+        duration_ms: started.elapsed().as_millis(),
+        query: None,
+        top_hits: audit::full_mode_enabled().then(|| {
+            resp.observations
+                .iter()
+                .take(10)
+                .map(|o| HitMeta {
+                    id: o.id,
+                    r#type: o.r#type.clone(),
+                    title: o.title.clone(),
+                })
+                .collect()
+        }),
+    });
     Ok(())
 }
 
@@ -248,6 +311,7 @@ async fn context(
     fmt: Formatter,
     a: ObsContextArgs,
 ) -> Result<(), VerbError> {
+    let started = Instant::now();
     // For JSON/YAML output keep the original ContextResponse (callers may
     // depend on the structured shape). For text output we emit a richer
     // briefing: latest session summary + decisions due for review + recent.
@@ -258,6 +322,15 @@ async fn context(
         };
         let resp = client.context(req).await?.into_inner();
         write_render(&resp, fmt)?;
+        audit::record(&AuditEntry {
+            ts: audit::now_rfc3339(),
+            command: "obs.context",
+            project: Some(project_name),
+            result_count: Some(resp.recent_observations.len()),
+            duration_ms: started.elapsed().as_millis(),
+            query: None,
+            top_hits: None,
+        });
         return Ok(());
     }
 
@@ -315,8 +388,18 @@ async fn context(
         recent_limit: a.limit,
     };
     let resp = client.context(req).await?.into_inner();
+    let recent_count = resp.recent_observations.len();
     resp.render(Formatter::Text, &mut h)?;
     h.flush()?;
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "obs.context",
+        project: Some(project_name),
+        result_count: Some(recent_count),
+        duration_ms: started.elapsed().as_millis(),
+        query: None,
+        top_hits: None,
+    });
     Ok(())
 }
 
