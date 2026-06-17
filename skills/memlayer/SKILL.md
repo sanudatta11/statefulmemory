@@ -10,35 +10,51 @@ memlayer stores observations (decisions, patterns, fixes, user feedback) in
 a per-project SQLite database and serves them back as markdown for prompt
 injection. The agent contract is two CLI calls.
 
-**Use this skill when:**
-- Starting work in a project — pull prior context first.
-- After making a non-obvious decision (architecture, dependency choice,
-  naming convention).
-- After a user correction — record what they pushed back on so it sticks.
-- After fixing a bug whose root cause might recur.
-- Before introducing a new pattern — search for an existing decision first.
+## Hard rules
 
-**Don't use this skill for:**
-- Trivial code edits with no decisions (no memory worth keeping).
-- Anything already documented in CLAUDE.md / README / ADRs.
-- Per-session ephemeral state (use the conversation, not memory).
+These are non-negotiable. Treat them as MUST/MUST NOT.
+
+- **MUST run `memlayer obs context` at the start of every session** in a
+  project, before reading code or making decisions. Inject the result
+  into your working context.
+- **MUST run `memlayer obs search "<keyword>"` before introducing a new
+  pattern, dependency, or convention.** If a prior observation covers
+  the same ground, follow it — do not re-litigate unless the user
+  explicitly asks you to revisit.
+- **MUST save an observation after each of these events:**
+    1. A non-obvious decision (architecture, dependency, naming, error
+       handling, deployment target, etc.).
+    2. A user correction, pushback, or "stop doing X" instruction.
+    3. A bug fix whose root cause is non-obvious or might recur.
+    4. A discovered convention not already documented in CLAUDE.md or
+       similar.
+- **MUST cite only observations that actually appeared in `obs context`
+  or `obs recent` output.** MUST NOT fabricate or paraphrase a memory
+  that isn't in the retrieved set.
+- **MUST NOT save trivial activity** (read file X, ran tests, edited a
+  typo). If you wouldn't paste the title into a Slack message to a
+  teammate, do not save it.
+- **MUST NOT save anything already documented in CLAUDE.md, README,
+  ADRs, or commit messages.** Memory is for the *why* behind decisions,
+  not facts that live in the code.
 
 ## The two-call contract
 
-### 1. Pull context at the start of work
+### 1. Pull context at the start of work — REQUIRED
 
 ```bash
 memlayer obs context --query "<what you're about to work on>" --limit 20
 ```
 
-Output is markdown — paste it into the system prompt or first user turn.
-Add `--output json` if you need structured access. Returns empty if no
-observations exist for this project.
+Output is markdown. Paste it into your system prompt or first user turn.
+Add `--output json` if you need structured access. Empty result is
+normal for a new project — proceed without it. Run again with a more
+specific `--query` whenever you switch sub-tasks within the session.
 
 If you don't have a specific query yet, omit `--query` to get the most
 recent observations across all topics.
 
-### 2. Save observations as you work
+### 2. Save observations as you work — REQUIRED for the events listed above
 
 ```bash
 memlayer obs save \
@@ -48,56 +64,63 @@ memlayer obs save \
     --session "$SESSION_ID"
 ```
 
-`$SESSION_ID` should be stable across one agent session. Use whatever the
-runtime exposes (e.g., `$CLAUDE_SESSION_ID`) or a `uuidgen` value at start.
+`$SESSION_ID` MUST be stable across one agent session. Use whatever the
+runtime exposes (e.g., `$CLAUDE_SESSION_ID`) or a `uuidgen` value
+captured at session start.
 
-### Picking `--type`
+### Picking `--type` — pick exactly one
 
-| Type | When | Example title |
+| Type | When (MUST match this case) | Example title |
 |---|---|---|
-| `decision` | Architectural / tooling choice | "use pgx, not GORM" |
+| `decision` | Architectural / tooling choice with a rejected alternative | "use pgx, not GORM" |
 | `pattern` | Convention discovered in the codebase | "errors wrap with `%w` via `fmt.Errorf`" |
-| `fix` | Bug fix worth remembering | "nil-deref in handler X caused by uninit map" |
+| `fix` | Bug fix whose root cause might recur | "nil-deref in handler X caused by uninit map" |
 | `feedback` | User correction during a session | "don't add inline comments unless non-obvious" |
-| `note` | Anything else worth keeping | "QA env auth uses bearer X" |
+| `note` | Anything else worth keeping (use sparingly) | "QA env auth uses bearer X" |
 
-### Searching before introducing a new pattern
+### Searching before introducing a new pattern — REQUIRED
 
 ```bash
 memlayer obs search "<keyword>" --limit 10
 memlayer obs search "<keyword>" --type fix
 ```
 
-If you find a relevant prior decision, follow it — don't re-litigate it
-unless the user has explicitly asked you to revisit.
+If a relevant prior decision exists, you MUST follow it. The only
+exception: the user has explicitly asked you to revisit or override
+that decision in the current turn.
 
 ## Project scoping
 
 memlayer auto-detects project from `git remote origin` (then git-root
-basename). Each project has its own DB; observations don't leak across
-repos. Override with `MEMLAYER_PROJECT=<name>` if needed.
+basename). Each project has its own DB; observations do not leak across
+repos. If auto-detection fails (exit code 5), set
+`MEMLAYER_PROJECT=<name>` in the environment before retrying.
 
 ## Failure modes
 
-- **CLI not installed**: `memlayer obs context` exits with "command not
-  found". Skip silently — don't block work, but warn the user once.
-- **No prior observations**: returns empty markdown / empty array. This is
-  normal for a new project; just proceed.
-- **Daemon failed to spawn** (exit code 4): tell the user, don't retry in
-  a loop.
+- **CLI not installed** (`command not found`): warn the user **once**
+  per session, then proceed without memlayer. MUST NOT retry in a loop.
+- **No prior observations**: empty markdown or empty array. Normal for a
+  new project. Proceed.
+- **Daemon unreachable** (exit code 4): tell the user immediately, MUST
+  NOT retry silently. They likely need to remove a stale socket.
+- **Project name could not be determined** (exit code 5): tell the user
+  to set `MEMLAYER_PROJECT`. MUST NOT guess a project name.
 
-## Behavioral guidance
+## Quality bar for what you save
 
 - **Save sparingly.** Three high-signal observations per session beats
-  thirty low-signal ones. If you wouldn't paste the title into a Slack
-  message, don't save it.
-- **Title is the search key.** Make it specific enough that
-  `memlayer obs search "<topic>"` will surface it three months from now.
-- **Content is the *why*.** Don't restate the title. Capture the
-  constraint or rejected alternative that made the decision non-obvious.
-- **Don't save anything you can derive from the codebase.** Architecture
-  details belong in the code; conventions belong in linters; only the
-  "why we chose X over Y" needs memory.
+  thirty low-signal ones.
+- **Title is the search key.** Make it specific enough that running
+  `memlayer obs search "<topic>"` three months from now will surface
+  it. Bad: "decision about auth". Good: "auth: JWT validation in
+  middleware, not per-route".
+- **Content is the *why*.** MUST NOT restate the title. Capture the
+  constraint, the rejected alternative, or the user feedback that made
+  the decision non-obvious.
+- **One observation = one decision.** If you find yourself listing
+  multiple unrelated points in a single `--content`, split it into
+  multiple `obs save` calls.
 
 ## See also
 
