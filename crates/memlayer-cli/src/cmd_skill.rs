@@ -617,18 +617,18 @@ mod tests {
 
     #[test]
     fn ensure_pretool_hook_inserts_grep_entry() {
-        let mut root = json\!({});
+        let mut root = json!({});
         ensure_pretool_hook(
             &mut root,
             "Grep",
             "memlayer hook pre-tool --tool Grep --pattern \"$X\"",
         );
         let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq\!(arr.len(), 1);
-        assert_eq\!(arr[0]["matcher"].as_str(), Some("Grep"));
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["matcher"].as_str(), Some("Grep"));
         let inner = arr[0]["hooks"].as_array().unwrap();
-        assert_eq\!(inner.len(), 1);
-        assert\!(inner[0]["command"]
+        assert_eq!(inner.len(), 1);
+        assert!(inner[0]["command"]
             .as_str()
             .unwrap()
             .starts_with("memlayer hook"));
@@ -636,22 +636,22 @@ mod tests {
 
     #[test]
     fn ensure_pretool_hook_inserts_read_alongside_grep() {
-        let mut root = json\!({});
+        let mut root = json!({});
         ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
         ensure_pretool_hook(&mut root, "Read", "memlayer hook pre-tool --tool Read --path y");
         let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq\!(arr.len(), 2);
+        assert_eq!(arr.len(), 2);
         let matchers: Vec<&str> = arr
             .iter()
             .filter_map(|b| b["matcher"].as_str())
             .collect();
-        assert\!(matchers.contains(&"Grep"));
-        assert\!(matchers.contains(&"Read"));
+        assert!(matchers.contains(&"Grep"));
+        assert!(matchers.contains(&"Read"));
     }
 
     #[test]
     fn ensure_pretool_hook_idempotent_per_matcher() {
-        let mut root = json\!({});
+        let mut root = json!({});
         ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
         ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
         let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
@@ -659,7 +659,7 @@ mod tests {
             .iter()
             .filter(|b| b["matcher"].as_str() == Some("Grep"))
             .collect();
-        assert_eq\!(
+        assert_eq!(
             grep_blocks.len(),
             1,
             "re-invoking ensure_pretool_hook for Grep must NOT duplicate the entry",
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn ensure_pretool_hook_preserves_user_matchers() {
-        let mut root = json\!({
+        let mut root = json!({
             "hooks": {
                 "PreToolUse": [
                     { "matcher": "Bash", "hooks": [{ "type": "command", "command": "user-thing" }] }
@@ -677,11 +677,11 @@ mod tests {
         });
         ensure_pretool_hook(&mut root, "Grep", "memlayer hook pre-tool --tool Grep --pattern x");
         let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq\!(arr.len(), 2);
+        assert_eq!(arr.len(), 2);
         let bash_intact = arr.iter().any(|b| {
             b["matcher"].as_str() == Some("Bash")
                 && b["hooks"][0]["command"].as_str() == Some("user-thing")
         });
-        assert\!(bash_intact, "user's Bash matcher must be preserved");
+        assert!(bash_intact, "user's Bash matcher must be preserved");
     }
 }

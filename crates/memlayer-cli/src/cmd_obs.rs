@@ -321,12 +321,17 @@ async fn context(
             recent_limit: a.limit,
         };
         let resp = client.context(req).await?.into_inner();
+        let recent_count = resp
+            .snapshot
+            .as_ref()
+            .map(|s| s.recent_observations.len())
+            .unwrap_or(0);
         write_render(&resp, fmt)?;
         audit::record(&AuditEntry {
             ts: audit::now_rfc3339(),
             command: "obs.context",
             project: Some(project_name),
-            result_count: Some(resp.recent_observations.len()),
+            result_count: Some(recent_count),
             duration_ms: started.elapsed().as_millis(),
             query: None,
             top_hits: None,
@@ -388,7 +393,11 @@ async fn context(
         recent_limit: a.limit,
     };
     let resp = client.context(req).await?.into_inner();
-    let recent_count = resp.recent_observations.len();
+    let recent_count = resp
+        .snapshot
+        .as_ref()
+        .map(|s| s.recent_observations.len())
+        .unwrap_or(0);
     resp.render(Formatter::Text, &mut h)?;
     h.flush()?;
     audit::record(&AuditEntry {
