@@ -1,6 +1,16 @@
+// Generated with AI Coding Rules Hub
 //! Structured JSON logging via `tracing-subscriber` + `tracing-appender`.
 //!
 //! Spec sections: FR8, NFR8, SC-23.
+//!
+//! Log file: `~/.memlayer/daemon.log` (JSON, one record per line).
+//! Level:    `MEMLAYER_LOG` env var (default: `debug`).
+//!           Examples: `MEMLAYER_LOG=trace`, `MEMLAYER_LOG=info`.
+//!
+//! Read the log:
+//!   memlayer logs --lines 100
+//!   tail -f ~/.memlayer/daemon.log | jq .
+//!   cat ~/.memlayer/daemon.log | jq 'select(.level=="ERROR")'
 
 use std::path::Path;
 
@@ -11,14 +21,13 @@ use tracing_subscriber::EnvFilter;
 
 use memlayer_core::error::{Error, Result};
 
-/// Initialize global tracing subscriber. Returns the `WorkerGuard` so the caller
-/// can keep it alive for the lifetime of the daemon (drop = flush).
+/// Initialize global tracing subscriber. Returns the `WorkerGuard` so the
+/// caller can keep it alive for the lifetime of the daemon (drop = flush).
 ///
-/// Implementation notes:
-/// - Single rolling file at `log_path`. External rotation (size + count) is
-///   handled in `signals::on_sighup` (FR8.4).
-/// - JSON formatter; no ANSI escapes.
-/// - Filter from env var (`MEMLAYER_LOG`); defaults to `info` if invalid.
+/// Writes structured JSON to `log_path`. Level defaults to `debug` so that
+/// the log file contains enough detail to diagnose FK errors, project
+/// detection failures, and other operational issues without needing a
+/// restart. Override with `MEMLAYER_LOG=info` (or trace/warn/error).
 pub fn init(
     log_path: &Path,
     env_filter: &str,
@@ -39,7 +48,12 @@ pub fn init(
         .map_err(|e| Error::internal(format!("init log appender: {e}")))?;
     let (nb, guard) = tracing_appender::non_blocking(appender);
 
-    let filter = EnvFilter::try_new(env_filter).unwrap_or_else(|_| EnvFilter::new("info"));
+    // Default to "debug" instead of "info" so the log file is useful for
+    // diagnosing issues without needing a restart or env-var override.
+    // Callers pass the value from Config.log_level (which reads MEMLAYER_LOG).
+    let effective = if env_filter.trim().is_empty() { "debug" } else { env_filter };
+    let filter = EnvFilter::try_new(effective).unwrap_or_else(|_| EnvFilter::new("debug"));
+
     let subscriber = tracing_subscriber::registry()
         .with(filter)
         .with(

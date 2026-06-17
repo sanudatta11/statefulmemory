@@ -51,7 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             data_dir: paths::data_dir(),
-            log_level: "info".into(),
+            log_level: "debug".into(),
             dedupe_window: Duration::from_secs(60 * 60 * 24 * 30), // 30 days
             listen: None,
             tls_cert_path: None,

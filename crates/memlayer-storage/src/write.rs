@@ -399,6 +399,13 @@ fn handle_save_observation(
     }
 
     // 4. Insert.
+    // Ensure the session row exists before inserting the observation — the
+    // FOREIGN KEY requires it. CLI callers pass `--session $(uuidgen)` which
+    // is a valid new session id; auto-creating it here is correct and
+    // idempotent (handle_upsert_session returns early if it already exists).
+    handle_upsert_session(tx, &input.session_id, "")
+        .map_err(|e| Error::internal(format!("auto-upsert session: {e}")))?;
+
     let sync_id = input.sync_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     tx.execute(
         "INSERT INTO observations
