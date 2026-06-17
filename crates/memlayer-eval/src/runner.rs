@@ -18,7 +18,7 @@ use crate::retrieve::retrieve;
 /// this threshold (P5 spec-task-31 cost gate). When the top fact is a
 /// clear winner, a Haiku-shuffle costs $$ and adds judge noise without
 /// materially improving accuracy.
-const RERANK_AMBIGUITY_THRESHOLD: f32 = 0.05;
+const RERANK_AMBIGUITY_THRESHOLD: f32 = 0.15;
 
 /// Which benchmark to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
