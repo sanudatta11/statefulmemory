@@ -69,7 +69,10 @@ impl GlobalDb {
     /// in steady state and an UPDATE if any field changed (revision,
     /// content, topic_key).
     pub fn upsert_observation(&mut self, project: &str, obs: &Observation) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| Error::internal(format!("global upsert: begin tx: {e}")))?;
 
         tx.execute(
             "INSERT INTO observations
@@ -90,14 +93,17 @@ impl GlobalDb {
                 obs.topic_key,
                 obs.created_at,
             ],
-        )?;
+        )
+        .map_err(|e| Error::internal(format!("global upsert: insert observation: {e}")))?;
 
         // Update manifest with current count + last_synced_at.
-        let count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM observations WHERE project = ?1",
-            params![project],
-            |row| row.get(0),
-        )?;
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM observations WHERE project = ?1",
+                params![project],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::internal(format!("global upsert: count: {e}")))?;
         tx.execute(
             "INSERT INTO manifest (project, last_synced_at, observation_count)
              VALUES (?1, datetime('now'), ?2)
@@ -105,9 +111,11 @@ impl GlobalDb {
                 last_synced_at    = excluded.last_synced_at,
                 observation_count = excluded.observation_count",
             params![project, count],
-        )?;
+        )
+        .map_err(|e| Error::internal(format!("global upsert: manifest: {e}")))?;
 
-        tx.commit()?;
+        tx.commit()
+            .map_err(|e| Error::internal(format!("global upsert: commit: {e}")))?;
         Ok(())
     }
 
@@ -115,15 +123,18 @@ impl GlobalDb {
     /// passed to FTS5 verbatim — callers should pre-escape if it contains
     /// double-quotes / column qualifiers (mirrors per-project semantics).
     pub fn search(&self, query: &str, limit: i64) -> Result<Vec<GlobalHit>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT o.project, o.source_id, o.type, o.title, o.content,
-                    o.topic_key, o.created_at, bm25(observations_fts) AS rank
-             FROM observations o
-             JOIN observations_fts f ON o.global_id = f.rowid
-             WHERE f.observations_fts MATCH ?1
-             ORDER BY rank ASC
-             LIMIT ?2",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT o.project, o.source_id, o.type, o.title, o.content,
+                        o.topic_key, o.created_at, bm25(observations_fts) AS rank
+                 FROM observations o
+                 JOIN observations_fts f ON o.global_id = f.rowid
+                 WHERE f.observations_fts MATCH ?1
+                 ORDER BY rank ASC
+                 LIMIT ?2",
+            )
+            .map_err(|e| Error::internal(format!("global search: prepare: {e}")))?;
         let rows = stmt
             .query_map(params![query, limit], |row| {
                 Ok(GlobalHit {
@@ -136,8 +147,10 @@ impl GlobalDb {
                     created_at: row.get(6)?,
                     bm25: row.get(7)?,
                 })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            })
+            .map_err(|e| Error::internal(format!("global search: query_map: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| Error::internal(format!("global search: collect: {e}")))?;
         Ok(rows)
     }
 
@@ -158,7 +171,8 @@ impl GlobalDb {
                     })
                 },
             )
-            .optional()?;
+            .optional()
+            .map_err(|e| Error::internal(format!("global manifest_for: {e}")))?;
         Ok(row)
     }
 }
