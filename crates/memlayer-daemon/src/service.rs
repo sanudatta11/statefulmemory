@@ -375,6 +375,7 @@ impl Memlayer for MemlayerService {
             r.due_for_review,
             limit,
             cur.as_ref(),
+            r.session_id.as_deref(),
         ))?;
         let next_cursor = match next {
             Some(c) => Some(map(proto_cursor(c))?),

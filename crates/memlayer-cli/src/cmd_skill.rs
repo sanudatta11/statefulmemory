@@ -35,8 +35,10 @@ All memory reads and writes go through the `memlayer` CLI exclusively.
 The binary is at `~/.local/bin/memlayer` (also `/usr/local/bin/memlayer`).
 If `memlayer` is not on PATH, use the full path: `~/.local/bin/memlayer`.
 
-At the start of every session, before reading code or making any decision, you MUST run:
-  memlayer obs context --limit 20
+At the start of every session memlayer's SessionStart hook automatically
+injects the briefing (last session summary + decisions due for review +
+recent observations). You do NOT need to run `obs context` first. Re-run
+`memlayer obs context --query "<topic>"` mid-session when switching tasks.
 
 Before introducing any new pattern, dependency, library, or naming convention, you MUST run:
   memlayer obs search "<keyword>"
@@ -72,9 +74,14 @@ const CLAUDE_MD_RULE: &str = r#"## memlayer memory protocol
 
 **memlayer is the ONLY memory store. Never use built-in or auto-memory.**
 
+The SessionStart hook auto-injects a briefing (last session summary +
+pending review items + recent observations). The Stop hook auto-rolls up
+the session into a summary observation. Don't call `obs context` at
+session start manually — it's already done.
+
 | Trigger | Command |
 |---|---|
-| Session start | `memlayer obs context --limit 20` |
+| Mid-session task switch | `memlayer obs context --query "<topic>"` |
 | Before new pattern/dep/convention | `memlayer obs search "<keyword>"` |
 | After decision, fix, or user correction | `memlayer obs save --type <decision\|fix\|feedback\|pattern\|note> --title "..." --content "..." --session "$SESSION_ID"` |
 | `/memlayer <text>` or "remember X" | Run `obs save` immediately — no confirmation, no built-in memory |
@@ -315,6 +322,16 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
         obj.insert("autoMemoryEnabled".into(), serde_json::Value::Bool(false));
     }
 
+    // hooks — auto-inject memlayer context at session start and write a
+    // session summary at session end. Idempotent: skips if any hook with a
+    // command starting with `memlayer ` already exists for the event.
+    ensure_hook(&mut root, "SessionStart", "memlayer obs context --limit 20");
+    ensure_hook(
+        &mut root,
+        "Stop",
+        "memlayer session summarize \"$CLAUDE_SESSION_ID\" --auto",
+    );
+
     if root == original {
         return Ok(false);
     }
@@ -323,6 +340,57 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     fs::write(path, text + "\n")?;
     Ok(true)
+}
+
+/// Ensure a Claude Code lifecycle hook is present in `~/.claude/settings.json`.
+/// Walks `hooks.<event>[].hooks[]` and appends a new
+/// `{type:"command", command:<cmd>, timeout: 30}` entry only if no existing
+/// hook for that event has a command beginning with `memlayer ` — preserves
+/// user/Catalyst hooks alongside ours and stays idempotent across re-installs.
+fn ensure_hook(root: &mut serde_json::Value, event: &str, cmd: &str) {
+    use serde_json::{json, Value};
+
+    let obj = match root.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .expect("hooks must be an object");
+
+    let event_arr = hooks
+        .entry(event.to_string())
+        .or_insert_with(|| Value::Array(vec![]))
+        .as_array_mut()
+        .expect("event entry must be an array");
+
+    // If any existing block contains a command starting with "memlayer ",
+    // assume it's our prior install and don't add another.
+    let already_present = event_arr.iter().any(|block| {
+        block
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|inner| {
+                inner.iter().any(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.trim_start().starts_with("memlayer "))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    });
+    if already_present {
+        return;
+    }
+
+    event_arr.push(json!({
+        "hooks": [
+            { "type": "command", "command": cmd, "timeout": 30 }
+        ]
+    }));
 }
 
 /// Symlink /usr/local/bin/memlayer → the running binary so GUI apps that

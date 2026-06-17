@@ -181,6 +181,7 @@ pub fn list(
     due_for_review: bool,
     limit: i32,
     cursor: Option<&Cursor>,
+    session_id_filter: Option<&str>,
 ) -> Result<(Vec<Observation>, Option<Cursor>)> {
     let limit = limit.clamp(1, MAX_LIMIT);
     let mut where_clauses: Vec<String> = vec!["deleted_at IS NULL".into()];
@@ -196,6 +197,10 @@ pub fn list(
     if let Some(c) = created_by_filter {
         where_clauses.push(format!("created_by = ?{}", bind.len() + 1));
         bind.push(Box::new(c.to_string()));
+    }
+    if let Some(sid) = session_id_filter {
+        where_clauses.push(format!("session_id = ?{}", bind.len() + 1));
+        bind.push(Box::new(sid.to_string()));
     }
     if due_for_review {
         where_clauses.push("review_after IS NOT NULL AND review_after <= datetime('now')".into());
@@ -464,7 +469,7 @@ mod tests {
             .unwrap();
         assert!(search(&c, "alpha", None, None, 10).unwrap().is_empty());
         assert!(recent(&c, 10, None).unwrap().is_empty());
-        assert!(list(&c, None, None, None, false, 10, None)
+        assert!(list(&c, None, None, None, false, 10, None, None)
             .unwrap()
             .0
             .is_empty());
@@ -476,13 +481,13 @@ mod tests {
         for i in 0..12 {
             save(&mut c, &format!("row-{i}"), "note");
         }
-        let (p1, c1) = list(&c, None, None, None, false, 5, None).unwrap();
+        let (p1, c1) = list(&c, None, None, None, false, 5, None, None).unwrap();
         assert_eq!(p1.len(), 5);
         assert!(c1.is_some());
-        let (p2, c2) = list(&c, None, None, None, false, 5, c1.as_ref()).unwrap();
+        let (p2, c2) = list(&c, None, None, None, false, 5, c1.as_ref(), None).unwrap();
         assert_eq!(p2.len(), 5);
         assert!(c2.is_some());
-        let (p3, c3) = list(&c, None, None, None, false, 5, c2.as_ref()).unwrap();
+        let (p3, c3) = list(&c, None, None, None, false, 5, c2.as_ref(), None).unwrap();
         assert_eq!(p3.len(), 2);
         assert!(c3.is_none());
     }

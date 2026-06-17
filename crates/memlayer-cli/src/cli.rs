@@ -246,6 +246,9 @@ pub enum SessionVerb {
     End(SessionEndArgs),
     /// Save a structured summary onto an existing session.
     Summary(SessionSummaryArgs),
+    /// Generate a rolled-up session summary from observations and persist
+    /// it as a project-scoped note (Engram-style auto-rollup).
+    Summarize(SessionSummarizeArgs),
     /// List recent sessions, paginated.
     List(SessionListArgs),
     /// Print one session.
@@ -274,6 +277,20 @@ pub struct SessionSummaryArgs {
     pub id: String,
     #[arg(long)]
     pub content: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionSummarizeArgs {
+    /// Session id to summarize.
+    pub id: String,
+    /// Mark this as an auto-generated rollup (default true). Set --no-auto for
+    /// agent-supplied prose mode.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub auto: bool,
+    /// Read agent-supplied summary content from stdin (`-`) or as a literal
+    /// string. When set, overrides the heuristic auto-rollup body.
+    #[arg(long)]
+    pub content: Option<String>,
 }
 
 #[derive(Args, Debug)]

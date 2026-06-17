@@ -164,6 +164,7 @@ message ListObservationsRequest {
   bool due_for_review = 5;
   int32 limit = 6;
   optional Cursor cursor = 7;
+  optional string session_id = 8;
 }
 
 message ListObservationsResponse {

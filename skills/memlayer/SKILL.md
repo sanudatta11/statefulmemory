@@ -27,9 +27,9 @@ injection. The agent contract is two CLI calls.
 
 These are non-negotiable. Treat them as MUST/MUST NOT.
 
-- **MUST run `memlayer obs context` at the start of every session** in a
-  project, before reading code or making decisions. Inject the result
-  into your working context.
+- **At session start, the briefing is auto-injected by the SessionStart hook.**
+  You do NOT need to call `obs context` to start a session. Re-run
+  `memlayer obs context --query "<topic>"` mid-session when switching tasks.
 - **MUST run `memlayer obs search "<keyword>"` before introducing a new
   pattern, dependency, or convention.** If a prior observation covers
   the same ground, follow it — do not re-litigate unless the user

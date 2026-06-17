@@ -235,6 +235,7 @@ async fn list(
         due_for_review: a.due_for_review,
         limit: a.limit,
         cursor: a.cursor.map(|t| p::Cursor { token: t }),
+        session_id: None,
     };
     let resp = client.list_observations(req).await?.into_inner();
     write_render(&resp, fmt)?;
@@ -247,12 +248,75 @@ async fn context(
     fmt: Formatter,
     a: ObsContextArgs,
 ) -> Result<(), VerbError> {
+    // For JSON/YAML output keep the original ContextResponse (callers may
+    // depend on the structured shape). For text output we emit a richer
+    // briefing: latest session summary + decisions due for review + recent.
+    if fmt != Formatter::Text {
+        let req = p::ContextRequest {
+            project_name: project_name.to_string(),
+            recent_limit: a.limit,
+        };
+        let resp = client.context(req).await?.into_inner();
+        write_render(&resp, fmt)?;
+        return Ok(());
+    }
+
+    // Text mode: compose briefing from three RPCs.
+    use std::io::Write;
+    let stdout = io::stdout();
+    let mut h = stdout.lock();
+
+    // 1. Latest session summary (search by topic_key prefix via title hit).
+    let summary_req = p::SearchObservationsRequest {
+        project_name: project_name.to_string(),
+        query: "session-summary".into(),
+        r#type: Some("note".into()),
+        scope: None,
+        limit: 1,
+        all_projects: false,
+    };
+    let summaries = client.search_observations(summary_req).await?.into_inner();
+    if let Some(latest) = summaries.observations.first() {
+        if latest
+            .topic_key
+            .as_deref()
+            .map(|t| t.starts_with("session-summary/"))
+            .unwrap_or(false)
+        {
+            writeln!(h, "# Last session summary")?;
+            writeln!(h, "{}", latest.content.trim_end())?;
+            writeln!(h)?;
+        }
+    }
+
+    // 2. Decisions due for review.
+    let due_req = p::ListObservationsRequest {
+        project_name: project_name.to_string(),
+        r#type: None,
+        scope: None,
+        created_by: None,
+        due_for_review: true,
+        limit: 10,
+        cursor: None,
+        session_id: None,
+    };
+    let due = client.list_observations(due_req).await?.into_inner();
+    if !due.observations.is_empty() {
+        writeln!(h, "# Pending review")?;
+        for o in &due.observations {
+            writeln!(h, "- [#{}] {} ({})", o.id, o.title, o.r#type)?;
+        }
+        writeln!(h)?;
+    }
+
+    // 3. Recent observations.
     let req = p::ContextRequest {
         project_name: project_name.to_string(),
         recent_limit: a.limit,
     };
     let resp = client.context(req).await?.into_inner();
-    write_render(&resp, fmt)?;
+    resp.render(Formatter::Text, &mut h)?;
+    h.flush()?;
     Ok(())
 }
 
