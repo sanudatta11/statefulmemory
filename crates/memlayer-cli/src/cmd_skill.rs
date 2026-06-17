@@ -66,6 +66,13 @@ injects the briefing (last session summary + decisions due for review +
 recent observations). You do NOT need to run `obs context` first. Re-run
 `memlayer obs context --query "<topic>"` mid-session when switching tasks.
 
+Before any Grep or Read tool call, memlayer's PreToolUse hooks run
+`memlayer hook pre-tool` automatically. If matching prior observations
+exist, Grep mode injects them as additional context (markdown to stdout)
+and Read mode prints a stderr hint. You do NOT need to manually run
+`obs search` before grepping — the hook does it for you. The hook is
+silent on misses, capped at 500 ms, and never blocks the tool call.
+
 Before introducing any new pattern, dependency, library, or naming convention, you MUST run:
   memlayer obs search "<keyword>"
 
@@ -102,8 +109,10 @@ const CLAUDE_MD_RULE: &str = r#"## memlayer memory protocol
 
 The SessionStart hook auto-injects a briefing (last session summary +
 pending review items + recent observations). The Stop hook auto-rolls up
-the session into a summary observation. Don't call `obs context` at
-session start manually — it's already done.
+the session into a summary observation. PreToolUse[Grep] / PreToolUse[Read]
+hooks fire before grep/read and surface matching prior observations
+automatically. Don't call `obs context` at session start manually and
+don't run `obs search` before greppping — the hooks do it for you.
 
 | Trigger | Command |
 |---|---|
