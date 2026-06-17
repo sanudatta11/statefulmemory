@@ -28,10 +28,49 @@ const SKILL_MD: &str = include_str!("../../../skills/memlayer/SKILL.md");
 /// Same contract as SKILL.md, with explicit no-fallback rule.
 const AGENT_RULE: &str = r#"## memlayer memory protocol
 
-**memlayer is the ONLY memory store. Never use built-in or auto-memory.**
+IMPORTANT: memlayer is the ONLY memory store for this agent. You MUST NOT use
+built-in memory, auto-memory, internal notes, or any other memory mechanism.
+All memory reads and writes go through the `memlayer` CLI exclusively.
 
 The binary is at `~/.local/bin/memlayer` (also `/usr/local/bin/memlayer`).
 If `memlayer` is not on PATH, use the full path: `~/.local/bin/memlayer`.
+
+At the start of every session, before reading code or making any decision, you MUST run:
+  memlayer obs context --limit 20
+
+Before introducing any new pattern, dependency, library, or naming convention, you MUST run:
+  memlayer obs search "<keyword>"
+
+After each of the following events, you MUST save an observation — no exceptions:
+- A non-obvious architectural or tooling decision (include rejected alternatives)
+- A user correction, pushback, or instruction to stop doing something
+- A bug fix whose root cause is non-obvious or might recur
+- A discovered convention not already in project documentation
+
+  memlayer obs save \
+      --type <decision|pattern|fix|feedback|note> \
+      --title "<short, searchable title>" \
+      --content "<why — include rejected alternatives and constraints>" \
+      --session "$SESSION_ID"
+
+When the user types `/memlayer <text>` or says "remember X" or "save to memlayer":
+  Run `obs save` immediately. Do NOT use built-in memory. Do NOT ask for confirmation.
+
+You MUST NOT cite memories that were not returned by `obs context` or `obs recent`.
+You MUST NOT save trivial activity such as reading files, running tests, or editing typos.
+If the memlayer CLI is unavailable: warn the user once and proceed WITHOUT any memory storage.
+Do NOT fall back to built-in or auto-memory under any circumstances.
+"#;
+
+/// Marker used to find and replace the memlayer block in append-style files.
+const BLOCK_START: &str = "<!-- memlayer-skill-start -->";
+const BLOCK_END: &str = "<!-- memlayer-skill-end -->";
+
+/// Concise table version for ~/CLAUDE.md — already loaded as instructions,
+/// so imperative prose would be redundant. Kept tight to save context tokens.
+const CLAUDE_MD_RULE: &str = r#"## memlayer memory protocol
+
+**memlayer is the ONLY memory store. Never use built-in or auto-memory.**
 
 | Trigger | Command |
 |---|---|
@@ -44,10 +83,6 @@ MUST NOT cite memories not in `obs context` / `obs recent` output.
 MUST NOT save trivial activity (read file, ran tests, edited typo).
 If CLI unavailable: warn once, proceed without any memory storage.
 "#;
-
-/// Marker used to find and replace the memlayer block in append-style files.
-const BLOCK_START: &str = "<!-- memlayer-skill-start -->";
-const BLOCK_END: &str = "<!-- memlayer-skill-end -->";
 
 /// The bash permission rule added to Claude Code settings.
 const CLAUDE_BASH_RULE: &str = "Bash(memlayer *)";
@@ -107,7 +142,7 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
 
     // ── Claude Code global instructions (~/CLAUDE.md) ───────────────────────
     let claude_md = home.join("CLAUDE.md");
-    match install_block(&claude_md, AGENT_RULE) {
+    match install_block(&claude_md, CLAUDE_MD_RULE) {
         Ok(true)  => installed.push(format!("Claude Code (CLAUDE.md) {}", claude_md.display())),
         Ok(false) => skipped.push("Claude Code (CLAUDE.md) (unchanged)".into()),
         Err(e)    => eprintln!("  warn: ~/CLAUDE.md install failed: {e}"),
