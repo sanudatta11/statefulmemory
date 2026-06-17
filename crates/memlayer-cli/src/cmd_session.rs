@@ -2,9 +2,11 @@
 
 use std::io;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use memlayer_proto as p;
 
+use crate::audit::{self, AuditEntry};
 use crate::cli::{
     SessionDeleteArgs, SessionEndArgs, SessionGetArgs, SessionListArgs, SessionStartArgs,
     SessionSummarizeArgs, SessionSummaryArgs, SessionVerb,
@@ -100,6 +102,7 @@ async fn summarize(
 ) -> Result<(), tonic::Status> {
     use std::io::Read;
 
+    let started = Instant::now();
     let session_id = a.id.clone();
 
     // Decide body source.
@@ -163,6 +166,15 @@ async fn summarize(
             eprintln!("  ↳ Superseded prior summary #{} (soft-deleted)", old.id);
         }
     }
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "session.summarize",
+        project: Some(project_name),
+        result_count: Some(1),
+        duration_ms: started.elapsed().as_millis(),
+        query: None,
+        top_hits: None,
+    });
     Ok(())
 }
 
