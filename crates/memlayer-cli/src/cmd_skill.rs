@@ -24,6 +24,32 @@ use crate::formatter::Formatter;
 /// works offline with no network access required.
 const SKILL_MD: &str = include_str!("../../../skills/memlayer/SKILL.md");
 
+/// Bundled progressive-disclosure reference sidecars. Each tuple is
+/// (filename under `references/`, file body). All sidecars install
+/// alongside the core SKILL.md via `install_skill_references`.
+const SKILL_REFERENCES: &[(&str, &str)] = &[
+    (
+        "types.md",
+        include_str!("../../../skills/memlayer/references/types.md"),
+    ),
+    (
+        "slash.md",
+        include_str!("../../../skills/memlayer/references/slash.md"),
+    ),
+    (
+        "hooks.md",
+        include_str!("../../../skills/memlayer/references/hooks.md"),
+    ),
+    (
+        "failures.md",
+        include_str!("../../../skills/memlayer/references/failures.md"),
+    ),
+    (
+        "examples.md",
+        include_str!("../../../skills/memlayer/references/examples.md"),
+    ),
+];
+
 /// Windsurf / Cursor / Copilot / CLAUDE.md get a strict rule block.
 /// Same contract as SKILL.md, with explicit no-fallback rule.
 const AGENT_RULE: &str = r#"## memlayer memory protocol
@@ -127,6 +153,11 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
         Ok(false) => skipped.push("Claude Code (global)    (unchanged)".into()),
         Err(e)    => eprintln!("  warn: Claude Code global install failed: {e}"),
     }
+    match install_skill_references(&claude_global) {
+        Ok(true)  => installed.push("Claude Code (refs)      ~/.claude/skills/memlayer/references/*.md".into()),
+        Ok(false) => skipped.push("Claude Code (refs)      (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Claude Code references install failed: {e}"),
+    }
 
     // ── Claude Code local (CWD) ─────────────────────────────────────────────
     let claude_local = cwd.join(".claude").join("skills").join("memlayer");
@@ -134,6 +165,11 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
         Ok(true)  => installed.push(format!("Claude Code (local)     {}/.claude/skills/memlayer/SKILL.md", cwd.display())),
         Ok(false) => skipped.push("Claude Code (local)     (unchanged)".into()),
         Err(e)    => eprintln!("  warn: Claude Code local install failed: {e}"),
+    }
+    match install_skill_references(&claude_local) {
+        Ok(true)  => installed.push(format!("Claude Code (refs)      {}/.claude/skills/memlayer/references/*.md", cwd.display())),
+        Ok(false) => skipped.push("Claude Code (refs local)(unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Claude Code local references install failed: {e}"),
     }
 
     // ── Claude Code settings.json (permissions + socket) ───────────────────
@@ -435,6 +471,33 @@ fn install_file(path: &PathBuf, content: &str) -> std::io::Result<bool> {
     }
     fs::write(path, content)?;
     Ok(true)
+}
+
+/// Atomically install all SKILL_REFERENCES sidecars under `<skill_dir>/references/`.
+/// Each file is written via staged tmp + rename so a crash mid-write never
+/// leaves a half-written sidecar in place. Returns Ok(true) if any file was
+/// written or modified, Ok(false) if every file was already up to date.
+fn install_skill_references(skill_dir: &PathBuf) -> std::io::Result<bool> {
+    let refs_dir = skill_dir.join("references");
+    fs::create_dir_all(&refs_dir)?;
+
+    let mut any_changed = false;
+    for (name, body) in SKILL_REFERENCES {
+        let final_path = refs_dir.join(name);
+        if final_path.exists() {
+            if let Ok(existing) = fs::read_to_string(&final_path) {
+                if existing == *body {
+                    continue;
+                }
+            }
+        }
+        // Stage to a sibling tmp file then atomic rename.
+        let tmp_path = refs_dir.join(format!(".{name}.tmp"));
+        fs::write(&tmp_path, body)?;
+        fs::rename(&tmp_path, &final_path)?;
+        any_changed = true;
+    }
+    Ok(any_changed)
 }
 
 /// Append-or-replace the memlayer block in a file that may have other content.
