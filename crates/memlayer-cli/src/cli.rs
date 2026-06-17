@@ -68,6 +68,10 @@ pub enum Command {
     Logs(LogsArgs),
     /// Install the memlayer skill into all detected agent config directories.
     Install,
+    /// Remove all memlayer skill files and undo settings patches.
+    Uninstall,
+    /// Wipe all stored observations and stop the daemon.
+    Clean,
     /// Print version and exit.
     Version,
 }

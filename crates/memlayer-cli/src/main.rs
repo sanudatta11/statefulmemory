@@ -13,8 +13,8 @@ use tracing::error;
 
 use memlayer_cli::cli::{Cli, Command, DaemonArgs, DaemonVerb, OutputFormat};
 use memlayer_cli::{
-    cmd_daemon, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill, cmd_sync,
-    cmd_team, cmd_version,
+    cmd_daemon, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill,
+    cmd_sync, cmd_team, cmd_uninstall, cmd_version,
 };
 use memlayer_cli::{autospawn, exit};
 use memlayer_cli::formatter::Formatter;
@@ -94,6 +94,16 @@ async fn main() -> ExitCode {
             let stdout_is_tty = std::io::stdout().is_terminal();
             let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
             cmd_skill::dispatch(fmt).await
+        }
+        Command::Uninstall => {
+            let stdout_is_tty = std::io::stdout().is_terminal();
+            let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
+            cmd_uninstall::dispatch_uninstall(fmt).await
+        }
+        Command::Clean => {
+            let stdout_is_tty = std::io::stdout().is_terminal();
+            let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
+            cmd_uninstall::dispatch_clean(fmt).await
         }
         Command::Sync(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, fmt)) => {
