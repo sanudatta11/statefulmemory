@@ -225,9 +225,19 @@ impl Memlayer for MemlayerService {
         map(project.write.send(WriteRequest::SaveObservation { input, reply: tx }))?;
         let obs = rx.await.map_err(|_| Status::internal("write thread crashed"))?;
         let obs = map(obs)?;
+        // Pass superseded observations (if any) in similar_observations so the
+        // CLI can surface "Superseded observation #N: <title>" to the user.
+        let superseded: Vec<memlayer_proto::Observation> = obs
+            .superseded_ids
+            .iter()
+            .map(|&sid| memlayer_proto::Observation {
+                id: sid,
+                ..Default::default()
+            })
+            .collect();
         Ok(Response::new(SaveObservationResponse {
             observation: Some(obs_to_proto(obs)),
-            similar_observations: vec![],
+            similar_observations: superseded,
         }))
     }
 

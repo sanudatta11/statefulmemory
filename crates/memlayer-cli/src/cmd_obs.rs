@@ -116,6 +116,12 @@ async fn save(
     };
     let resp = client.save_observation(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    // Inform the user if any conflicting observations were superseded.
+    for old in &resp.similar_observations {
+        if old.id > 0 {
+            eprintln!("  ↳ Superseded observation #{} (soft-deleted)", old.id);
+        }
+    }
     Ok(())
 }
 

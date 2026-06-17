@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
 use tracing::{debug, error};
 use uuid::Uuid;
@@ -406,7 +406,7 @@ fn handle_save_observation(
     handle_upsert_session(tx, &input.session_id, "")
         .map_err(|e| Error::internal(format!("auto-upsert session: {e}")))?;
 
-    let sync_id = input.sync_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let sync_id = input.sync_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     tx.execute(
         "INSERT INTO observations
             (sync_id, session_id, type, title, content, tool_name, scope,
@@ -438,8 +438,36 @@ fn handle_save_observation(
         }
     })?;
     let id = tx.last_insert_rowid();
-    fetch_observation_by_id(tx, id)?
-        .ok_or_else(|| Error::internal("post-insert fetch: row vanished"))
+
+    // 5. Conflict detection: find existing active observations of the same
+    //    type+scope that likely describe the same fact with a conflicting value.
+    //    Uses FTS5 BM25 on the title — top-1 hit within same type+scope.
+    //    If found, soft-delete it (delete_reason = 'superseded') and link via
+    //    superseded_by_id so callers know which observation was replaced.
+    let superseded_id = find_conflict_candidate(tx, id, &input)?;
+    if let Some(old_id) = superseded_id {
+        tx.execute(
+            "UPDATE observations
+                SET deleted_at = ?2,
+                    delete_reason = 'superseded',
+                    superseded_by_id = ?3
+              WHERE id = ?1",
+            params![old_id, &now, id],
+        )
+        .map_err(|e| Error::internal(format!("supersede old obs: {e}")))?;
+        tx.execute(
+            "UPDATE observations SET superseded_count = superseded_count + 1 WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| Error::internal(format!("bump superseded_count: {e}")))?;
+    }
+
+    let mut obs = fetch_observation_by_id(tx, id)?
+        .ok_or_else(|| Error::internal("post-insert fetch: row vanished"))?;
+    if let Some(old_id) = superseded_id {
+        obs.superseded_ids = vec![old_id];
+    }
+    Ok(obs)
 }
 
 // ---------------------------------------------------------------------------
@@ -737,6 +765,36 @@ const OBSERVATION_SELECT_FIELDS_BY_SYNC: &str = "
            last_seen_at, created_at, updated_at, deleted_at, review_after
       FROM observations WHERE sync_id = ?1
 ";
+
+/// Find the top BM25 hit for `input.title` among active observations of the
+/// same type and scope, excluding the newly-inserted row `new_id`.
+/// Returns the conflicting observation's id if one is found.
+fn find_conflict_candidate(
+    tx: &rusqlite::Transaction<'_>,
+    new_id: i64,
+    input: &SaveObservationInput,
+) -> Result<Option<i64>> {
+    // Escape FTS5 special characters in the title to avoid query syntax errors.
+    let query = input.title.replace('"', "\"\"");
+    let result: Option<i64> = tx
+        .query_row(
+            "SELECT o.id
+               FROM observations o
+               JOIN observations_fts f ON o.id = f.rowid
+              WHERE f.observations_fts MATCH ?1
+                AND o.scope = ?2
+                AND o.type = ?3
+                AND o.id != ?4
+                AND o.deleted_at IS NULL
+              ORDER BY bm25(observations_fts) ASC
+              LIMIT 1",
+            params![format!("title:{query}"), &input.scope, &input.r#type, new_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::internal(format!("conflict scan: {e}")))?;
+    Ok(result)
+}
 
 // ---------------------------------------------------------------------------
 // Tests

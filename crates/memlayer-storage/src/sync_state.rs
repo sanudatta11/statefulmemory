@@ -635,6 +635,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            superseded_ids: vec![],
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
         assert_eq!(outcome, UpsertOutcome::Inserted);
@@ -674,6 +675,7 @@ mod tests {
             updated_at: "2026-01-02T00:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            superseded_ids: vec![],
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
         assert_eq!(outcome, UpsertOutcome::OverwroteOlder);
@@ -713,6 +715,7 @@ mod tests {
             updated_at: "2026-01-02T00:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            superseded_ids: vec![],
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
         assert_eq!(outcome, UpsertOutcome::RetainedNewer);
