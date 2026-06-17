@@ -18,6 +18,7 @@ pub mod cmd_obs;
 pub mod cmd_project;
 pub mod cmd_prompt;
 pub mod cmd_session;
+pub mod cmd_skill;
 pub mod cmd_sync;
 pub mod cmd_team;
 pub mod cmd_version;
