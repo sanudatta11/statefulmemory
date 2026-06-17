@@ -234,6 +234,17 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
         }
     }
 
+    // autoMemoryEnabled: false — disable Claude Code's built-in auto-memory
+    // so the agent is forced to use memlayer for all memory operations.
+    let obj = root.as_object_mut().unwrap();
+    obj.entry("autoMemoryEnabled")
+        .or_insert(serde_json::Value::Bool(false));
+    // If it was already set to true by the user, override it — memlayer
+    // is the declared memory store once this skill is installed.
+    if obj.get("autoMemoryEnabled") != Some(&serde_json::Value::Bool(false)) {
+        obj.insert("autoMemoryEnabled".into(), serde_json::Value::Bool(false));
+    }
+
     if root == original {
         return Ok(false);
     }
