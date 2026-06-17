@@ -774,8 +774,11 @@ fn find_conflict_candidate(
     new_id: i64,
     input: &SaveObservationInput,
 ) -> Result<Option<i64>> {
-    // Escape FTS5 special characters in the title to avoid query syntax errors.
-    let query = input.title.replace('"', "\"\"");
+    // Build a phrase query: title:"<escaped title>"
+    // Double any literal double-quotes in the title so they don't break the
+    // FTS5 phrase syntax (FTS5 uses "" as an escape for a literal quote).
+    let escaped = input.title.replace('"', "\"\"");
+    let query = format!("title:\"{}\"", escaped);
     let result: Option<i64> = tx
         .query_row(
             "SELECT o.id
@@ -788,7 +791,7 @@ fn find_conflict_candidate(
                 AND o.deleted_at IS NULL
               ORDER BY bm25(observations_fts) ASC
               LIMIT 1",
-            params![format!("title:{query}"), &input.scope, &input.r#type, new_id],
+            params![query, &input.scope, &input.r#type, new_id],
             |row| row.get(0),
         )
         .optional()
