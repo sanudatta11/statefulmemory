@@ -75,21 +75,24 @@ internal memory. Follow these steps:
 Example: `/memlayer my project deadline is 20th June`
 → runs `memlayer obs save --type note --title "project deadline: 20 June 2026" --content "..."`
 
-## The two-call contract
+## The contract
 
-### 1. Pull context at the start of work — REQUIRED
+Three CLI calls cover the full workflow. Two of them (briefing on session
+start, rollup on session end) are wired to Claude Code lifecycle hooks
+by `memlayer install` and run automatically — you don't invoke them.
 
-```bash
-memlayer obs context --query "<what you're about to work on>" --limit 20
-```
+### 1. Briefing — auto-injected at session start
 
-Output is markdown. Paste it into your system prompt or first user turn.
-Add `--output json` if you need structured access. Empty result is
-normal for a new project — proceed without it. Run again with a more
-specific `--query` whenever you switch sub-tasks within the session.
+The `SessionStart` hook runs `memlayer obs context --limit 20` and pipes
+the markdown into Claude's first turn. The output includes:
 
-If you don't have a specific query yet, omit `--query` to get the most
-recent observations across all topics.
+- `# Last session summary` (most recent rollup, if any)
+- `# Pending review` (decisions whose `review_after` has elapsed)
+- Recent observations and active topics
+
+You do NOT need to call this manually. Re-run `memlayer obs context
+--query "<topic>"` mid-session when switching sub-tasks for a more
+focused recall.
 
 ### 2. Save observations as you work — REQUIRED for the events listed above
 
@@ -114,6 +117,23 @@ captured at session start.
 | `fix` | Bug fix whose root cause might recur | "nil-deref in handler X caused by uninit map" |
 | `feedback` | User correction during a session | "don't add inline comments unless non-obvious" |
 | `note` | Anything else worth keeping (use sparingly) | "QA env auth uses bearer X" |
+
+### 3. Session rollup — auto-written at session end
+
+The `Stop` hook runs `memlayer session summarize "$CLAUDE_SESSION_ID"
+--auto` when Claude Code's session ends (including via `/clear` or
+compaction). It groups the session's observations by topic, picks the
+latest per group, and stores an Engram-shaped markdown rollup as a
+single observation with `topic_key="session-summary/<id>"`. The next
+session's briefing surfaces this in `# Last session summary`.
+
+To override the heuristic with agent-written prose:
+
+```bash
+echo "## Goal\n...\n## Done\n- ..." | memlayer session summarize "$SESSION_ID" --content -
+```
+
+Same `topic_key` → V3 supersession dedups against the auto rollup.
 
 ### Searching before introducing a new pattern — REQUIRED
 
