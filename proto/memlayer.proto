@@ -37,6 +37,9 @@ message Observation {
   string updated_at      = 16;    // RFC-3339 UTC
   optional string deleted_at = 17;
   optional string review_after = 18;
+  // Originating project for cross-project (--all-projects) results.
+  // Empty / absent for per-project queries.
+  optional string project_name = 19;
 }
 
 message Session {

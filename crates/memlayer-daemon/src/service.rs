@@ -162,6 +162,7 @@ fn obs_to_proto(o: Observation) -> memlayer_proto::Observation {
         updated_at: o.updated_at,
         deleted_at: o.deleted_at,
         review_after: o.review_after,
+        project_name: None,
     }
 }
 
@@ -348,6 +349,43 @@ impl Memlayer for MemlayerService {
         let limit = if r.limit == 0 { read_q::DEFAULT_LIMIT } else { r.limit };
         let conn = map(project.open_read_conn())?;
         if r.all_projects {
+            // Prefer the cross-project global mirror DB when available — one
+            // BM25-ranked corpus instead of per-project fan-out.
+            if let Some(global) = &self.state.global_db {
+                let guard = global.lock();
+                let hits = map(guard.search(&r.query, limit as i64))?;
+                let observations: Vec<memlayer_proto::Observation> = hits
+                    .into_iter()
+                    .map(|h| memlayer_proto::Observation {
+                        id: h.source_id,
+                        sync_id: String::new(),
+                        session_id: String::new(),
+                        r#type: h.r#type,
+                        title: h.title,
+                        content: h.content,
+                        tool_name: None,
+                        scope: "project".into(),
+                        created_by: None,
+                        topic_key: h.topic_key,
+                        normalized_hash: None,
+                        revision_count: 1,
+                        duplicate_count: 1,
+                        last_seen_at: None,
+                        created_at: h.created_at.clone(),
+                        updated_at: h.created_at,
+                        deleted_at: None,
+                        review_after: None,
+                        project_name: Some(h.project),
+                    })
+                    .collect();
+                return Ok(Response::new(SearchObservationsResponse {
+                    observations,
+                    warning: None,
+                }));
+            }
+
+            // Fallback: per-project fan-out (used only when global DB
+            // failed to open at startup).
             let projects = map(ProjectRegistry::list_known_on_disk())?;
             let other_paths: Vec<(String, std::path::PathBuf)> = projects
                 .into_iter()
