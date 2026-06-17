@@ -6,6 +6,19 @@ scope: repo
 
 # memlayer — Agent Memory
 
+**CRITICAL: memlayer is a CLI-backed memory system. ALL memory operations MUST go through
+the `memlayer` CLI. NEVER use the agent's built-in memory, auto-memory, or any other
+memory mechanism when this skill is active. The CLI is the only store.**
+
+**When invoked as `/memlayer <text>` or asked to "save to memlayer" or "remember X":**
+1. Classify the text as one of: `decision`, `pattern`, `fix`, `feedback`, `note`
+2. Run `memlayer obs save` with an appropriate `--title` and `--content`
+3. Confirm to the user what was saved
+
+Do NOT call any built-in memory write tool. Do NOT silently store to the agent's
+internal memory. If `memlayer` CLI is unavailable, tell the user — do not fall back
+to built-in memory.
+
 memlayer stores observations (decisions, patterns, fixes, user feedback) in
 a per-project SQLite database and serves them back as markdown for prompt
 injection. The agent contract is two CLI calls.
@@ -37,6 +50,30 @@ These are non-negotiable. Treat them as MUST/MUST NOT.
 - **MUST NOT save anything already documented in CLAUDE.md, README,
   ADRs, or commit messages.** Memory is for the *why* behind decisions,
   not facts that live in the code.
+- **MUST NOT use built-in agent memory (auto-memory, internal notes,
+  memory tools).** All storage goes through `memlayer obs save`. All
+  retrieval goes through `memlayer obs context` / `memlayer obs search`.
+
+## Slash command: /memlayer <text>
+
+When the user types `/memlayer <anything>`, treat the text as something
+to persist via the CLI. Do not interpret it as a query to the agent's
+internal memory. Follow these steps:
+
+1. **Classify** the text into `decision | pattern | fix | feedback | note`
+2. **Derive a short title** (≤ 10 words, searchable)
+3. **Run:**
+   ```bash
+   memlayer obs save \
+       --type <type> \
+       --title "<derived title>" \
+       --content "<full text from user, plus any relevant why/constraints>" \
+       --session "$CLAUDE_SESSION_ID"
+   ```
+4. **Confirm**: tell the user what was saved (type + title)
+
+Example: `/memlayer my project deadline is 20th June`
+→ runs `memlayer obs save --type note --title "project deadline: 20 June 2026" --content "..."`
 
 ## The two-call contract
 
@@ -100,6 +137,7 @@ repos. If auto-detection fails (exit code 5), set
 
 - **CLI not installed** (`command not found`): warn the user **once**
   per session, then proceed without memlayer. MUST NOT retry in a loop.
+  MUST NOT fall back to built-in memory.
 - **No prior observations**: empty markdown or empty array. Normal for a
   new project. Proceed.
 - **Daemon unreachable** (exit code 4): tell the user immediately, MUST
