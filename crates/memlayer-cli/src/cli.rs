@@ -66,25 +66,10 @@ pub enum Command {
     Team(TeamArgs),
     /// Tail the daemon log.
     Logs(LogsArgs),
-    /// Install the memlayer agent skill into agent config directories.
-    Skill(SkillArgs),
+    /// Install the memlayer skill into all detected agent config directories.
+    Install,
     /// Print version and exit.
     Version,
-}
-
-#[derive(Args, Debug)]
-pub struct SkillArgs {
-    #[command(subcommand)]
-    pub verb: SkillVerb,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SkillVerb {
-    /// Install the memlayer skill globally into all detected agent
-    /// directories (Claude Code, Windsurf, Cursor, GitHub Copilot).
-    /// Copies the bundled SKILL.md and writes agent-specific rule files.
-    /// Safe to re-run — overwrites existing files.
-    Install,
 }
 
 #[derive(Args, Debug)]

@@ -56,7 +56,7 @@ install: release
 	@echo "Make sure $(INSTALL_DIR) is on your PATH."
 
 skill-install: install
-	$(BINARY) skill install
+	$(BINARY) install
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 

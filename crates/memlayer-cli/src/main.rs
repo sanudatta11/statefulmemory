@@ -90,12 +90,10 @@ async fn main() -> ExitCode {
             }
             Err(code) => code,
         },
-        Command::Skill(args) => {
+        Command::Install => {
             let stdout_is_tty = std::io::stdout().is_terminal();
             let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
-            match args.verb {
-                memlayer_cli::cli::SkillVerb::Install => cmd_skill::dispatch(fmt).await,
-            }
+            cmd_skill::dispatch(fmt).await
         }
         Command::Sync(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, fmt)) => {
