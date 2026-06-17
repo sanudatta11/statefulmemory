@@ -75,15 +75,13 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
     }
 
     // ── Windsurf ────────────────────────────────────────────────────────────
-    // Windsurf reads global rules from ~/.codeium/windsurf/memories/
-    let windsurf_dir = home.join(".codeium").join("windsurf").join("memories");
-    let windsurf_path = windsurf_dir.join("memlayer-memory.md");
-    if windsurf_dir.exists() || true {
-        match install_file(&windsurf_path, AGENT_RULE) {
-            Ok(true)  => installed.push(format!("Windsurf     {}", windsurf_path.display())),
-            Ok(false) => skipped.push("Windsurf     (unchanged)".into()),
-            Err(e)    => eprintln!("  warn: Windsurf install failed: {e}"),
-        }
+    // Global Windsurf rules: ~/.codeium/windsurf/rules/*.md
+    // Each file appears in the Windsurf settings GUI as a named rule.
+    let windsurf_path = home.join(".codeium").join("windsurf").join("rules").join("memlayer-memory.md");
+    match install_file(&windsurf_path, AGENT_RULE) {
+        Ok(true)  => installed.push(format!("Windsurf     {}", windsurf_path.display())),
+        Ok(false) => skipped.push("Windsurf     (unchanged)".into()),
+        Err(e)    => eprintln!("  warn: Windsurf install failed: {e}"),
     }
 
     // ── Cursor ──────────────────────────────────────────────────────────────
