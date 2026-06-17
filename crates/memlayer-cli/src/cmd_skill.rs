@@ -206,6 +206,28 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
     println!("Restart your agent for the changes to take effect.");
     println!("Verify: ask the agent \"do you have the memlayer memory protocol?\"");
 
+    // ── Daemon restart ──────────────────────────────────────────────────────
+    // After an install (often following a binary upgrade), an old daemon may
+    // still be running with the previous binary. Stop it here so the next
+    // CLI call auto-spawns the freshly-installed binary, picking up new
+    // migrations and behavior changes.
+    let socket = memlayer_core::paths::socket_path();
+    if socket.exists() {
+        match std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "memlayer".into()))
+            .args(["daemon", "stop"])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                println!();
+                println!("Stopped running daemon — next memlayer call will spawn the new binary.");
+            }
+            Ok(_) | Err(_) => {
+                // Daemon wasn't running, or stop failed — both are non-fatal
+                // since the auto-spawn path will reconcile on the next call.
+            }
+        }
+    }
+
     ExitCode::SUCCESS
 }
 
