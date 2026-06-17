@@ -10,6 +10,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod audit;
 pub mod autospawn;
 pub mod cli;
 pub mod cmd_daemon;
