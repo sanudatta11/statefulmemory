@@ -11,9 +11,9 @@ use clap::Parser;
 use is_terminal::IsTerminal;
 use tracing::error;
 
-use memlayer_cli::cli::{Cli, Command, DaemonArgs, DaemonVerb, OutputFormat};
+use memlayer_cli::cli::{Cli, Command, DaemonArgs, DaemonVerb, HookVerb, OutputFormat};
 use memlayer_cli::{
-    cmd_daemon, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill,
+    cmd_daemon, cmd_hook, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill,
     cmd_sync, cmd_team, cmd_uninstall, cmd_version,
 };
 use memlayer_cli::{autospawn, exit};
@@ -110,6 +110,16 @@ async fn main() -> ExitCode {
                 cmd_sync::dispatch(&mut client, &detection.normalized, fmt, args.verb).await
             }
             Err(code) => code,
+        },
+        Command::Hook(args) => match args.verb {
+            HookVerb::PreTool(pre) => match open_client(cli.output, cli.project).await {
+                Ok((mut client, detection, _fmt)) => {
+                    cmd_hook::dispatch(&mut client, &detection.normalized, pre).await
+                }
+                // Fail-silent: if the daemon isn't reachable, we MUST NOT
+                // delay the agent's tool call. Exit 0 immediately.
+                Err(_) => ExitCode::SUCCESS,
+            },
         },
     }
 }

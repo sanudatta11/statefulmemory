@@ -72,8 +72,37 @@ pub enum Command {
     Uninstall,
     /// Wipe all stored observations and stop the daemon.
     Clean,
+    /// Lifecycle hooks invoked by Claude Code / agent runtimes.
+    Hook(HookArgs),
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct HookArgs {
+    #[command(subcommand)]
+    pub verb: HookVerb,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HookVerb {
+    /// PreToolUse hook: surface relevant prior observations before the
+    /// agent runs Grep / Read. Always exits 0 so the agent's tool call
+    /// is never blocked.
+    PreTool(PreToolArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PreToolArgs {
+    /// Which tool the agent is about to invoke (Grep | Read).
+    #[arg(long)]
+    pub tool: String,
+    /// Grep pattern argument (--tool Grep only).
+    #[arg(long)]
+    pub pattern: Option<String>,
+    /// Read file path (--tool Read only).
+    #[arg(long)]
+    pub path: Option<String>,
 }
 
 #[derive(Args, Debug)]
