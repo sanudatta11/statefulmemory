@@ -200,3 +200,437 @@ mod tests {
         assert!(c.validate().is_ok());
     }
 }
+
+// -----------------------------------------------------------------------------
+// MemlayerConfig — runtime tunables for the retrieval pipeline (SC-6).
+//
+// Loaded with a 3-level precedence:
+//   env vars > per-project TOML > global TOML > built-in defaults
+//
+// Files:
+//   - global:      ~/.memlayer/config.toml
+//   - per-project: ~/.memlayer/projects/<name>.config.toml
+//
+// Per-key overlay (not whole-file replace): a per-project file that only
+// sets `[rerank]` does NOT erase global's `[extract]` settings. Implemented
+// by parsing each layer to `toml::Value` and deep-merging tables.
+//
+// Distinct from the daemon `Config` (config.json) above: this config
+// governs the embed/extract/rerank workers, not daemon-bind behavior.
+// -----------------------------------------------------------------------------
+
+/// Tunables for the retrieval-promotion pipeline (embed worker, extract
+/// worker, optional reranker). Resolved at every save and at every query.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MemlayerConfig {
+    pub extract: ExtractConfig,
+    pub rerank: RerankConfig,
+    pub embed: EmbedConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExtractConfig {
+    /// Off by default — opt-in only.
+    pub enabled: bool,
+    pub model: ModelKind,
+    pub timeout_secs: u64,
+    pub workers: usize,
+}
+
+impl Default for ExtractConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: ModelKind::Haiku,
+            timeout_secs: 30,
+            workers: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RerankConfig {
+    pub model: ModelKind,
+    pub timeout_secs: u64,
+}
+
+impl Default for RerankConfig {
+    fn default() -> Self {
+        Self {
+            model: ModelKind::Haiku,
+            timeout_secs: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct EmbedConfig {
+    pub workers: usize,
+}
+
+impl Default for EmbedConfig {
+    fn default() -> Self {
+        Self { workers: 2 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    Haiku,
+    Sonnet,
+}
+
+impl Default for ModelKind {
+    fn default() -> Self {
+        ModelKind::Haiku
+    }
+}
+
+impl ModelKind {
+    /// CLI model id used in `claude --model <id>` shell-outs.
+    pub fn cli_model_id(&self) -> &'static str {
+        match self {
+            ModelKind::Haiku => "claude-haiku-4-5",
+            ModelKind::Sonnet => "claude-sonnet-4-6",
+        }
+    }
+
+    pub fn as_lowercase(&self) -> &'static str {
+        match self {
+            ModelKind::Haiku => "haiku",
+            ModelKind::Sonnet => "sonnet",
+        }
+    }
+}
+
+/// Parse a model string ("haiku" | "sonnet"), case-insensitive.
+fn parse_model(s: &str) -> Option<ModelKind> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "haiku" => Some(ModelKind::Haiku),
+        "sonnet" => Some(ModelKind::Sonnet),
+        _ => None,
+    }
+}
+
+pub fn memlayer_global_config_path() -> PathBuf {
+    paths::data_dir().join("config.toml")
+}
+
+pub fn memlayer_project_config_path(project: &str) -> PathBuf {
+    paths::data_dir()
+        .join("projects")
+        .join(format!("{project}.config.toml"))
+}
+
+/// Resolve `MemlayerConfig` per the 3-level precedence (SC-6).
+///
+/// `project_name` is `None` when the daemon resolves at startup before any
+/// save context is known; the daemon re-resolves with the project name at
+/// save time so per-project overrides take effect for that observation.
+pub fn load_resolved(project_name: Option<&str>) -> MemlayerConfig {
+    // Layer 1: global TOML.
+    let mut merged = toml::Value::Table(toml::value::Table::new());
+    let global_path = memlayer_global_config_path();
+    if global_path.exists() {
+        match std::fs::read_to_string(&global_path) {
+            Ok(text) => match toml::from_str::<toml::Value>(&text) {
+                Ok(v) => merged = merge_toml_values(merged, v),
+                Err(e) => tracing::warn!(
+                    path = %global_path.display(),
+                    error = %e,
+                    "global memlayer config parse error — using defaults",
+                ),
+            },
+            Err(e) => tracing::warn!(
+                path = %global_path.display(),
+                error = %e,
+                "could not read global memlayer config",
+            ),
+        }
+    }
+
+    // Layer 2: per-project TOML overlay. Errors fall back to global only.
+    if let Some(name) = project_name {
+        let project_path = memlayer_project_config_path(name);
+        if project_path.exists() {
+            match std::fs::read_to_string(&project_path) {
+                Ok(text) => match toml::from_str::<toml::Value>(&text) {
+                    Ok(v) => merged = merge_toml_values(merged, v),
+                    Err(e) => tracing::error!(
+                        path = %project_path.display(),
+                        error = %e,
+                        "per-project memlayer config invalid — falling back to global",
+                    ),
+                },
+                Err(e) => tracing::warn!(
+                    path = %project_path.display(),
+                    error = %e,
+                    "could not read per-project memlayer config",
+                ),
+            }
+        }
+    }
+
+    // Deserialize the merged value, ignoring unknown keys (forward-compat).
+    let mut cfg: MemlayerConfig = match merged.try_into::<MemlayerConfig>() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "merged memlayer config deserialize failed — using defaults");
+            MemlayerConfig::default()
+        }
+    };
+
+    // Layer 3: env vars (highest).
+    apply_memlayer_env_overrides(&mut cfg);
+    cfg
+}
+
+/// Deep-merge TOML tables. Right wins for non-table values; tables merge
+/// recursively so a per-project file that only sets `[rerank]` keeps the
+/// global file's `[extract]` table intact.
+fn merge_toml_values(a: toml::Value, b: toml::Value) -> toml::Value {
+    use toml::Value;
+    match (a, b) {
+        (Value::Table(mut at), Value::Table(bt)) => {
+            for (k, v) in bt {
+                let merged = match at.remove(&k) {
+                    Some(av) => merge_toml_values(av, v),
+                    None => v,
+                };
+                at.insert(k, merged);
+            }
+            Value::Table(at)
+        }
+        (_, b) => b,
+    }
+}
+
+fn apply_memlayer_env_overrides(cfg: &mut MemlayerConfig) {
+    if let Ok(v) = std::env::var("MEMLAYER_EXTRACT_ENABLED") {
+        cfg.extract.enabled = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_EXTRACT_MODEL") {
+        if let Some(m) = parse_model(&v) {
+            cfg.extract.model = m;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_EXTRACT_MODEL: must be haiku or sonnet");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_EXTRACT_TIMEOUT_SECS") {
+        if let Ok(n) = v.parse() {
+            cfg.extract.timeout_secs = n;
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_EXTRACT_WORKERS") {
+        if let Ok(n) = v.parse() {
+            cfg.extract.workers = n;
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_RERANK_MODEL") {
+        if let Some(m) = parse_model(&v) {
+            cfg.rerank.model = m;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_RERANK_MODEL: must be haiku or sonnet");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_RERANK_TIMEOUT_SECS") {
+        if let Ok(n) = v.parse() {
+            cfg.rerank.timeout_secs = n;
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_EMBED_WORKERS") {
+        if let Ok(n) = v.parse() {
+            cfg.embed.workers = n;
+        }
+    }
+}
+
+fn parse_bool_env(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+#[cfg(test)]
+mod memlayer_config_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// `MEMLAYER_*` env vars + `MEMLAYER_DATA_DIR` are process-global.
+    /// Cargo runs tests in parallel by default; serialize through this lock
+    /// so tests don't race on the env or the temp data dir.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_env() {
+        for k in [
+            "MEMLAYER_EXTRACT_ENABLED",
+            "MEMLAYER_EXTRACT_MODEL",
+            "MEMLAYER_EXTRACT_TIMEOUT_SECS",
+            "MEMLAYER_EXTRACT_WORKERS",
+            "MEMLAYER_RERANK_MODEL",
+            "MEMLAYER_RERANK_TIMEOUT_SECS",
+            "MEMLAYER_EMBED_WORKERS",
+        ] {
+            std::env::remove_var(k);
+        }
+    }
+
+    fn fresh_data_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("projects")).unwrap();
+        std::env::set_var("MEMLAYER_DATA_DIR", dir.path());
+        dir
+    }
+
+    #[test]
+    fn default_extract_disabled_haiku() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let _d = fresh_data_dir();
+        let cfg = load_resolved(None);
+        assert!(!cfg.extract.enabled);
+        assert_eq!(cfg.extract.model, ModelKind::Haiku);
+        assert_eq!(cfg.rerank.model, ModelKind::Haiku);
+        assert_eq!(cfg.embed.workers, 2);
+        std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn precedence_env_overrides_project_overrides_global_overrides_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_data_dir();
+
+        // Global: enable extract with haiku.
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"
+[extract]
+enabled = true
+model = "haiku"
+timeout_secs = 30
+"#,
+        )
+        .unwrap();
+
+        // Per-project: override model to sonnet.
+        std::fs::write(
+            dir.path().join("projects").join("myrepo.config.toml"),
+            r#"
+[extract]
+model = "sonnet"
+"#,
+        )
+        .unwrap();
+
+        // No env: project beats global.
+        let cfg = load_resolved(Some("myrepo"));
+        assert!(cfg.extract.enabled, "global enabled should still apply");
+        assert_eq!(cfg.extract.model, ModelKind::Sonnet, "project model wins");
+        assert_eq!(cfg.extract.timeout_secs, 30, "global timeout preserved");
+
+        // Env: should override project.
+        std::env::set_var("MEMLAYER_EXTRACT_MODEL", "haiku");
+        let cfg = load_resolved(Some("myrepo"));
+        assert_eq!(cfg.extract.model, ModelKind::Haiku, "env wins over project");
+
+        // Other-project: only global applies.
+        let cfg_other = load_resolved(Some("other"));
+        assert_eq!(
+            cfg_other.extract.model,
+            ModelKind::Haiku,
+            "env applies regardless of project_name"
+        );
+
+        clear_env();
+        std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn invalid_per_project_falls_back_to_global() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_data_dir();
+
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"
+[extract]
+enabled = true
+model = "sonnet"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.path().join("projects").join("myrepo.config.toml"),
+            "this is not = valid TOML [[[",
+        )
+        .unwrap();
+
+        let cfg = load_resolved(Some("myrepo"));
+        assert!(cfg.extract.enabled);
+        assert_eq!(cfg.extract.model, ModelKind::Sonnet, "global must apply");
+        std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn unknown_keys_warn_but_dont_fail() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_data_dir();
+
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"
+[extract]
+enabled = true
+flux_capacitor = "1.21 GW"
+
+[brand_new_section]
+hello = "world"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_resolved(None);
+        assert!(cfg.extract.enabled, "known keys still parse");
+        std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn project_overlay_preserves_global_section() {
+        // Sanity: per-project file with only [rerank] must not erase [extract].
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_data_dir();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"
+[extract]
+enabled = true
+model = "sonnet"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("projects").join("myrepo.config.toml"),
+            r#"
+[rerank]
+model = "sonnet"
+"#,
+        )
+        .unwrap();
+        let cfg = load_resolved(Some("myrepo"));
+        assert!(cfg.extract.enabled);
+        assert_eq!(cfg.extract.model, ModelKind::Sonnet);
+        assert_eq!(cfg.rerank.model, ModelKind::Sonnet);
+        std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+}
