@@ -74,6 +74,14 @@ pub enum Command {
     Clean,
     /// Lifecycle hooks invoked by Claude Code / agent runtimes.
     Hook(HookArgs),
+    /// Show / read / write retrieval-pipeline config (extract / rerank /
+    /// embed). Backed by `~/.memlayer/config.toml` (global) and
+    /// `~/.memlayer/projects/<name>.config.toml` (per-project).
+    Config(ConfigArgs),
+    /// Re-index all observations into the vector store. Skeleton verb in
+    /// v1 — prints manual instructions; full implementation in a follow-up
+    /// spec.
+    Reindex(ReindexArgs),
     /// Print version and exit.
     Version,
 }
@@ -297,6 +305,72 @@ pub struct ObsCapturePassiveArgs {
     pub text: String,
     #[arg(long)]
     pub session: Option<String>,
+}
+
+// -----------------------------------------------------------------------------
+// `memlayer config` — view / edit retrieval-pipeline tunables (rp-t11).
+// -----------------------------------------------------------------------------
+
+#[derive(Args, Debug)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub verb: ConfigVerb,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigVerb {
+    /// Print the resolved config (env > project > global > defaults). Use
+    /// `--raw` to dump the global TOML file verbatim instead.
+    Show(ConfigShowArgs),
+    /// Print one resolved value, e.g. `memlayer config get extract.model`.
+    Get(ConfigGetArgs),
+    /// Set a value in the global config (or per-project with `--project`).
+    /// Atomic write: tempfile + rename.
+    Set(ConfigSetArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ConfigShowArgs {
+    /// Print the global config.toml file verbatim instead of the resolved
+    /// merged view.
+    #[arg(long)]
+    pub raw: bool,
+    /// Resolve config for this project (overlays
+    /// `~/.memlayer/projects/<name>.config.toml` on top of the global
+    /// file). Defaults to no project (global view only).
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ConfigGetArgs {
+    /// Dotted key, e.g. `extract.model`, `rerank.timeout_secs`,
+    /// `embed.workers`.
+    pub key: String,
+    /// Resolve in the context of this project.
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ConfigSetArgs {
+    /// Dotted key, e.g. `extract.model`.
+    pub key: String,
+    /// New value. Parsed as bool (`true`/`false`), integer, or string in
+    /// that order.
+    pub value: String,
+    /// Write to the per-project file
+    /// `~/.memlayer/projects/<name>.config.toml` instead of the global one.
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ReindexArgs {
+    /// Reserved for future use; the v1 stub ignores all flags and prints
+    /// manual reindex instructions.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]

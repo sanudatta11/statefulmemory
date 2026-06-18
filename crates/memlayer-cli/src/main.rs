@@ -121,6 +121,23 @@ async fn main() -> ExitCode {
                 Err(_) => ExitCode::SUCCESS,
             },
         },
+        Command::Config(args) => memlayer_cli::cmd_config::dispatch(args.verb).await,
+        Command::Reindex(_args) => {
+            eprintln!(
+                "memlayer reindex is not yet implemented in v1.\n\
+                 \n\
+                 To clear vector embeddings manually:\n\
+                 \n\
+                 1. Stop the daemon:    memlayer daemon stop\n\
+                 2. Drop the vec table: sqlite3 ~/.memlayer/projects/<project>.db \\\n\
+                    \"DELETE FROM observations_vec; DELETE FROM observation_embedding_meta;\"\n\
+                 3. Restart:            memlayer daemon start\n\
+                 \n\
+                 The embed worker will rebuild vectors lazily as new observations are saved.\n\
+                 Bulk re-embedding of historical observations is tracked in a follow-up spec."
+            );
+            ExitCode::SUCCESS
+        }
     }
 }
 
