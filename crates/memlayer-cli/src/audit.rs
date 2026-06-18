@@ -32,6 +32,21 @@ pub struct AuditEntry<'a> {
     /// Only populated when `MEMLAYER_AUDIT_FULL=1`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_hits: Option<Vec<HitMeta>>,
+    /// Whether the daemon enqueued an embed task for this save (SC-12).
+    /// `Some(true)` if the embed worker pool was running and the request
+    /// queued; `Some(false)` if the daemon couldn't enqueue (BM25-only
+    /// mode); `None` for non-save commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embed_queued: Option<bool>,
+    /// Whether the daemon enqueued an extract task for this save (SC-12).
+    /// `Some(true)` if the resolved config has `extract.enabled = true`;
+    /// `Some(false)` if disabled. `None` for non-save commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extract_queued: Option<bool>,
+    /// Which model would be used if extract is enabled (`"haiku"` /
+    /// `"sonnet"`). Only populated when `extract_queued = Some(true)`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extract_model: Option<&'a str>,
 }
 
 /// Compact identifier for a returned observation (full-mode only).
@@ -40,6 +55,23 @@ pub struct HitMeta {
     pub id: i64,
     pub r#type: String,
     pub title: String,
+}
+
+impl<'a> Default for AuditEntry<'a> {
+    fn default() -> Self {
+        Self {
+            ts: String::new(),
+            command: "",
+            project: None,
+            result_count: None,
+            duration_ms: 0,
+            query: None,
+            top_hits: None,
+            embed_queued: None,
+            extract_queued: None,
+            extract_model: None,
+        }
+    }
 }
 
 /// Maximum bytes for any single string field in full mode.
@@ -101,6 +133,9 @@ fn clone_truncated<'a>(entry: &AuditEntry<'a>) -> AuditEntry<'a> {
                 })
                 .collect()
         }),
+        embed_queued: entry.embed_queued,
+        extract_queued: entry.extract_queued,
+        extract_model: entry.extract_model,
     }
 }
 
@@ -148,6 +183,7 @@ mod tests {
                 duration_ms: 12,
                 query: None,
                 top_hits: None,
+                ..Default::default()
             };
             record(&entry);
 
@@ -192,6 +228,7 @@ mod tests {
             duration_ms: 0,
             query: None,
             top_hits: None,
+            ..Default::default()
         };
         // Must not panic.
         record(&entry);
@@ -204,5 +241,83 @@ mod tests {
         let out = truncate_chars(&big, MAX_FIELD_BYTES);
         assert!(out.len() <= MAX_FIELD_BYTES);
         assert!(out.ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn save_records_embed_extract_state() {
+        // SC-12: obs.save audit row carries the per-task config snapshot.
+        with_tmp_data_dir(|dir| {
+            let entry = AuditEntry {
+                ts: now_rfc3339(),
+                command: "obs.save",
+                project: Some("p"),
+                result_count: Some(1),
+                duration_ms: 5,
+                query: None,
+                top_hits: None,
+                embed_queued: Some(true),
+                extract_queued: Some(true),
+                extract_model: Some("haiku"),
+                ..Default::default()
+            };
+            record(&entry);
+
+            let log = std::fs::read_to_string(dir.join("queries.log")).unwrap();
+            let v: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+            assert_eq!(v["embed_queued"], true);
+            assert_eq!(v["extract_queued"], true);
+            assert_eq!(v["extract_model"], "haiku");
+        });
+    }
+
+    #[test]
+    fn save_omits_extract_model_when_disabled() {
+        with_tmp_data_dir(|dir| {
+            let entry = AuditEntry {
+                ts: now_rfc3339(),
+                command: "obs.save",
+                project: Some("p"),
+                result_count: Some(1),
+                duration_ms: 5,
+                query: None,
+                top_hits: None,
+                embed_queued: Some(true),
+                extract_queued: Some(false),
+                extract_model: None,
+                ..Default::default()
+            };
+            record(&entry);
+
+            let log = std::fs::read_to_string(dir.join("queries.log")).unwrap();
+            let v: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+            assert_eq!(v["embed_queued"], true);
+            assert_eq!(v["extract_queued"], false);
+            assert!(
+                v.get("extract_model").is_none(),
+                "extract_model must be skip_serializing when None: {v}",
+            );
+        });
+    }
+
+    #[test]
+    fn search_audit_omits_save_only_fields() {
+        // SC-12 corollary: read-only commands must NOT have embed/extract
+        // keys in the audit row (skip_serializing_if).
+        with_tmp_data_dir(|dir| {
+            let entry = AuditEntry {
+                ts: now_rfc3339(),
+                command: "obs.search",
+                project: Some("p"),
+                result_count: Some(0),
+                duration_ms: 1,
+                ..Default::default()
+            };
+            record(&entry);
+            let log = std::fs::read_to_string(dir.join("queries.log")).unwrap();
+            let v: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+            assert!(v.get("embed_queued").is_none());
+            assert!(v.get("extract_queued").is_none());
+            assert!(v.get("extract_model").is_none());
+        });
     }
 }

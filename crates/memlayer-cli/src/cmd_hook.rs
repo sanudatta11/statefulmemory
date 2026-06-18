@@ -115,6 +115,7 @@ fn record_and_exit(
         duration_ms: started.elapsed().as_millis(),
         query: audit::full_mode_enabled().then_some(format!("{tool}: {query}")),
         top_hits: None,
+        ..Default::default()
     });
     ExitCode::SUCCESS
 }

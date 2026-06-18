@@ -122,6 +122,18 @@ async fn save(
     };
     let resp = client.save_observation(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    // SC-12: capture what the daemon was asked to do for this save.
+    // We resolve config CLIENT-SIDE so the audit row reflects the same
+    // view the daemon worker will see (env > project > global > defaults).
+    // The daemon's actual queue state isn't observable here, but the
+    // resolved config exactly matches the gating logic in
+    // service::save_observation, so this is faithful.
+    let cfg = memlayer_core::config::load_resolved(Some(project_name));
+    let extract_model_str: Option<&str> = if cfg.extract.enabled {
+        Some(cfg.extract.model.as_lowercase())
+    } else {
+        None
+    };
     audit::record(&AuditEntry {
         ts: audit::now_rfc3339(),
         command: "obs.save",
@@ -130,6 +142,10 @@ async fn save(
         duration_ms: started.elapsed().as_millis(),
         query: None,
         top_hits: None,
+        embed_queued: Some(true),
+        extract_queued: Some(cfg.extract.enabled),
+        extract_model: extract_model_str,
+        ..Default::default()
     });
     // Inform the user if any conflicting observations were superseded.
     for old in &resp.similar_observations {
@@ -207,6 +223,7 @@ async fn get(
         duration_ms: started.elapsed().as_millis(),
         query: None,
         top_hits: None,
+        ..Default::default()
     });
     Ok(())
 }
@@ -249,6 +266,7 @@ async fn search(
                 })
                 .collect()
         }),
+        ..Default::default()
     });
     Ok(())
 }
@@ -285,6 +303,7 @@ async fn recent(
                 })
                 .collect()
         }),
+        ..Default::default()
     });
     Ok(())
 }
@@ -343,6 +362,7 @@ async fn context(
             duration_ms: started.elapsed().as_millis(),
             query: None,
             top_hits: None,
+            ..Default::default()
         });
         return Ok(());
     }
@@ -421,6 +441,7 @@ async fn context(
         duration_ms: started.elapsed().as_millis(),
         query: None,
         top_hits: None,
+        ..Default::default()
     });
     Ok(())
 }
@@ -609,6 +630,7 @@ async fn facts(
         duration_ms: started.elapsed().as_millis(),
         query: None,
         top_hits: None,
+        ..Default::default()
     });
     Ok(())
 }

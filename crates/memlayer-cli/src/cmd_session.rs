@@ -174,6 +174,7 @@ async fn summarize(
         duration_ms: started.elapsed().as_millis(),
         query: None,
         top_hits: None,
+        ..Default::default()
     });
     Ok(())
 }
