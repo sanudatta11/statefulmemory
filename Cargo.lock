@@ -1870,7 +1870,9 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
+ "toml",
  "tracing",
 ]
 
@@ -2001,6 +2003,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlite-vec",
  "strsim",
  "tempfile",
  "thiserror 1.0.69",
