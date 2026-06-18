@@ -76,12 +76,44 @@ pub enum WriteRequest {
         key: PromptKey,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Insert (or replace) the dense embedding for an observation. Written
+    /// asynchronously by the daemon's embed worker pool after the synchronous
+    /// save commits — never on the hot save path. Spec: retrieval-promotion
+    /// SC-2, P5.
+    InsertEmbedding {
+        obs_id: i64,
+        embedding: Vec<f32>,
+        model: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Insert a batch of atomic facts extracted from an observation. Written
+    /// asynchronously by the extract worker (config-gated). Spec:
+    /// retrieval-promotion SC-8, P6.
+    InsertFacts {
+        obs_id: i64,
+        facts: Vec<NewFact>,
+        reply: oneshot::Sender<Result<()>>,
+    },
     /// Run an ad-hoc closure under the write connection. Used by sync import,
     /// project merge, and other multi-row operations.
     Custom {
         f: Box<dyn FnOnce(&mut Connection) -> Result<()> + Send>,
         reply: oneshot::Sender<Result<()>>,
     },
+}
+
+/// Caller-supplied input for [`WriteRequest::InsertFacts`]. Mirrors
+/// `crate::facts::FactInput` but uses owned strings so the request can
+/// cross threads.
+#[derive(Debug, Clone)]
+pub struct NewFact {
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub temporal: Option<String>,
+    pub salience: Option<f64>,
+    /// "haiku" | "sonnet".
+    pub extracted_by: String,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +305,27 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
             }
             WriteRequest::DeletePrompt { key, reply } => {
                 let r = handle_delete_prompt(&tx, &key);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
+            WriteRequest::InsertEmbedding {
+                obs_id,
+                embedding,
+                model,
+                reply,
+            } => {
+                let r = handle_insert_embedding(&tx, obs_id, &embedding, &model);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
+            WriteRequest::InsertFacts {
+                obs_id,
+                facts,
+                reply,
+            } => {
+                let r = handle_insert_facts(&tx, obs_id, &facts);
                 replies.push(Box::new(move || {
                     let _ = reply.send(r);
                 }));
@@ -669,6 +722,72 @@ fn handle_delete_prompt(tx: &rusqlite::Transaction<'_>, key: &PromptKey) -> Resu
     .map_err(|e| Error::internal(format!("delete prompt: {e}")))?;
     if n == 0 {
         return Err(Error::not_found("prompt"));
+    }
+    Ok(())
+}
+
+/// Insert (or replace) one observation's dense embedding. The vec0 vtable
+/// expects a contiguous f32 little-endian byte blob; we slice
+/// `embedding.as_bytes()`-equivalent into a Vec<u8> here.
+fn handle_insert_embedding(
+    tx: &rusqlite::Transaction<'_>,
+    obs_id: i64,
+    embedding: &[f32],
+    model: &str,
+) -> Result<()> {
+    if embedding.len() != 384 {
+        return Err(Error::invalid(format!(
+            "embedding dim mismatch: got {}, expected 384",
+            embedding.len()
+        )));
+    }
+    let mut blob = Vec::with_capacity(embedding.len() * 4);
+    for f in embedding {
+        blob.extend_from_slice(&f.to_le_bytes());
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO observations_vec(rowid, embedding) VALUES (?1, ?2)",
+        params![obs_id, blob],
+    )
+    .map_err(|e| Error::internal(format!("insert observations_vec: {e}")))?;
+    tx.execute(
+        "INSERT OR REPLACE INTO observation_embedding_meta \
+            (observation_id, model, dim, created_at) \
+         VALUES (?1, ?2, ?3, datetime('now'))",
+        params![obs_id, model, 384i64],
+    )
+    .map_err(|e| Error::internal(format!("insert observation_embedding_meta: {e}")))?;
+    Ok(())
+}
+
+/// Insert a batch of facts under one transaction. Empty `facts` is a no-op
+/// success — callers don't need to special-case "extractor returned nothing".
+fn handle_insert_facts(
+    tx: &rusqlite::Transaction<'_>,
+    obs_id: i64,
+    facts: &[NewFact],
+) -> Result<()> {
+    if facts.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = tx
+        .prepare(
+            "INSERT INTO facts (obs_id, subject, predicate, object, temporal, salience, extracted_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .map_err(|e| Error::internal(format!("prepare insert_fact: {e}")))?;
+    for f in facts {
+        let salience = f.salience.unwrap_or(0.5);
+        stmt.execute(params![
+            obs_id,
+            f.subject,
+            f.predicate,
+            f.object,
+            f.temporal,
+            salience,
+            f.extracted_by,
+        ])
+        .map_err(|e| Error::internal(format!("insert fact: {e}")))?;
     }
     Ok(())
 }

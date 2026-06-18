@@ -23,6 +23,9 @@ memlayer-core = { path = "../memlayer-core" }
 memlayer-proto = { path = "../memlayer-proto" }
 memlayer-storage = { path = "../memlayer-storage" }
 memlayer-sync = { path = "../memlayer-sync" }
+memlayer-embed = { path = "../memlayer-embed" }
+memlayer-extract = { path = "../memlayer-extract" }
+memlayer-retrieval = { path = "../memlayer-retrieval" }
 
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -47,6 +50,7 @@ hex.workspace = true
 base64.workspace = true
 parking_lot.workspace = true
 once_cell.workspace = true
+crossbeam-channel.workspace = true
 nix.workspace = true
 fs2.workspace = true
 rcgen.workspace = true

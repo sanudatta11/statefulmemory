@@ -6,6 +6,7 @@
 pub mod admin_guard;
 pub mod auth;
 pub mod capture_passive;
+pub mod embed_worker;
 pub mod error_map;
 pub mod lifecycle;
 pub mod logging;

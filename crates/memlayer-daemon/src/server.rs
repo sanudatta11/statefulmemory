@@ -77,6 +77,34 @@ pub async fn run(cfg: Config) -> Result<()> {
         }
     };
 
+    // Resolve retrieval-pipeline config (memlayer config.toml +
+    // MEMLAYER_* env vars). The daemon uses this for the embed worker
+    // count (and rp-t6 will use it for the extract pool); per-project
+    // overrides are re-resolved per task inside the workers.
+    let memlayer_cfg = memlayer_core::config::load_resolved(None);
+
+    // Spawn the embed worker pool. If BGE-small fails to load (model
+    // weights missing, candle init error, etc.) we fall back to BM25-only
+    // mode by leaving `embed_pool = None`; saves still succeed (SC-11).
+    let embed_pool = match memlayer_embed::BgeSmallEmbedder::try_new() {
+        Ok(embedder) => {
+            let n = memlayer_cfg.embed.workers.max(1);
+            tracing::info!(workers = n, "spawning embed worker pool");
+            Some(crate::embed_worker::EmbedWorkerPool::spawn(
+                Arc::new(embedder),
+                registry.clone(),
+                n,
+            ))
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "BGE-small embedder failed to load; daemon running in BM25-only mode",
+            );
+            None
+        }
+    };
+
     // Daemon shared state.
     let in_flight = Arc::new(AtomicU64::new(0));
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
@@ -93,6 +121,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         last_sync_errors: Arc::new(Mutex::new(HashMap::new())),
         last_export_at: Arc::new(Mutex::new(HashMap::new())),
         global_db,
+        embed_pool,
     });
     let svc = MemlayerService::new(state.clone());
 

@@ -76,6 +76,10 @@ pub struct DaemonState {
     /// search has a single BM25-ranked corpus to query. Mirror failures
     /// are logged via tracing and DO NOT fail the per-project save.
     pub global_db: Option<Arc<Mutex<GlobalDb>>>,
+    /// Async embed worker pool. `None` if BGE-small failed to load at
+    /// startup; the daemon then runs in BM25-only mode (search/context
+    /// callers see embeddings as "missing" and fall back to BM25).
+    pub embed_pool: Option<crate::embed_worker::EmbedWorkerPool>,
 }
 
 #[derive(Clone)]
@@ -262,6 +266,19 @@ impl Memlayer for MemlayerService {
                     "global mirror upsert failed (per-project save still committed)",
                 );
             }
+        }
+
+        // Queue async embed (and extract, if enabled) work after the
+        // synchronous save commits — never on the critical path (SC-1).
+        // Both pools `try_send`; full queue / disconnected pool drops the
+        // task silently and logs.
+        if let Some(pool) = &self.state.embed_pool {
+            pool.try_queue(crate::embed_worker::EmbedTask {
+                project_name: r.project_name.clone(),
+                obs_id: obs.id,
+                title: obs.title.clone(),
+                content: obs.content.clone(),
+            });
         }
 
         // Pass superseded observations (if any) in similar_observations so the
