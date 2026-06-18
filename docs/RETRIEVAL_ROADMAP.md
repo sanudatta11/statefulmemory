@@ -5,6 +5,24 @@
 > production daemon. Companion to [ROADMAP.md](ROADMAP.md), which covers
 > the broader v1.0 milestone.
 
+## Status
+
+- ✅ **Section 1 (`memlayer-embed`)**: hybrid retrieval landed in
+  `.catalyst/specs/retrieval-promotion/` (2026-06-18). Daemon now embeds
+  saves async via a worker pool, exposes `obs search --mode hybrid` and
+  `obs context --mode hybrid`, V4 migration adds `observations_vec`
+  (vec0) + `observation_embedding_meta`.
+- ✅ **Section 2 (`memlayer-extract`)**: same spec, opt-in via
+  `memlayer config set extract.enabled true`. V5 migration adds the
+  `facts` table + `facts_fts`; extract worker shells out to Haiku or
+  Sonnet (selectable per-project), `obs facts <id>` returns the facts.
+- ⏳ **Section 3 (`memlayer-eval`)**: CI scorecard wiring is the only
+  piece still unshipped. Tracked as the `eval-promotion` spec.
+
+The three sections below describe each crate's contribution, costs, and
+landing notes. Items in §1 and §2 marked "shipped" point at the
+retrieval-promotion spec; everything else still applies.
+
 ## Why this exists
 
 The crates are all scaffolded and self-tested but the daemon never calls

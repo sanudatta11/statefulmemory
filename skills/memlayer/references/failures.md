@@ -54,6 +54,20 @@ tail -5 ~/.memlayer/queries.log | jq .
 
 The log line shows the exact query, the returned observations, and timing.
 
+If BM25 missed a paraphrase (e.g. query "auth" but the obs says "JWT"),
+retry with hybrid mode — same query, dense ANN added on top:
+
+```bash
+memlayer obs context --query "<the query that missed>" --mode hybrid
+```
+
+For stubborn cases, add an LLM rerank pass (5s timeout, falls back to the
+hybrid result on error):
+
+```bash
+memlayer obs context --query "..." --mode hybrid --rerank haiku
+```
+
 ## Sandbox blocks the daemon socket
 
 If the agent runs in a restricted sandbox, the Unix socket may be denied

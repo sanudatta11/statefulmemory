@@ -131,12 +131,27 @@ own PR.
 
 ### Spec 1 — Promote hybrid retrieval to daemon  *(highest ROI)*
 
-**Status today:** `memlayer-embed` (BGE-small, candle-rs, 384-dim),
-`memlayer-extract` (Haiku-extracted facts), `memlayer-eval`
-(LoCoMo/LongMemEval/BEAM scaffolds with BM25 + dense + RRF + Haiku
-rerank) all working in eval. Daemon doesn't use any of them.
+**Status:** ✅ **Implemented in `.catalyst/specs/retrieval-promotion/`**
+(merged 2026-06-18, 14 tasks, 70 unit tests). Section retained as
+historical context for the design rationale.
 
-**Scope:**
+**What landed:** `BgeSmallEmbedder` async-wired into the daemon save path,
+V4 migration adds `observations_vec` (vec0 vtable) + `observation_embedding_meta`,
+`obs search --mode hybrid` and `obs context --mode hybrid` route through
+BM25 + dense + RRF, optional `--rerank haiku|sonnet` with 5s timeout +
+graceful fallback, V5 migration adds atomic-fact storage + `obs facts <id>`
+verb, config-gated extract worker (Haiku/Sonnet) writes facts off the hot
+path, new `memlayer config show/get/set` CLI for managing the
+`~/.memlayer/config.toml` and per-project overlays, audit log records
+`embed_queued`/`extract_queued`/`extract_model` per save (SC-12).
+
+**What's deferred to a follow-up spec:** quantization (int8 — `quantize`
+module stubbed); cross-project hybrid (global DB stays BM25 — daemon-side
+hybrid is per-project only); bulk re-extraction across historical
+observations (`memlayer obs reextract` is a stub today); `memlayer-eval`
+CI scorecard wiring (Section 3 of `RETRIEVAL_ROADMAP.md`).
+
+**Original scope (for reference):**
 
 1. Wire `BgeSmallEmbedder` into the daemon's `save_observation` path —
    embed title+content, store in a new `observation_vectors` table (or
