@@ -595,13 +595,21 @@ async fn facts(
 }
 
 /// Stub implementation for `obs reextract`. Lands in rp-t13 as a
-/// deferred-feature stub; full implementation is a future spec.
+/// deferred-feature stub; full implementation is a future spec. Exits 0
+/// so `set -e` scripts that probe the verb don't fail.
 async fn reextract(_a: ObsReextractArgs) -> Result<(), VerbError> {
-    Err(VerbError::Usage(
-        "obs reextract is deferred to a future spec; flip extract.enabled=true \
-         in ~/.memlayer/config.toml to extract facts on new saves"
-            .into(),
-    ))
+    eprintln!(
+        "memlayer obs reextract is not yet implemented in v1.\n\
+         \n\
+         To start extracting facts on new saves, enable the extract worker:\n\
+         \n\
+           memlayer config set extract.enabled true\n\
+           memlayer config set extract.model haiku   # or sonnet\n\
+         \n\
+         Bulk re-extraction across historical observations is tracked in a\n\
+         follow-up spec.",
+    );
+    Ok(())
 }
 
 #[cfg(test)]
