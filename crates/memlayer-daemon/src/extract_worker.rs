@@ -99,6 +99,26 @@ impl ExtractWorkerPool {
     }
 }
 
+/// Number of consecutive 429-shaped failures that trigger a pause. Spec
+/// retrieval-promotion error-handling: "if 5 consecutive rate-limit
+/// errors, pause the worker for 5 minutes".
+const RATE_LIMIT_PAUSE_THRESHOLD: u32 = 5;
+const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(5 * 60);
+
+/// Heuristic classifier for rate-limit-shaped errors from the Claude
+/// shell-out. The CLI reports HTTP 429 inside its stderr text; we look
+/// for substrings that consistently appear when Bedrock or Anthropic
+/// rate-limits us. False positives are bounded — the worker recovers
+/// after the pause window. False negatives just lose the pause backoff.
+pub fn looks_like_rate_limit(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limit")
+        || lower.contains("too many requests")
+        || lower.contains("throttl")
+}
+
 fn run_loop(
     rx: Receiver<ExtractTask>,
     client: Arc<dyn ClaudeClient>,
@@ -119,9 +139,11 @@ fn run_loop(
         }
     };
 
+    let mut consecutive_429: u32 = 0;
     while let Ok(task) = rx.recv() {
         match rt.block_on(process(&task, &client, &registry)) {
             Ok(n) => {
+                consecutive_429 = 0;
                 tracing::trace!(
                     obs_id = task.obs_id,
                     project = %task.project_name,
@@ -130,12 +152,33 @@ fn run_loop(
                 );
             }
             Err(e) => {
-                tracing::warn!(
-                    obs_id = task.obs_id,
-                    project = %task.project_name,
-                    error = %e,
-                    "extract task failed; observation has no facts but is still searchable",
-                );
+                let msg = format!("{e:#}");
+                if looks_like_rate_limit(&msg) {
+                    consecutive_429 = consecutive_429.saturating_add(1);
+                    tracing::warn!(
+                        obs_id = task.obs_id,
+                        project = %task.project_name,
+                        consecutive = consecutive_429,
+                        "extract rate-limited",
+                    );
+                    if consecutive_429 >= RATE_LIMIT_PAUSE_THRESHOLD {
+                        tracing::warn!(
+                            consecutive = consecutive_429,
+                            pause_secs = RATE_LIMIT_PAUSE.as_secs(),
+                            "extract worker pausing on persistent 429s",
+                        );
+                        std::thread::sleep(RATE_LIMIT_PAUSE);
+                        consecutive_429 = 0;
+                    }
+                } else {
+                    consecutive_429 = 0;
+                    tracing::warn!(
+                        obs_id = task.obs_id,
+                        project = %task.project_name,
+                        error = %e,
+                        "extract task failed; observation has no facts but is still searchable",
+                    );
+                }
             }
         }
     }
@@ -269,5 +312,24 @@ mod tests {
         std::env::set_var("MEMLAYER_DATA_DIR", dir.path());
         assert_eq!(resolved_model_for("any-project"), None);
         std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn looks_like_rate_limit_matches_known_patterns() {
+        assert!(looks_like_rate_limit("HTTP 429 Too Many Requests"));
+        assert!(looks_like_rate_limit("Bedrock returned a rate limit error"));
+        assert!(looks_like_rate_limit("Throttled by upstream"));
+        assert!(looks_like_rate_limit("rate-limit exceeded"));
+        assert!(!looks_like_rate_limit("connection refused"));
+        assert!(!looks_like_rate_limit("invalid model id"));
+        assert!(!looks_like_rate_limit("timeout after 30s"));
+    }
+
+    #[test]
+    fn rate_limit_pause_constants_match_spec() {
+        // Spec retrieval-promotion error-handling: pause 5min after 5
+        // consecutive rate limits.
+        assert_eq!(RATE_LIMIT_PAUSE_THRESHOLD, 5);
+        assert_eq!(RATE_LIMIT_PAUSE, Duration::from_secs(300));
     }
 }

@@ -102,22 +102,58 @@ fn run_loop(
     registry: Arc<ProjectRegistry>,
 ) {
     while let Ok(task) = rx.recv() {
-        match process(&task, &embedder, &registry) {
+        match process_with_retry(&task, &embedder, &registry, &RETRY_BACKOFFS) {
             Ok(()) => {
                 tracing::trace!(obs_id = task.obs_id, project = %task.project_name, "embed landed");
             }
             Err(e) => {
                 // SC-11: embed failures must not surface to the save call;
-                // log and drop. Retry/backoff lives in rp-t14.
+                // log and drop after exhausting the retry budget.
                 tracing::warn!(
                     obs_id = task.obs_id,
                     project = %task.project_name,
                     error = %e,
-                    "embed task failed; observation searchable via BM25 only",
+                    "embed task failed after {} retries; observation searchable via BM25 only",
+                    RETRY_BACKOFFS.len(),
                 );
             }
         }
     }
+}
+
+/// Exponential backoff schedule for transient embed failures. Three retries
+/// at 100ms / 1s / 10s — total worst-case wait ~11s before drop. Spec
+/// retrieval-promotion error-handling table: "Embed worker crashes /
+/// hangs → retry up to 3× with exponential backoff".
+const RETRY_BACKOFFS: [std::time::Duration; 3] = [
+    std::time::Duration::from_millis(100),
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(10),
+];
+
+/// Run [`process`] with up to `backoffs.len()` retries. Each failure logs
+/// at trace level so a flapping embedder is observable in the daemon log,
+/// but the caller doesn't see the noise unless the final attempt fails.
+fn process_with_retry(
+    task: &EmbedTask,
+    embedder: &BgeSmallEmbedder,
+    registry: &ProjectRegistry,
+    backoffs: &[std::time::Duration],
+) -> anyhow::Result<()> {
+    let mut attempt = 0usize;
+    retry_with_backoff(backoffs, || {
+        let result = process(task, embedder, registry);
+        if let Err(ref e) = result {
+            tracing::trace!(
+                obs_id = task.obs_id,
+                attempt = attempt + 1,
+                error = %e,
+                "embed attempt failed"
+            );
+            attempt += 1;
+        }
+        result
+    })
 }
 
 fn process(
@@ -199,4 +235,96 @@ mod tests {
         let pool = EmbedWorkerPool { tx };
         let _clone: EmbedWorkerPool = pool.clone();
     }
+
+    #[test]
+    fn retry_backoffs_are_three_steps_total_under_15s() {
+        // Spec retrieval-promotion error-handling: 3 retries at 100ms, 1s,
+        // 10s. Total worst-case wait ~11s.
+        assert_eq!(RETRY_BACKOFFS.len(), 3);
+        assert_eq!(RETRY_BACKOFFS[0], std::time::Duration::from_millis(100));
+        assert_eq!(RETRY_BACKOFFS[1], std::time::Duration::from_secs(1));
+        assert_eq!(RETRY_BACKOFFS[2], std::time::Duration::from_secs(10));
+        let total: std::time::Duration = RETRY_BACKOFFS.iter().sum();
+        assert!(total < std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn retry_loop_succeeds_on_first_attempt_when_op_succeeds() {
+        // Drive process_with_retry with a tiny operation harness that
+        // counts attempts. The real `process` needs a BgeSmallEmbedder;
+        // here we exercise the retry policy directly via a free-standing
+        // helper so the test stays hermetic.
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let backoffs = [
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+        ];
+        let result = retry_with_backoff(&backoffs, || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<(), anyhow::Error>(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retry_loop_exhausts_budget_on_persistent_failure() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let backoffs = [
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+        ];
+        let result = retry_with_backoff(&backoffs, || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err::<(), _>(anyhow::anyhow!("flaky"))
+        });
+        assert!(result.is_err());
+        // 1 initial + 3 retries = 4 attempts.
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn retry_loop_recovers_after_two_failures() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let backoffs = [
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+        ];
+        let result = retry_with_backoff(&backoffs, || {
+            let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < 2 {
+                Err::<(), _>(anyhow::anyhow!("flaky"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+}
+
+/// Generic retry-with-backoff helper used by `process_with_retry` and
+/// exercised directly in unit tests. Public-in-module so tests can drive
+/// the retry policy without standing up a real embedder.
+fn retry_with_backoff<F, T, E>(backoffs: &[std::time::Duration], mut op: F) -> Result<T, E>
+where
+    F: FnMut() -> Result<T, E>,
+{
+    let max_attempts = backoffs.len() + 1;
+    let mut last_err: Option<E> = None;
+    for attempt in 0..max_attempts {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt + 1 < max_attempts {
+                    std::thread::sleep(backoffs[attempt]);
+                }
+            }
+        }
+    }
+    Err(last_err.expect("loop ran at least once"))
 }
