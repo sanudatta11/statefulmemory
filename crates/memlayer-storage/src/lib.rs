@@ -13,6 +13,7 @@ pub mod cursor;
 pub mod db;
 pub mod dedupe;
 pub mod diskmon;
+pub mod facts;
 pub mod global;
 pub mod models;
 pub mod pragmas;
