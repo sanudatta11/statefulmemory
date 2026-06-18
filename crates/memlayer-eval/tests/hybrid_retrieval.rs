@@ -9,6 +9,8 @@
 //! Run with:
 //!     cargo test -p memlayer-eval --features online-tests --test hybrid_retrieval
 
+#![cfg_attr(not(feature = "online-tests"), allow(dead_code, unused_imports))]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
