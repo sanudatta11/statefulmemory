@@ -42,6 +42,8 @@ use memlayer_storage::{
     GlobalDb, ProjectRegistry, ProjectState,
 };
 
+use memlayer_embed::Embedder;
+
 use crate::admin_guard;
 use crate::error_map::map;
 use crate::tokens::{TokenMeta, TokenStore};
@@ -80,6 +82,11 @@ pub struct DaemonState {
     /// startup; the daemon then runs in BM25-only mode (search/context
     /// callers see embeddings as "missing" and fall back to BM25).
     pub embed_pool: Option<crate::embed_worker::EmbedWorkerPool>,
+    /// Shared BGE-small embedder used by both the embed worker pool and
+    /// the daemon's hybrid query path. Same `Arc` instance, so the model
+    /// weights are loaded once and reused. `None` mirrors `embed_pool` —
+    /// daemon falls back to BM25-only.
+    pub query_embedder: Option<std::sync::Arc<memlayer_embed::BgeSmallEmbedder>>,
     /// Async extract worker pool. Always Some after daemon startup; the
     /// pool itself is config-gated per task (cfg.extract.enabled), so a
     /// disabled extract config means workers wake up and immediately
@@ -120,6 +127,113 @@ impl MemlayerService {
             return Err(Error::invalid("project_name is required"));
         }
         self.state.registry.get_or_open(name)
+    }
+
+    /// Run hybrid retrieval: BM25 top-30 + dense top-30, RRF-fused, then
+    /// re-hydrated to full Observations and trimmed to `limit`. Falls
+    /// back to BM25-only when:
+    /// - the daemon has no embedder loaded (BM25-only mode), or
+    /// - `BgeSmallEmbedder::embed(query)` errors, or
+    /// - the per-project `observations_vec` table is missing/empty.
+    ///
+    /// Spec: retrieval-promotion SC-3, SC-11, P8.
+    fn hybrid_search(
+        &self,
+        conn: &rusqlite::Connection,
+        query: &str,
+        type_filter: Option<&str>,
+        scope_filter: Option<&str>,
+        limit: i32,
+    ) -> Result<Vec<Observation>> {
+        const RRF_DEPTH: i32 = 30;
+        const RRF_K: u32 = 60;
+
+        let bm25_hits = read_q::search(conn, query, type_filter, scope_filter, RRF_DEPTH)?;
+
+        // Embed the query. If the daemon has no embedder (cold-start
+        // fallback or candle init failure), or embedding errors, fall
+        // back to BM25-only.
+        let embedder = match &self.state.query_embedder {
+            Some(e) => e,
+            None => {
+                tracing::info!(
+                    "hybrid requested but no query embedder loaded — using BM25 only",
+                );
+                return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+            }
+        };
+        let q_vec = match embedder.embed(&[query]) {
+            Ok(mut vs) => match vs.pop() {
+                Some(v) => v,
+                None => {
+                    tracing::warn!("embedder returned no vectors for query — using BM25 only");
+                    return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "query embed failed — using BM25 only");
+                return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+            }
+        };
+
+        let dense_hits = match read_q::search_dense(conn, &q_vec, RRF_DEPTH as i64) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(error = %e, "dense search failed — using BM25 only");
+                return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+            }
+        };
+
+        if dense_hits.is_empty() {
+            // Vec table empty (no embeddings landed yet for this project).
+            tracing::info!(
+                "hybrid requested but vec table empty — using BM25 only (embed worker is catching up)",
+            );
+            return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+        }
+
+        // Apply the same type/scope filter to dense hits that BM25 honored.
+        // search_dense doesn't accept the filter today; cheap to filter here.
+        let dense_hits: Vec<Observation> = dense_hits
+            .into_iter()
+            .filter(|o| {
+                if let Some(t) = type_filter {
+                    if o.r#type != t {
+                        return false;
+                    }
+                }
+                if let Some(s) = scope_filter {
+                    if o.scope != s {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        // Build id-rank lists for RRF.
+        let bm25_ids: Vec<u64> = bm25_hits.iter().map(|o| o.id as u64).collect();
+        let dense_ids: Vec<u64> = dense_hits.iter().map(|o| o.id as u64).collect();
+        let fused = memlayer_retrieval::rrf::reciprocal_rank_fusion(
+            &[bm25_ids, dense_ids],
+            RRF_K,
+        );
+
+        // Re-hydrate by id, preferring observations we already have in
+        // hand. This avoids an extra round-trip to the DB for the common
+        // case where the same observations rank in both lists.
+        let mut by_id: std::collections::HashMap<i64, Observation> =
+            std::collections::HashMap::new();
+        for o in bm25_hits.into_iter().chain(dense_hits.into_iter()) {
+            by_id.entry(o.id).or_insert(o);
+        }
+
+        let merged: Vec<Observation> = fused
+            .into_iter()
+            .filter_map(|id| by_id.remove(&(id as i64)))
+            .take(limit as usize)
+            .collect();
+        Ok(merged)
     }
 }
 
@@ -455,13 +569,17 @@ impl Memlayer for MemlayerService {
                 warning,
             }));
         }
-        let hits = map(read_q::search(
-            &conn,
-            &r.query,
-            r.r#type.as_deref(),
-            r.scope.as_deref(),
-            limit,
-        ))?;
+        let hits = if matches!(r.mode.as_deref(), Some("hybrid")) {
+            map(self.hybrid_search(&conn, &r.query, r.r#type.as_deref(), r.scope.as_deref(), limit))?
+        } else {
+            map(read_q::search(
+                &conn,
+                &r.query,
+                r.r#type.as_deref(),
+                r.scope.as_deref(),
+                limit,
+            ))?
+        };
         Ok(Response::new(SearchObservationsResponse {
             observations: hits.into_iter().map(obs_to_proto).collect(),
             warning: None,
@@ -528,18 +646,37 @@ impl Memlayer for MemlayerService {
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.recent_limit <= 0 { 10 } else { r.recent_limit };
         let conn = map(project.open_read_conn())?;
-        let (recents, topics) = map(read_q::recent_active(&conn, limit))?;
+
+        // Spec retrieval-promotion: when caller provides --query alongside
+        // --mode hybrid, the context window is the hybrid retrieval result
+        // for that query (still bounded by `recent_limit`). Without a query
+        // we fall back to the existing recent + active-topics view.
+        let recents = match r.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) if matches!(r.mode.as_deref(), Some("hybrid")) => {
+                map(self.hybrid_search(&conn, q, None, None, limit))?
+            }
+            _ => {
+                let (recents, topics) = map(read_q::recent_active(&conn, limit))?;
+                let snapshot = ContextSnapshot {
+                    recent_observations: recents.into_iter().map(obs_to_proto).collect(),
+                    active_topics: topics
+                        .into_iter()
+                        .map(|t| TopicSummary {
+                            topic_key: t.topic_key,
+                            scope: t.scope,
+                            latest_title: t.latest_title,
+                            updated_at: t.updated_at,
+                        })
+                        .collect(),
+                };
+                return Ok(Response::new(ContextResponse {
+                    snapshot: Some(snapshot),
+                }));
+            }
+        };
         let snapshot = ContextSnapshot {
             recent_observations: recents.into_iter().map(obs_to_proto).collect(),
-            active_topics: topics
-                .into_iter()
-                .map(|t| TopicSummary {
-                    topic_key: t.topic_key,
-                    scope: t.scope,
-                    latest_title: t.latest_title,
-                    updated_at: t.updated_at,
-                })
-                .collect(),
+            active_topics: vec![],
         };
         Ok(Response::new(ContextResponse {
             snapshot: Some(snapshot),

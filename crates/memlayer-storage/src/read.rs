@@ -93,6 +93,63 @@ pub fn search(
     Ok(out)
 }
 
+/// Dense (cosine) top-K against the V4 vec0 vtable. Returns observations
+/// in ascending distance (most similar first). Empty result on:
+/// - empty `observations_vec` (no embeddings landed yet, falling-back
+///   caller treats as a hint to use BM25 only),
+/// - query vector dim != 384 (caller's bug; we surface as
+///   `InvalidArgument` so it's loud),
+/// - any sqlite-vec error (logged, returned as Internal).
+///
+/// Spec: retrieval-promotion SC-3, P8.
+pub fn search_dense(
+    conn: &Connection,
+    q_vec: &[f32],
+    limit: i64,
+) -> Result<Vec<Observation>> {
+    if q_vec.len() != 384 {
+        return Err(Error::invalid(format!(
+            "search_dense expects 384-dim query vector, got {}",
+            q_vec.len()
+        )));
+    }
+    let limit = limit.clamp(1, MAX_LIMIT as i64);
+    let mut blob = Vec::with_capacity(q_vec.len() * 4);
+    for f in q_vec {
+        blob.extend_from_slice(&f.to_le_bytes());
+    }
+
+    // vec0 MATCH ?1 expects the query as a blob; the `k=?2` pseudo-column
+    // is how sqlite-vec asks for top-K. Distance is exposed as the
+    // `distance` column on the vtable rows.
+    let sql = format!(
+        "SELECT {SELECT_COLS} FROM observations o
+         JOIN observations_vec v ON o.id = v.rowid
+         WHERE v.embedding MATCH ?1 AND k = ?2
+           AND o.deleted_at IS NULL
+         ORDER BY v.distance ASC"
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            // Most common cause: V4 hasn't run yet (no observations_vec
+            // table). The hybrid caller treats Ok(empty) as a fall-back
+            // signal, so surface that here too.
+            tracing::warn!(error = %e, "search_dense prepare failed (vec table missing?) — returning empty");
+            return Ok(Vec::new());
+        }
+    };
+    let rows = stmt
+        .query_map(params![blob, limit], Observation::from_row)
+        .map_err(|e| Error::internal(format!("search_dense query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("search_dense row: {e}")))?);
+    }
+    Ok(out)
+}
+
 /// Cross-project search via ATTACH on up to 32 most-recently-active projects.
 ///
 /// Returns the merged ranked hits and an optional warning if some projects
@@ -619,5 +676,113 @@ mod tests {
         let (before, _anchor, after) = timeline(&c, &ObservationKey::Id(id), 0, 0).unwrap();
         assert!(before.is_empty());
         assert!(after.is_empty());
+    }
+
+    fn unit_vector(seed: u8) -> Vec<f32> {
+        // Deterministic, non-zero 384-dim vector. Most positions are 0;
+        // a few non-zero values keyed off the seed make distinct rows
+        // distinguishable under cosine.
+        let mut v = vec![0.0f32; 384];
+        v[seed as usize % 384] = 1.0;
+        v[(seed as usize + 17) % 384] = 0.5;
+        v
+    }
+
+    fn insert_embedding(conn: &Connection, obs_id: i64, vec: &[f32], model: &str) {
+        let mut blob = Vec::with_capacity(vec.len() * 4);
+        for f in vec {
+            blob.extend_from_slice(&f.to_le_bytes());
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO observations_vec(rowid, embedding) VALUES (?1, ?2)",
+            rusqlite::params![obs_id, blob],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO observation_embedding_meta \
+                (observation_id, model, dim, created_at) \
+             VALUES (?1, ?2, 384, datetime('now'))",
+            rusqlite::params![obs_id, model],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_dense_returns_cosine_top_k() {
+        // Spec retrieval-promotion SC-3: dense search returns observations
+        // ordered by ascending cosine distance.
+        let (_d, mut c) = make_conn();
+        save(&mut c, "first body alpha", "note");
+        save(&mut c, "second body beta", "note");
+        save(&mut c, "third body gamma", "note");
+
+        // Map observation rows to their ids in insertion order.
+        let mut ids: Vec<i64> = Vec::new();
+        let mut stmt = c
+            .prepare("SELECT id FROM observations ORDER BY id ASC")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap();
+        for r in rows {
+            ids.push(r.unwrap());
+        }
+        drop(stmt);
+        assert_eq!(ids.len(), 3);
+
+        // Seed three distinct embeddings; query == row[0]'s embedding so
+        // we expect ids[0] to come back first (distance 0).
+        let q = unit_vector(0);
+        insert_embedding(&c, ids[0], &q, "bge-small-en-v1.5");
+        insert_embedding(&c, ids[1], &unit_vector(8), "bge-small-en-v1.5");
+        insert_embedding(&c, ids[2], &unit_vector(64), "bge-small-en-v1.5");
+
+        let hits = search_dense(&c, &q, 3).unwrap();
+        assert_eq!(hits.len(), 3, "expected 3 dense hits");
+        assert_eq!(hits[0].id, ids[0], "exact-match row must rank first");
+    }
+
+    #[test]
+    fn search_dense_returns_empty_when_no_embeddings() {
+        // Empty observations_vec — the hybrid caller treats Ok(empty) as
+        // "fall back to BM25 only".
+        let (_d, c) = make_conn();
+        let q = unit_vector(1);
+        let hits = search_dense(&c, &q, 5).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_dense_rejects_wrong_dimension() {
+        let (_d, c) = make_conn();
+        let bad = vec![0.0_f32; 16];
+        let err = search_dense(&c, &bad, 5).unwrap_err();
+        assert!(format!("{err}").contains("384"));
+    }
+
+    #[test]
+    fn search_dense_excludes_soft_deleted() {
+        let (_d, mut c) = make_conn();
+        save(&mut c, "live row", "note");
+        save(&mut c, "dead row", "note");
+        let ids: Vec<i64> = c
+            .prepare("SELECT id FROM observations ORDER BY id ASC")
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let q = unit_vector(2);
+        insert_embedding(&c, ids[0], &q, "bge-small-en-v1.5");
+        insert_embedding(&c, ids[1], &q, "bge-small-en-v1.5");
+        c.execute(
+            "UPDATE observations SET deleted_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![ids[1]],
+        )
+        .unwrap();
+
+        let hits = search_dense(&c, &q, 5).unwrap();
+        assert_eq!(hits.len(), 1, "soft-deleted row must not surface");
+        assert_eq!(hits[0].id, ids[0]);
     }
 }

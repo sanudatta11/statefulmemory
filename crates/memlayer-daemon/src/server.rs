@@ -86,22 +86,24 @@ pub async fn run(cfg: Config) -> Result<()> {
     // Spawn the embed worker pool. If BGE-small fails to load (model
     // weights missing, candle init error, etc.) we fall back to BM25-only
     // mode by leaving `embed_pool = None`; saves still succeed (SC-11).
-    let embed_pool = match memlayer_embed::BgeSmallEmbedder::try_new() {
+    let (embed_pool, query_embedder) = match memlayer_embed::BgeSmallEmbedder::try_new() {
         Ok(embedder) => {
             let n = memlayer_cfg.embed.workers.max(1);
             tracing::info!(workers = n, "spawning embed worker pool");
-            Some(crate::embed_worker::EmbedWorkerPool::spawn(
-                Arc::new(embedder),
+            let shared = Arc::new(embedder);
+            let pool = crate::embed_worker::EmbedWorkerPool::spawn(
+                shared.clone(),
                 registry.clone(),
                 n,
-            ))
+            );
+            (Some(pool), Some(shared))
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 "BGE-small embedder failed to load; daemon running in BM25-only mode",
             );
-            None
+            (None, None)
         }
     };
 
@@ -135,6 +137,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         last_export_at: Arc::new(Mutex::new(HashMap::new())),
         global_db,
         embed_pool,
+        query_embedder,
         extract_pool,
     });
     let svc = MemlayerService::new(state.clone());
