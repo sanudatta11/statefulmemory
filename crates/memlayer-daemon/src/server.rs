@@ -107,6 +107,11 @@ pub async fn run(cfg: Config) -> Result<()> {
         }
     };
 
+    // Build the shared Claude client once; both the extract worker pool
+    // and the daemon's rerank path call into it.
+    let claude_client: Arc<dyn memlayer_extract::claude_cli::ClaudeClient> =
+        Arc::new(memlayer_extract::claude_cli::ClaudeCliClient::new());
+
     // Spawn the extract worker pool. Always-on at the pool level — the
     // workers themselves re-resolve cfg.extract.enabled per task (SC-7),
     // so flipping the toggle in `~/.memlayer/config.toml` takes effect
@@ -114,7 +119,8 @@ pub async fn run(cfg: Config) -> Result<()> {
     let extract_pool = {
         let n = memlayer_cfg.extract.workers.max(1);
         tracing::info!(workers = n, "spawning extract worker pool");
-        Some(crate::extract_worker::ExtractWorkerPool::spawn_with_real_client(
+        Some(crate::extract_worker::ExtractWorkerPool::spawn(
+            claude_client.clone(),
             registry.clone(),
             n,
         ))
@@ -139,6 +145,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         embed_pool,
         query_embedder,
         extract_pool,
+        claude_client,
     });
     let svc = MemlayerService::new(state.clone());
 

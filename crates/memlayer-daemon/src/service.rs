@@ -92,6 +92,10 @@ pub struct DaemonState {
     /// disabled extract config means workers wake up and immediately
     /// return without an LLM call (SC-7).
     pub extract_pool: Option<crate::extract_worker::ExtractWorkerPool>,
+    /// Shared Claude client used by both the extract worker pool and
+    /// the daemon's rerank path. Same `Arc` instance, so configuration
+    /// (proxy strip, environment) is consistent across the two callers.
+    pub claude_client: std::sync::Arc<dyn memlayer_extract::claude_cli::ClaudeClient>,
 }
 
 #[derive(Clone)]
@@ -234,6 +238,98 @@ impl MemlayerService {
             .take(limit as usize)
             .collect();
         Ok(merged)
+    }
+
+    /// LLM rerank wrapper around `memlayer_retrieval::rerank::ClaudeReranker`.
+    /// Hard 5s timeout (SC-5); on timeout or error, the un-reranked input
+    /// list is returned with a tracing warning. `model` is the wire string
+    /// (`"haiku"` | `"sonnet"`); anything else returns the input unchanged.
+    async fn rerank_hits(
+        &self,
+        model: &str,
+        query: &str,
+        hits: Vec<Observation>,
+    ) -> Vec<Observation> {
+        if hits.len() <= 1 {
+            return hits;
+        }
+        let kind = match model.trim().to_ascii_lowercase().as_str() {
+            "haiku" => memlayer_core::config::ModelKind::Haiku,
+            "sonnet" => memlayer_core::config::ModelKind::Sonnet,
+            other => {
+                tracing::warn!(model = other, "unknown rerank model; returning hits as-is");
+                return hits;
+            }
+        };
+
+        // Build candidate strings the reranker can score: title + first
+        // chunk of content. Cap at ~6KB total preview budget so the
+        // prompt stays under the model's context window.
+        let candidates: Vec<String> = hits
+            .iter()
+            .map(|o| {
+                let body = if o.content.len() > 800 {
+                    o.content.chars().take(800).collect()
+                } else {
+                    o.content.clone()
+                };
+                format!("{}\n{}", o.title, body)
+            })
+            .collect();
+
+        let reranker = memlayer_retrieval::rerank::ClaudeReranker::new(
+            self.state.claude_client.clone(),
+            kind,
+        );
+
+        let top_k = hits.len();
+        let fut = async {
+            use memlayer_retrieval::rerank::Reranker;
+            reranker.rerank(&candidates, query, top_k).await
+        };
+
+        let rerank_result = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+
+        let reordered: Vec<String> = match rerank_result {
+            Ok(Ok((reranked, _dur))) => reranked,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, model, "rerank failed — returning hybrid order");
+                return hits;
+            }
+            Err(_) => {
+                tracing::warn!(model, "rerank timed out (5s) — returning hybrid order");
+                return hits;
+            }
+        };
+
+        // Map reranked candidate strings back to observations by stable
+        // string match (the reranker preserves the candidate text, just
+        // reorders). Build an index on candidates so duplicates are
+        // handled by first-occurrence.
+        let mut idx: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::with_capacity(candidates.len());
+        for (i, c) in candidates.iter().enumerate() {
+            idx.entry(c.clone()).or_insert(i);
+        }
+        let mut out: Vec<Observation> = Vec::with_capacity(reordered.len());
+        let mut consumed = vec![false; hits.len()];
+        for c in &reordered {
+            if let Some(&i) = idx.get(c) {
+                if !consumed[i] {
+                    consumed[i] = true;
+                    out.push(hits[i].clone());
+                }
+            }
+        }
+        // Append any candidates the reranker dropped, preserving original
+        // hybrid order. (`ClaudeReranker` should return all top_k, but we
+        // belt-and-suspenders so callers always get a full result.)
+        for (i, o) in hits.into_iter().enumerate() {
+            if !consumed[i] {
+                out.push(o);
+            }
+        }
+        out
     }
 }
 
@@ -580,6 +676,12 @@ impl Memlayer for MemlayerService {
                 limit,
             ))?
         };
+        // Optional LLM rerank (SC-5). 5s hard cap; on timeout / error
+        // we fall back to the un-reranked hybrid order.
+        let hits = match r.rerank.as_deref() {
+            Some(model) if !model.is_empty() => self.rerank_hits(model, &r.query, hits).await,
+            _ => hits,
+        };
         Ok(Response::new(SearchObservationsResponse {
             observations: hits.into_iter().map(obs_to_proto).collect(),
             warning: None,
@@ -653,7 +755,11 @@ impl Memlayer for MemlayerService {
         // we fall back to the existing recent + active-topics view.
         let recents = match r.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
             Some(q) if matches!(r.mode.as_deref(), Some("hybrid")) => {
-                map(self.hybrid_search(&conn, q, None, None, limit))?
+                let hits = map(self.hybrid_search(&conn, q, None, None, limit))?;
+                match r.rerank.as_deref() {
+                    Some(model) if !model.is_empty() => self.rerank_hits(model, q, hits).await,
+                    _ => hits,
+                }
             }
             _ => {
                 let (recents, topics) = map(read_q::recent_active(&conn, limit))?;
