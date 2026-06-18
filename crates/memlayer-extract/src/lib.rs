@@ -15,10 +15,12 @@
 pub mod cache;
 pub mod claude_cli;
 pub mod entities;
+pub mod extractor;
 pub mod prompt;
 
 pub use cache::{CachedExtraction, ExtractionCache};
 pub use entities::{EntityExtractor, HaikuEntityExtractor, HeuristicEntityExtractor};
+pub use extractor::ClaudeCliExtractor;
 pub use prompt::{build_extraction_prompt, parse_facts};
 
 use serde::{Deserialize, Serialize};

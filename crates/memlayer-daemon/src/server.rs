@@ -105,6 +105,19 @@ pub async fn run(cfg: Config) -> Result<()> {
         }
     };
 
+    // Spawn the extract worker pool. Always-on at the pool level — the
+    // workers themselves re-resolve cfg.extract.enabled per task (SC-7),
+    // so flipping the toggle in `~/.memlayer/config.toml` takes effect
+    // without a daemon restart.
+    let extract_pool = {
+        let n = memlayer_cfg.extract.workers.max(1);
+        tracing::info!(workers = n, "spawning extract worker pool");
+        Some(crate::extract_worker::ExtractWorkerPool::spawn_with_real_client(
+            registry.clone(),
+            n,
+        ))
+    };
+
     // Daemon shared state.
     let in_flight = Arc::new(AtomicU64::new(0));
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
@@ -122,6 +135,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         last_export_at: Arc::new(Mutex::new(HashMap::new())),
         global_db,
         embed_pool,
+        extract_pool,
     });
     let svc = MemlayerService::new(state.clone());
 

@@ -8,6 +8,7 @@ pub mod auth;
 pub mod capture_passive;
 pub mod embed_worker;
 pub mod error_map;
+pub mod extract_worker;
 pub mod lifecycle;
 pub mod logging;
 pub mod server;

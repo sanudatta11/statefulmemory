@@ -80,6 +80,11 @@ pub struct DaemonState {
     /// startup; the daemon then runs in BM25-only mode (search/context
     /// callers see embeddings as "missing" and fall back to BM25).
     pub embed_pool: Option<crate::embed_worker::EmbedWorkerPool>,
+    /// Async extract worker pool. Always Some after daemon startup; the
+    /// pool itself is config-gated per task (cfg.extract.enabled), so a
+    /// disabled extract config means workers wake up and immediately
+    /// return without an LLM call (SC-7).
+    pub extract_pool: Option<crate::extract_worker::ExtractWorkerPool>,
 }
 
 #[derive(Clone)]
@@ -279,6 +284,20 @@ impl Memlayer for MemlayerService {
                 title: obs.title.clone(),
                 content: obs.content.clone(),
             });
+        }
+        // Extract is opt-in: only queue when this project's resolved
+        // config has extract.enabled = true. SC-7 guarantees zero LLM
+        // calls otherwise.
+        if let Some(pool) = &self.state.extract_pool {
+            if crate::extract_worker::resolved_model_for(&r.project_name).is_some() {
+                pool.try_queue(crate::extract_worker::ExtractTask {
+                    project_name: r.project_name.clone(),
+                    obs_id: obs.id,
+                    title: obs.title.clone(),
+                    content: obs.content.clone(),
+                    session_id: Some(obs.session_id.clone()),
+                });
+            }
         }
 
         // Pass superseded observations (if any) in similar_observations so the
