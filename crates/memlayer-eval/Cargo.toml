@@ -10,10 +10,11 @@ name = "eval"
 path = "src/bin/eval.rs"
 
 [dependencies]
-memlayer-core    = { path = "../memlayer-core" }
-memlayer-storage = { path = "../memlayer-storage" }
-memlayer-embed   = { path = "../memlayer-embed" }
-memlayer-extract = { path = "../memlayer-extract" }
+memlayer-core      = { path = "../memlayer-core" }
+memlayer-storage   = { path = "../memlayer-storage" }
+memlayer-embed     = { path = "../memlayer-embed" }
+memlayer-extract   = { path = "../memlayer-extract" }
+memlayer-retrieval = { path = "../memlayer-retrieval" }
 
 rusqlite    = { workspace = true }
 refinery    = { workspace = true }

@@ -12,6 +12,7 @@ members = [
     "crates/memlayer-embed",
     "crates/memlayer-extract",
     "crates/memlayer-eval",
+    "crates/memlayer-retrieval",
 ]
 
 [workspace.package]

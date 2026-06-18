@@ -1,0 +1,19 @@
+[package]
+name = "memlayer-retrieval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Shared retrieval primitives (RRF fusion, LLM rerank, hybrid query types) for the daemon and eval harness."
+
+[dependencies]
+memlayer-extract = { path = "../memlayer-extract" }
+memlayer-core    = { path = "../memlayer-core" }
+
+anyhow.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tracing.workspace = true
+serde.workspace = true
