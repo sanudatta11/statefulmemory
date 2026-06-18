@@ -17,6 +17,9 @@ pub fn open_write(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Register sqlite-vec auto-extension before opening so V4 (vec0 vtable)
+    // can run during migration. Idempotent — only fires once per process.
+    pragmas::ensure_sqlite_vec_extension();
     let mut conn = Connection::open_with_flags(path, pragmas::write_flags())
         .map_err(|e| Error::internal(format!("open_write({}): {e}", path.display())))?;
     pragmas::apply(&conn)?;
@@ -30,6 +33,7 @@ pub fn open_write(path: &Path) -> Result<Connection> {
 /// The caller must have already opened a write connection at least once so
 /// migrations and the file itself exist.
 pub fn open_read(path: &Path) -> Result<Connection> {
+    pragmas::ensure_sqlite_vec_extension();
     let conn = Connection::open_with_flags(path, pragmas::read_flags())
         .map_err(|e| Error::internal(format!("open_read({}): {e}", path.display())))?;
     pragmas::apply(&conn)?;

@@ -13,6 +13,7 @@ memlayer-core = { path = "../memlayer-core" }
 
 rusqlite.workspace = true
 refinery.workspace = true
+sqlite-vec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

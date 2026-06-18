@@ -19,7 +19,7 @@ use memlayer_core::error::{Error, Result};
 use memlayer_core::paths;
 use memlayer_proto::memlayer_server::MemlayerServer;
 use memlayer_storage::diskmon::{self, DiskMonitor};
-use memlayer_storage::ProjectRegistry;
+use memlayer_storage::{pragmas, ProjectRegistry};
 
 use crate::auth;
 use crate::lifecycle::{self, LifecycleGuard};
@@ -48,6 +48,12 @@ pub async fn run(cfg: Config) -> Result<()> {
     ));
     let dm = DiskMonitor::new();
     diskmon::spawn(dm.clone(), cfg.data_dir.clone(), cfg.disk_full_threshold, cfg.disk_poll_interval);
+
+    // Embed-model compatibility guard (SC-11). Iterate over project DBs known
+    // on disk and refuse to start if any of them stored embeddings under a
+    // different model than the one the daemon will use. Pre-existing projects
+    // with no embeddings yet pass.
+    check_embed_model_on_disk(&registry)?;
 
     // Token store. Opened in both UDS and TCP modes: UDS mode lets the
     // local admin pre-provision tokens that will later authenticate TCP
@@ -108,6 +114,50 @@ pub async fn run(cfg: Config) -> Result<()> {
     };
 
     serve_result
+}
+
+/// Walk every project DB on disk and refuse to start if any of them stored
+/// embeddings under a model id different from the one this daemon binary will
+/// produce (SC-11). Empty / fresh DBs pass; the check only fires once an
+/// observation has actually been embedded under some other model.
+fn check_embed_model_on_disk(_registry: &ProjectRegistry) -> Result<()> {
+    use memlayer_storage::registry::ProjectRegistry as _Reg;
+    // Skip projects that have a config.json but no DB file yet — nothing
+    // could have been embedded there.
+    let projects = match _Reg::list_known_on_disk() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not enumerate known projects for embed-model check");
+            return Ok(());
+        }
+    };
+
+    // Auto-extension must be live before opening — open_read does this too,
+    // but doing it once here keeps the order explicit.
+    pragmas::ensure_sqlite_vec_extension();
+
+    for (name, _cfg) in projects {
+        let db_path = paths::project_db_path(&name);
+        if !db_path.exists() {
+            continue;
+        }
+        // Use a raw read connection: open_read in storage runs pragmas. The
+        // model check itself tolerates pre-V4 databases (table missing → Ok).
+        let conn = match memlayer_storage::db::open_read(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(project = %name, error = %e, "skipping embed-model check for project (open failed)");
+                continue;
+            }
+        };
+        pragmas::check_embed_model_compat(&conn, pragmas::STORED_EMBED_MODEL)
+            .map_err(|e| {
+                Error::FailedPrecondition(format!(
+                    "project \"{name}\": {e}"
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 async fn serve_uds(
