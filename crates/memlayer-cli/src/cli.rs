@@ -135,6 +135,10 @@ pub enum ObsVerb {
     SuggestTopicKey(ObsSuggestTopicKeyArgs),
     /// Extract `## Key Learnings:` bullets from a text block.
     CapturePassive(ObsCapturePassiveArgs),
+    /// Print atomic facts attached to an observation (retrieval-promotion).
+    Facts(ObsFactsArgs),
+    /// Stub: re-extract facts from observations since a date.
+    Reextract(ObsReextractArgs),
 }
 
 #[derive(Args, Debug)]
@@ -201,6 +205,15 @@ pub struct ObsSearchArgs {
     /// Search across all projects (capped at 32 per EC-10).
     #[arg(long)]
     pub all_projects: bool,
+    /// Retrieval mode: `bm25` (default for v1.x back-compat) or `hybrid`
+    /// (BM25 + dense ANN top-30 fused via RRF). Retrieval-promotion SC-3,
+    /// SC-4.
+    #[arg(long, default_value = "bm25", value_parser = ["bm25", "hybrid"])]
+    pub mode: String,
+    /// Optional reranker model: `haiku` or `sonnet`. Hard 5s timeout per
+    /// SC-5; on timeout the un-reranked hybrid result is returned.
+    #[arg(long, value_parser = ["haiku", "sonnet"])]
+    pub rerank: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -231,6 +244,31 @@ pub struct ObsListArgs {
 pub struct ObsContextArgs {
     #[arg(long, default_value_t = 10)]
     pub limit: i32,
+    /// Optional query to focus the context window on. When set together
+    /// with `--mode hybrid`, the daemon RRF-fuses BM25 and dense matches.
+    #[arg(long)]
+    pub query: Option<String>,
+    /// Retrieval mode for the context window: `bm25` (default) or `hybrid`.
+    #[arg(long, default_value = "bm25", value_parser = ["bm25", "hybrid"])]
+    pub mode: String,
+    /// Optional reranker model: `haiku` or `sonnet`. 5s timeout, falls
+    /// back on error.
+    #[arg(long, value_parser = ["haiku", "sonnet"])]
+    pub rerank: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsFactsArgs {
+    /// Observation id (numeric DB id) or sync_id.
+    pub id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsReextractArgs {
+    /// Re-extract facts from observations created on or after this date
+    /// (RFC-3339). Skeleton verb in v1; emits a deferred-feature notice.
+    #[arg(long)]
+    pub since: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -589,5 +627,86 @@ mod tests {
         assert!(arg.get_env().is_none(), "project arg should not have env binding");
         let cli = Cli::try_parse_from(["memlayer", "--project", "explicit", "version"]).unwrap();
         assert_eq!(cli.project.as_deref(), Some("explicit"));
+    }
+
+    fn parse_obs_search(args: &[&str]) -> ObsSearchArgs {
+        let mut full = vec!["memlayer", "obs", "search"];
+        full.extend_from_slice(args);
+        let cli = Cli::try_parse_from(full).expect("obs search must parse");
+        match cli.command {
+            Command::Obs(o) => match o.verb {
+                ObsVerb::Search(a) => a,
+                other => panic!("expected Search, got {other:?}"),
+            },
+            other => panic!("expected Obs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn obs_search_default_mode_bm25() {
+        let a = parse_obs_search(&["the query"]);
+        assert_eq!(a.mode, "bm25", "back-compat default per SC-4");
+        assert!(a.rerank.is_none());
+    }
+
+    #[test]
+    fn obs_search_mode_hybrid_parses() {
+        let a = parse_obs_search(&["q", "--mode", "hybrid"]);
+        assert_eq!(a.mode, "hybrid");
+    }
+
+    #[test]
+    fn obs_search_rerank_haiku_parses() {
+        let a = parse_obs_search(&["q", "--rerank", "haiku"]);
+        assert_eq!(a.rerank.as_deref(), Some("haiku"));
+    }
+
+    #[test]
+    fn obs_search_rerank_sonnet_parses() {
+        let a = parse_obs_search(&["q", "--rerank", "sonnet"]);
+        assert_eq!(a.rerank.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn obs_search_invalid_mode_rejected() {
+        let res = Cli::try_parse_from(["memlayer", "obs", "search", "q", "--mode", "lexical"]);
+        assert!(res.is_err(), "value_parser must reject 'lexical'");
+    }
+
+    #[test]
+    fn obs_search_invalid_rerank_rejected() {
+        let res = Cli::try_parse_from(["memlayer", "obs", "search", "q", "--rerank", "opus"]);
+        assert!(res.is_err(), "value_parser must reject 'opus'");
+    }
+
+    #[test]
+    fn obs_context_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "memlayer", "obs", "context", "--query", "deploy", "--mode", "hybrid", "--rerank", "haiku",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Obs(o) => match o.verb {
+                ObsVerb::Context(a) => {
+                    assert_eq!(a.mode, "hybrid");
+                    assert_eq!(a.rerank.as_deref(), Some("haiku"));
+                    assert_eq!(a.query.as_deref(), Some("deploy"));
+                }
+                other => panic!("expected Context, got {other:?}"),
+            },
+            other => panic!("expected Obs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn obs_facts_verb_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "obs", "facts", "42"]).unwrap();
+        match cli.command {
+            Command::Obs(o) => match o.verb {
+                ObsVerb::Facts(a) => assert_eq!(a.id, "42"),
+                other => panic!("expected Facts, got {other:?}"),
+            },
+            other => panic!("expected Obs, got {other:?}"),
+        }
     }
 }

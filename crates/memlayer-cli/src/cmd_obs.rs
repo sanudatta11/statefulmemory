@@ -18,8 +18,9 @@ use tonic::Status;
 
 use crate::audit::{self, AuditEntry, HitMeta};
 use crate::cli::{
-    ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsGetArgs, ObsListArgs, ObsRecentArgs,
-    ObsSaveArgs, ObsSearchArgs, ObsSuggestTopicKeyArgs, ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
+    ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsFactsArgs, ObsGetArgs, ObsListArgs,
+    ObsRecentArgs, ObsReextractArgs, ObsSaveArgs, ObsSearchArgs, ObsSuggestTopicKeyArgs,
+    ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
 };
 use crate::exit;
 use crate::formatter::{Formatter, Render};
@@ -50,6 +51,8 @@ pub async fn dispatch(
         ObsVerb::Timeline(a) => timeline(client, project_name, fmt, a).await,
         ObsVerb::SuggestTopicKey(a) => suggest_topic_key(client, project_name, fmt, a).await,
         ObsVerb::CapturePassive(a) => capture_passive(client, project_name, fmt, a).await,
+        ObsVerb::Facts(a) => facts(client, project_name, fmt, a).await,
+        ObsVerb::Reextract(a) => reextract(a).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -223,6 +226,8 @@ async fn search(
         scope: a.scope,
         all_projects: a.all_projects,
         limit: a.limit,
+        mode: Some(a.mode),
+        rerank: a.rerank,
     };
     let resp = client.search_observations(req).await?.into_inner();
     write_render(&resp, fmt)?;
@@ -319,6 +324,9 @@ async fn context(
         let req = p::ContextRequest {
             project_name: project_name.to_string(),
             recent_limit: a.limit,
+            mode: Some(a.mode.clone()),
+            rerank: a.rerank.clone(),
+            query: a.query.clone(),
         };
         let resp = client.context(req).await?.into_inner();
         let recent_count = resp
@@ -352,6 +360,8 @@ async fn context(
         scope: None,
         limit: 1,
         all_projects: false,
+        mode: None,
+        rerank: None,
     };
     let summaries = client.search_observations(summary_req).await?.into_inner();
     if let Some(latest) = summaries.observations.first() {
@@ -391,6 +401,9 @@ async fn context(
     let req = p::ContextRequest {
         project_name: project_name.to_string(),
         recent_limit: a.limit,
+        mode: Some(a.mode.clone()),
+        rerank: a.rerank.clone(),
+        query: a.query.clone(),
     };
     let resp = client.context(req).await?.into_inner();
     let recent_count = resp
@@ -564,6 +577,31 @@ pub fn read_capped<R: Read>(r: R, max_chars: usize) -> Result<String, String> {
         ));
     }
     Ok(s)
+}
+
+/// Stub implementation for `obs facts <id>`. The full implementation lands
+/// in rp-t10 (daemon `GetFacts` handler + render). For now we surface a
+/// "not yet implemented" error so the CLI flag wiring (rp-t7) lands without
+/// a non-exhaustive match.
+async fn facts(
+    _client: &mut Client,
+    _project_name: &str,
+    _fmt: Formatter,
+    _a: ObsFactsArgs,
+) -> Result<(), VerbError> {
+    Err(VerbError::Usage(
+        "obs facts is not yet wired up (lands in rp-t10)".into(),
+    ))
+}
+
+/// Stub implementation for `obs reextract`. Lands in rp-t13 as a
+/// deferred-feature stub; full implementation is a future spec.
+async fn reextract(_a: ObsReextractArgs) -> Result<(), VerbError> {
+    Err(VerbError::Usage(
+        "obs reextract is deferred to a future spec; flip extract.enabled=true \
+         in ~/.memlayer/config.toml to extract facts on new saves"
+            .into(),
+    ))
 }
 
 #[cfg(test)]

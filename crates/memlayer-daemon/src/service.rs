@@ -548,6 +548,20 @@ impl Memlayer for MemlayerService {
         Ok(Response::new(CapturePassiveResponse { snippets }))
     }
 
+    /// `obs facts <id>` — return atomic facts attached to an observation.
+    /// Real implementation lands in rp-t10; this stub keeps the trait
+    /// surface intact so rp-t7 (proto + CLI flag wiring) can land.
+    async fn get_facts(
+        &self,
+        req: Request<GetFactsRequest>,
+    ) -> Result<Response<GetFactsResponse>, Status> {
+        let _g = self.enter_rpc();
+        let _r = req.into_inner();
+        Err(Status::unimplemented(
+            "GetFacts is not yet wired to the facts table (rp-t10)",
+        ))
+    }
+
     // ---- Sessions ----
 
     #[instrument(skip(self, req), fields(rpc="StartSession"))]

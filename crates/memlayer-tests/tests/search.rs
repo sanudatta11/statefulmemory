@@ -39,6 +39,8 @@ async fn ts6_search_returns_ranked_hits() {
         scope: None,
         all_projects: false,
         limit: 10,
+        mode: None,
+        rerank: None,
     }).await.unwrap().into_inner();
     assert_eq!(res.observations.len(), 2, "expected 2 hits for 'auth'");
 }
@@ -76,6 +78,8 @@ async fn ts10_soft_deleted_invisible() {
         scope: None,
         all_projects: false,
         limit: 10,
+        mode: None,
+        rerank: None,
     }).await.unwrap().into_inner();
     assert_eq!(res.observations.len(), 0);
 }

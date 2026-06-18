@@ -75,6 +75,8 @@ pub async fn dispatch(client: &mut Client, project_name: &str, args: PreToolArgs
         scope: None,
         all_projects: false,
         limit: HOOK_HIT_LIMIT,
+        mode: None,
+        rerank: None,
     };
 
     let result = tokio::time::timeout(HOOK_TIMEOUT, client.search_observations(req)).await;
