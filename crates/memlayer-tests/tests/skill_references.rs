@@ -65,11 +65,11 @@ fn sidecar_bytes_match_source() {
 
     // Source-of-truth bodies bundled into the binary at compile time.
     let source = [
-        ("types.md", include_str!("../../../../skills/memlayer/references/types.md")),
-        ("slash.md", include_str!("../../../../skills/memlayer/references/slash.md")),
-        ("hooks.md", include_str!("../../../../skills/memlayer/references/hooks.md")),
-        ("failures.md", include_str!("../../../../skills/memlayer/references/failures.md")),
-        ("examples.md", include_str!("../../../../skills/memlayer/references/examples.md")),
+        ("types.md", include_str!("../../../skills/memlayer/references/types.md")),
+        ("slash.md", include_str!("../../../skills/memlayer/references/slash.md")),
+        ("hooks.md", include_str!("../../../skills/memlayer/references/hooks.md")),
+        ("failures.md", include_str!("../../../skills/memlayer/references/failures.md")),
+        ("examples.md", include_str!("../../../skills/memlayer/references/examples.md")),
     ];
 
     for (name, expected) in source {
@@ -90,7 +90,7 @@ fn sidecar_bytes_match_source() {
 
 #[test]
 fn skill_core_under_60_lines_and_links_to_5_sidecars() {
-    let core: &str = include_str!("../../../../skills/memlayer/SKILL.md");
+    let core: &str = include_str!("../../../skills/memlayer/SKILL.md");
     let line_count = core.lines().count();
     assert!(
         line_count <= 60,

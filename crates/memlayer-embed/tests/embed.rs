@@ -9,6 +9,7 @@
 //! no env-var contention.
 
 use memlayer_embed::cache::{fingerprint, hash_key, EmbeddingCache};
+use memlayer_embed::Embedder;
 use tempfile::TempDir;
 
 /// Sample 4-dim vectors, easy to compare exactly.

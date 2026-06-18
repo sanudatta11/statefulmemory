@@ -872,6 +872,7 @@ mod tests {
             updated_at: "2026-06-03T10:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            project_name: None,
         }
     }
 
