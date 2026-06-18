@@ -848,6 +848,61 @@ impl Render for p::RevokeTokenResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Atomic facts (rp-t10).
+// ---------------------------------------------------------------------------
+
+fn fact_to_json(f: &p::Fact) -> Value {
+    json!({
+        "id": f.id,
+        "obs_id": f.obs_id,
+        "subject": f.subject,
+        "predicate": f.predicate,
+        "object": f.object,
+        "temporal": f.temporal,
+        "salience": f.salience,
+        "superseded_by": f.superseded_by,
+        "extracted_by": f.extracted_by,
+        "extracted_at": f.extracted_at,
+    })
+}
+
+impl Render for p::GetFactsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if self.facts.is_empty() {
+            writeln!(w, "(no facts)")?;
+            return Ok(());
+        }
+        let obs_id = self.facts[0].obs_id;
+        writeln!(w, "Facts for observation #{obs_id}:")?;
+        for f in &self.facts {
+            let temporal = f
+                .temporal
+                .as_deref()
+                .map(|t| format!(" @ {t}"))
+                .unwrap_or_default();
+            let superseded = if f.superseded_by.is_some() {
+                " [superseded]"
+            } else {
+                ""
+            };
+            writeln!(
+                w,
+                "  - ({}, {}, {}){} [extracted by {}, {}]{}",
+                f.subject, f.predicate, f.object, temporal, f.extracted_by, f.extracted_at,
+                superseded,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn to_json_value(&self) -> Value {
+        json!({
+            "facts": self.facts.iter().map(fact_to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,5 +1049,102 @@ mod tests {
         let v = resp_empty.to_json_value();
         assert_eq!(v["recent_observations"], json!([]));
         assert_eq!(v["active_topics"], json!([]));
+    }
+
+    #[test]
+    fn get_facts_text_renders_triple_with_metadata() {
+        let resp = p::GetFactsResponse {
+            facts: vec![
+                p::Fact {
+                    id: 1,
+                    obs_id: 42,
+                    subject: "team".into(),
+                    predicate: "prefers".into(),
+                    object: "raw SQL via pgx".into(),
+                    temporal: None,
+                    salience: 0.9,
+                    superseded_by: None,
+                    extracted_by: "haiku".into(),
+                    extracted_at: "2026-06-18T00:00:00Z".into(),
+                },
+                p::Fact {
+                    id: 2,
+                    obs_id: 42,
+                    subject: "team".into(),
+                    predicate: "rejected".into(),
+                    object: "GORM".into(),
+                    temporal: Some("2025-Q4".into()),
+                    salience: 0.5,
+                    superseded_by: None,
+                    extracted_by: "haiku".into(),
+                    extracted_at: "2026-06-18T00:00:01Z".into(),
+                },
+            ],
+        };
+        let mut out = Vec::new();
+        resp.render_text(&mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("Facts for observation #42"), "got: {s}");
+        assert!(s.contains("(team, prefers, raw SQL via pgx)"));
+        assert!(s.contains("(team, rejected, GORM) @ 2025-Q4"));
+        assert!(s.contains("haiku"));
+    }
+
+    #[test]
+    fn get_facts_text_handles_empty() {
+        let resp = p::GetFactsResponse { facts: vec![] };
+        let mut out = Vec::new();
+        resp.render_text(&mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("(no facts)"), "got: {s}");
+    }
+
+    #[test]
+    fn get_facts_json_includes_all_fields() {
+        let resp = p::GetFactsResponse {
+            facts: vec![p::Fact {
+                id: 1,
+                obs_id: 42,
+                subject: "x".into(),
+                predicate: "y".into(),
+                object: "z".into(),
+                temporal: Some("now".into()),
+                salience: 0.7,
+                superseded_by: Some(99),
+                extracted_by: "sonnet".into(),
+                extracted_at: "2026-06-18T00:00:00Z".into(),
+            }],
+        };
+        let v = resp.to_json_value();
+        let f = &v["facts"][0];
+        assert_eq!(f["id"], 1);
+        assert_eq!(f["obs_id"], 42);
+        assert_eq!(f["subject"], "x");
+        assert_eq!(f["temporal"], "now");
+        assert_eq!(f["salience"], 0.7);
+        assert_eq!(f["superseded_by"], 99);
+        assert_eq!(f["extracted_by"], "sonnet");
+    }
+
+    #[test]
+    fn get_facts_text_marks_superseded() {
+        let resp = p::GetFactsResponse {
+            facts: vec![p::Fact {
+                id: 5,
+                obs_id: 9,
+                subject: "team".into(),
+                predicate: "prefers".into(),
+                object: "diesel".into(),
+                temporal: None,
+                salience: 0.5,
+                superseded_by: Some(7),
+                extracted_by: "haiku".into(),
+                extracted_at: "2026-06-18T00:00:00Z".into(),
+            }],
+        };
+        let mut out = Vec::new();
+        resp.render_text(&mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("[superseded]"), "got: {s}");
     }
 }

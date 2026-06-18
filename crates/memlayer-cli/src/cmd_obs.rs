@@ -579,19 +579,38 @@ pub fn read_capped<R: Read>(r: R, max_chars: usize) -> Result<String, String> {
     Ok(s)
 }
 
-/// Stub implementation for `obs facts <id>`. The full implementation lands
-/// in rp-t10 (daemon `GetFacts` handler + render). For now we surface a
-/// "not yet implemented" error so the CLI flag wiring (rp-t7) lands without
-/// a non-exhaustive match.
+/// `obs facts <id>` — list atomic facts attached to an observation. The id
+/// must be the numeric DB id (sync_id round-trip would require a second
+/// RPC; deferred). Spec: retrieval-promotion SC-9.
 async fn facts(
-    _client: &mut Client,
-    _project_name: &str,
-    _fmt: Formatter,
-    _a: ObsFactsArgs,
+    client: &mut Client,
+    project_name: &str,
+    fmt: Formatter,
+    a: ObsFactsArgs,
 ) -> Result<(), VerbError> {
-    Err(VerbError::Usage(
-        "obs facts is not yet wired up (lands in rp-t10)".into(),
-    ))
+    let started = Instant::now();
+    let observation_id: i64 = a.id.parse().map_err(|_| {
+        VerbError::Usage(format!(
+            "obs facts: id must be numeric (got {:?}); pass the observation id (\"42\"), not a sync_id",
+            a.id
+        ))
+    })?;
+    let req = p::GetFactsRequest {
+        project_name: project_name.to_string(),
+        observation_id,
+    };
+    let resp = client.get_facts(req).await?.into_inner();
+    write_render(&resp, fmt)?;
+    audit::record(&AuditEntry {
+        ts: audit::now_rfc3339(),
+        command: "obs.facts",
+        project: Some(project_name),
+        result_count: Some(resp.facts.len()),
+        duration_ms: started.elapsed().as_millis(),
+        query: None,
+        top_hits: None,
+    });
+    Ok(())
 }
 
 /// Stub implementation for `obs reextract`. Lands in rp-t13 as a

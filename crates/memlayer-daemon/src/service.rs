@@ -29,6 +29,7 @@ use memlayer_proto::{
 use memlayer_storage::{
     cursor::Cursor as StorageCursor,
     diskmon::DiskMonitor,
+    facts as facts_q,
     models::{Observation, Prompt, Session},
     projects_admin,
     prompts as prompts_q,
@@ -163,6 +164,21 @@ fn obs_to_proto(o: Observation) -> memlayer_proto::Observation {
         deleted_at: o.deleted_at,
         review_after: o.review_after,
         project_name: None,
+    }
+}
+
+fn fact_to_proto(f: facts_q::Fact) -> memlayer_proto::Fact {
+    memlayer_proto::Fact {
+        id: f.id,
+        obs_id: f.obs_id,
+        subject: f.subject,
+        predicate: f.predicate,
+        object: f.object,
+        temporal: f.temporal,
+        salience: f.salience,
+        superseded_by: f.superseded_by,
+        extracted_by: f.extracted_by,
+        extracted_at: f.extracted_at,
     }
 }
 
@@ -556,10 +572,12 @@ impl Memlayer for MemlayerService {
         req: Request<GetFactsRequest>,
     ) -> Result<Response<GetFactsResponse>, Status> {
         let _g = self.enter_rpc();
-        let _r = req.into_inner();
-        Err(Status::unimplemented(
-            "GetFacts is not yet wired to the facts table (rp-t10)",
-        ))
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let rows = map(facts_q::facts_for_obs(&conn, r.observation_id))?;
+        let facts = rows.into_iter().map(fact_to_proto).collect();
+        Ok(Response::new(GetFactsResponse { facts }))
     }
 
     // ---- Sessions ----
