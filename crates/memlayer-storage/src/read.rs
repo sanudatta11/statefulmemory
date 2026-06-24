@@ -467,6 +467,72 @@ pub fn timeline(
     Ok((before, anchor, after))
 }
 
+/// One entry in an observation's supersession history.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub observation: Observation,
+    /// The id of the newer observation that superseded this one (`None` = still active).
+    pub superseded_by_id: Option<i64>,
+}
+
+/// Walk the superseded_by_id chain for `anchor_id` and return the full
+/// lineage ordered oldest → newest.
+///
+/// The walk has two legs:
+/// 1. Walk **backward** from `anchor_id` toward the original root by
+///    following `superseded_by_id` links in the *other* direction: find all
+///    rows that point *at* the anchor (and transitively at their
+///    predecessors) — this finds older revisions the caller may not know.
+/// 2. Walk **forward** from `anchor_id` following `superseded_by_id` until
+///    it is NULL — this finds newer revisions.
+///
+/// Both legs are implemented with a single bidirectional recursive CTE.
+/// Soft-deleted rows are included (they are part of the history).
+pub fn history_chain(conn: &Connection, anchor_id: i64) -> Result<Vec<HistoryEntry>> {
+    // The CTE first seeds with the anchor row, then expands in both
+    // directions:
+    //   - forward: current_id → rows.superseded_by_id
+    //   - backward: rows where superseded_by_id = current_id
+    // We track direction so the final result can be sorted by creation time.
+    let sql = format!(
+        "WITH RECURSIVE chain(id) AS (
+            SELECT ?1
+            UNION
+            -- walk forward: follow superseded_by_id link
+            SELECT o.superseded_by_id
+            FROM   observations o
+            JOIN   chain c ON o.id = c.id
+            WHERE  o.superseded_by_id IS NOT NULL
+            UNION
+            -- walk backward: find predecessor that this row superseded
+            SELECT o.id
+            FROM   observations o
+            JOIN   chain c ON o.superseded_by_id = c.id
+        )
+        SELECT {cols}, superseded_by_id
+        FROM   observations
+        WHERE  id IN (SELECT id FROM chain)
+        ORDER  BY created_at ASC, id ASC",
+        cols = SELECT_COLS,
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("history_chain prepare: {e}")))?;
+    let rows = stmt
+        .query_map(params![anchor_id], |row| {
+            // SELECT_COLS has 18 columns (indices 0-17); superseded_by_id is column 18.
+            let obs = Observation::from_row(row)?;
+            let superseded_by_id: Option<i64> = row.get(18)?;
+            Ok(HistoryEntry { observation: obs, superseded_by_id })
+        })
+        .map_err(|e| Error::internal(format!("history_chain query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("history_chain row: {e}")))?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,5 +850,138 @@ mod tests {
         let hits = search_dense(&c, &q, 5).unwrap();
         assert_eq!(hits.len(), 1, "soft-deleted row must not surface");
         assert_eq!(hits[0].id, ids[0]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // history_chain tests
+    // ---------------------------------------------------------------------------
+
+    /// Build a v1→v2→v3 supersession chain by directly writing the DB links.
+    fn make_chain_3() -> (TempDir, Connection, i64, i64, i64) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("t.db");
+        let mut conn = crate::db::open_write(&path).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')",
+            [],
+        )
+        .unwrap();
+        // Insert three rows with distinct content but same type/scope.
+        for content in ["v1-body", "v2-body", "v3-body"] {
+            let tx = conn.transaction().unwrap();
+            handle_save_observation_for_tests(
+                &tx,
+                SaveObservationInput {
+                    sync_id: None,
+                    session_id: "s1".into(),
+                    r#type: "decision".into(),
+                    title: format!("title-{content}"),
+                    content: content.into(),
+                    tool_name: None,
+                    scope: "project".into(),
+                    created_by: None,
+                    topic_key: None,
+                    dedupe_window_secs: 0,
+                    max_content_chars: 50_000,
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        // Fetch ids in order.
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM observations ORDER BY id ASC")
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let (v1, v2, v3) = (ids[0], ids[1], ids[2]);
+        // Wire supersession: v1 superseded_by v2, v2 superseded_by v3.
+        conn.execute(
+            "UPDATE observations SET superseded_by_id = ?1, deleted_at = datetime('now'), delete_reason = 'superseded' WHERE id = ?2",
+            rusqlite::params![v2, v1],
+        ).unwrap();
+        conn.execute(
+            "UPDATE observations SET superseded_by_id = ?1, deleted_at = datetime('now'), delete_reason = 'superseded' WHERE id = ?2",
+            rusqlite::params![v3, v2],
+        ).unwrap();
+        (dir, conn, v1, v2, v3)
+    }
+
+    #[test]
+    fn history_chain_anchor_on_oldest_returns_all_three() {
+        let (_d, conn, v1, _v2, v3) = make_chain_3();
+        let chain = history_chain(&conn, v1).unwrap();
+        assert_eq!(chain.len(), 3, "chain: {chain:?}");
+        // First entry is the oldest (anchor); last is the newest (active).
+        assert_eq!(chain[0].observation.id, v1);
+        assert_eq!(chain[2].observation.id, v3);
+        // The newest entry has no superseded_by_id.
+        assert!(chain[2].superseded_by_id.is_none());
+    }
+
+    #[test]
+    fn history_chain_anchor_on_newest_returns_all_three() {
+        let (_d, conn, v1, _v2, v3) = make_chain_3();
+        let chain = history_chain(&conn, v3).unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].observation.id, v1);
+        assert_eq!(chain[2].observation.id, v3);
+    }
+
+    #[test]
+    fn history_chain_anchor_on_middle_returns_all_three() {
+        let (_d, conn, v1, v2, v3) = make_chain_3();
+        let chain = history_chain(&conn, v2).unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].observation.id, v1);
+        assert_eq!(chain[2].observation.id, v3);
+    }
+
+    #[test]
+    fn history_chain_single_obs_returns_one_entry() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("t.db");
+        let mut conn = crate::db::open_write(&path).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')",
+            [],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        handle_save_observation_for_tests(
+            &tx,
+            SaveObservationInput {
+                sync_id: None,
+                session_id: "s1".into(),
+                r#type: "note".into(),
+                title: "solo-title".into(),
+                content: "solo".into(),
+                tool_name: None,
+                scope: "project".into(),
+                created_by: None,
+                topic_key: None,
+                dedupe_window_secs: 0,
+                max_content_chars: 50_000,
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM observations LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let chain = history_chain(&conn, id).unwrap();
+        assert_eq!(chain.len(), 1);
+        assert!(chain[0].superseded_by_id.is_none());
+    }
+
+    #[test]
+    fn history_chain_includes_soft_deleted() {
+        let (_d, conn, v1, _v2, _v3) = make_chain_3();
+        // v1 is soft-deleted; it should still appear in the chain.
+        let chain = history_chain(&conn, v1).unwrap();
+        let has_deleted = chain.iter().any(|e| e.observation.deleted_at.is_some());
+        assert!(has_deleted, "chain must include soft-deleted entries");
     }
 }

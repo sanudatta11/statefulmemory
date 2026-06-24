@@ -147,6 +147,8 @@ pub enum ObsVerb {
     Facts(ObsFactsArgs),
     /// Stub: re-extract facts from observations since a date.
     Reextract(ObsReextractArgs),
+    /// Print the full supersession history of an observation (oldest → newest).
+    History(ObsHistoryArgs),
 }
 
 #[derive(Args, Debug)]
@@ -277,6 +279,12 @@ pub struct ObsReextractArgs {
     /// (RFC-3339). Skeleton verb in v1; emits a deferred-feature notice.
     #[arg(long)]
     pub since: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObsHistoryArgs {
+    /// Numeric observation id whose supersession history to display.
+    pub id: String,
 }
 
 #[derive(Args, Debug)]
@@ -779,6 +787,18 @@ mod tests {
             Command::Obs(o) => match o.verb {
                 ObsVerb::Facts(a) => assert_eq!(a.id, "42"),
                 other => panic!("expected Facts, got {other:?}"),
+            },
+            other => panic!("expected Obs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn obs_history_verb_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "obs", "history", "99"]).unwrap();
+        match cli.command {
+            Command::Obs(o) => match o.verb {
+                ObsVerb::History(a) => assert_eq!(a.id, "99"),
+                other => panic!("expected History, got {other:?}"),
             },
             other => panic!("expected Obs, got {other:?}"),
         }

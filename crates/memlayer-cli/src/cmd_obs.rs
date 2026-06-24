@@ -18,9 +18,9 @@ use tonic::Status;
 
 use crate::audit::{self, AuditEntry, HitMeta};
 use crate::cli::{
-    ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsFactsArgs, ObsGetArgs, ObsListArgs,
-    ObsRecentArgs, ObsReextractArgs, ObsSaveArgs, ObsSearchArgs, ObsSuggestTopicKeyArgs,
-    ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
+    ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsFactsArgs, ObsGetArgs, ObsHistoryArgs,
+    ObsListArgs, ObsRecentArgs, ObsReextractArgs, ObsSaveArgs, ObsSearchArgs,
+    ObsSuggestTopicKeyArgs, ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
 };
 use crate::exit;
 use crate::formatter::{Formatter, Render};
@@ -53,6 +53,7 @@ pub async fn dispatch(
         ObsVerb::CapturePassive(a) => capture_passive(client, project_name, fmt, a).await,
         ObsVerb::Facts(a) => facts(client, project_name, fmt, a).await,
         ObsVerb::Reextract(a) => reextract(a).await,
+        ObsVerb::History(a) => history(client, project_name, fmt, a).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -650,6 +651,28 @@ async fn reextract(_a: ObsReextractArgs) -> Result<(), VerbError> {
          Bulk re-extraction across historical observations is tracked in a\n\
          follow-up spec.",
     );
+    Ok(())
+}
+
+/// `obs history <id>` — print the supersession chain for an observation.
+async fn history(
+    client: &mut Client,
+    project_name: &str,
+    fmt: Formatter,
+    a: ObsHistoryArgs,
+) -> Result<(), VerbError> {
+    let observation_id: i64 = a.id.parse().map_err(|_| {
+        VerbError::Usage(format!(
+            "obs history: id must be numeric (got {:?})",
+            a.id
+        ))
+    })?;
+    let req = p::GetObservationHistoryRequest {
+        project_name: project_name.to_string(),
+        observation_id,
+    };
+    let resp = client.get_observation_history(req).await?.into_inner();
+    write_render(&resp, fmt)?;
     Ok(())
 }
 

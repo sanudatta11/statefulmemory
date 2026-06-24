@@ -903,6 +903,54 @@ impl Render for p::GetFactsResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Observation history (Spec 5).
+// ---------------------------------------------------------------------------
+
+impl Render for p::GetObservationHistoryResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if self.entries.is_empty() {
+            writeln!(w, "(no history found)")?;
+            return Ok(());
+        }
+        for (i, entry) in self.entries.iter().enumerate() {
+            let indent = "  ".repeat(i);
+            let obs = match &entry.observation {
+                Some(o) => o,
+                None => continue,
+            };
+            let status = if obs.deleted_at.is_some() {
+                format!("[superseded {}]", obs.deleted_at.as_deref().unwrap_or(""))
+            } else {
+                "[active]".to_string()
+            };
+            writeln!(
+                w,
+                "{}#{} ({}) {:?} {}",
+                indent, obs.id, obs.r#type, obs.title, status,
+            )?;
+            if entry.superseded_by_id.is_some() {
+                writeln!(w, "{}  ↑ superseded by #{}", indent, entry.superseded_by_id.unwrap())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn to_json_value(&self) -> Value {
+        let entries: Vec<Value> = self
+            .entries
+            .iter()
+            .map(|e| {
+                json!({
+                    "observation": e.observation.as_ref().map(obs_to_json),
+                    "superseded_by_id": e.superseded_by_id,
+                })
+            })
+            .collect();
+        json!({ "entries": entries })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,5 +1194,76 @@ mod tests {
         resp.render_text(&mut out).unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("[superseded]"), "got: {s}");
+    }
+
+    fn sample_obs_with_id(id: i64, deleted: bool) -> p::Observation {
+        p::Observation {
+            id,
+            sync_id: format!("sync-{id}"),
+            session_id: "s1".into(),
+            r#type: "decision".into(),
+            title: format!("title-{id}"),
+            content: "body".into(),
+            tool_name: None,
+            scope: "project".into(),
+            created_by: None,
+            topic_key: None,
+            normalized_hash: None,
+            revision_count: 1,
+            duplicate_count: 0,
+            last_seen_at: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            deleted_at: if deleted { Some("2026-06-01T00:00:00Z".into()) } else { None },
+            review_after: None,
+            project_name: None,
+        }
+    }
+
+    #[test]
+    fn history_text_renders_chain_oldest_to_newest() {
+        let resp = p::GetObservationHistoryResponse {
+            entries: vec![
+                p::ObservationHistoryEntry {
+                    observation: Some(sample_obs_with_id(1, true)),
+                    superseded_by_id: Some(2),
+                },
+                p::ObservationHistoryEntry {
+                    observation: Some(sample_obs_with_id(2, false)),
+                    superseded_by_id: None,
+                },
+            ],
+        };
+        let mut out = Vec::new();
+        resp.render_text(&mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("#1"), "got: {s}");
+        assert!(s.contains("superseded"), "got: {s}");
+        assert!(s.contains("#2"), "got: {s}");
+        assert!(s.contains("[active]"), "got: {s}");
+    }
+
+    #[test]
+    fn history_json_includes_entries_and_superseded_by_id() {
+        let resp = p::GetObservationHistoryResponse {
+            entries: vec![
+                p::ObservationHistoryEntry {
+                    observation: Some(sample_obs_with_id(10, false)),
+                    superseded_by_id: Some(11),
+                },
+            ],
+        };
+        let v = resp.to_json_value();
+        assert_eq!(v["entries"][0]["superseded_by_id"], 11);
+        assert_eq!(v["entries"][0]["observation"]["id"], 10);
+    }
+
+    #[test]
+    fn history_text_empty() {
+        let resp = p::GetObservationHistoryResponse { entries: vec![] };
+        let mut out = Vec::new();
+        resp.render_text(&mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("no history"), "got: {s}");
     }
 }

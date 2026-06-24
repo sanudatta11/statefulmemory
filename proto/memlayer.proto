@@ -237,6 +237,28 @@ message GetFactsResponse {
   repeated Fact facts = 1;
 }
 
+// ---
+// Observation history (Spec 5).
+// ---
+
+message GetObservationHistoryRequest {
+  string project_name   = 1;
+  int64  observation_id = 2;
+}
+
+// One entry in the supersession chain.
+message ObservationHistoryEntry {
+  Observation        observation      = 1;
+  // The id of the newer observation that superseded this one.
+  // Absent on the most-recent (active) entry.
+  optional int64     superseded_by_id = 2;
+}
+
+message GetObservationHistoryResponse {
+  // Entries ordered oldest → newest.
+  repeated ObservationHistoryEntry entries = 1;
+}
+
 message TimelineRequest {
   string project_name = 1;
   oneof anchor {
@@ -612,6 +634,9 @@ service Memlayer {
 
   // Atomic facts (retrieval-promotion spec).
   rpc GetFacts               (GetFactsRequest)               returns (GetFactsResponse);
+
+  // Observation history — walk the superseded_by_id chain (Spec 5).
+  rpc GetObservationHistory  (GetObservationHistoryRequest)  returns (GetObservationHistoryResponse);
 
   // Sessions
   rpc StartSession           (StartSessionRequest)           returns (StartSessionResponse);

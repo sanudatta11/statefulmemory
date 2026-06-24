@@ -859,6 +859,28 @@ impl Memlayer for MemlayerService {
         Ok(Response::new(GetFactsResponse { facts }))
     }
 
+    /// `obs history <id>` — return the supersession chain for an observation.
+    async fn get_observation_history(
+        &self,
+        req: Request<GetObservationHistoryRequest>,
+    ) -> Result<Response<GetObservationHistoryResponse>, Status> {
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let entries = map(read_q::history_chain(&conn, r.observation_id))?;
+        let proto_entries = entries
+            .into_iter()
+            .map(|e| memlayer_proto::ObservationHistoryEntry {
+                observation: Some(obs_to_proto(e.observation)),
+                superseded_by_id: e.superseded_by_id,
+            })
+            .collect();
+        Ok(Response::new(GetObservationHistoryResponse {
+            entries: proto_entries,
+        }))
+    }
+
     // ---- Sessions ----
 
     #[instrument(skip(self, req), fields(rpc="StartSession"))]
