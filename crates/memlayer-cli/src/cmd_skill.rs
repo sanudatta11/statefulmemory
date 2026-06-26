@@ -192,6 +192,22 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
         Err(e)    => eprintln!("  warn: ~/.claude/settings.json patch failed: {e}"),
     }
 
+    // ── Claude Code project-level settings.json ─────────────────────────────
+    // If the cwd is a Claude Code project with its own .claude/settings.json
+    // (e.g., one managed by Catalyst, a team-shared hook config, etc.), Claude
+    // Code's hook merge rules let the project-level file *replace* global hook
+    // entries for the same event — silently shadowing memlayer's. Detect that
+    // file and merge memlayer hooks into it (appending to existing arrays so
+    // third-party hooks keep working). Backup written to settings.json.bak.
+    let project_settings = cwd.join(".claude").join("settings.json");
+    if project_settings.exists() {
+        match patch_claude_settings_project_hooks(&project_settings) {
+            Ok(true)  => installed.push(format!("Claude Code (project)   {}", project_settings.display())),
+            Ok(false) => skipped.push("Claude Code (project)   (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: {} patch failed: {e}", project_settings.display()),
+        }
+    }
+
     // ── Claude Code global instructions (~/CLAUDE.md) ───────────────────────
     let claude_md = home.join("CLAUDE.md");
     match install_block(&claude_md, CLAUDE_MD_RULE) {
@@ -257,6 +273,8 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
     println!();
     println!("Restart your agent for the changes to take effect.");
     println!("Verify: ask the agent \"do you have the memlayer memory protocol?\"");
+    println!("        or run `tail -f ~/.memlayer/queries.log` after the new session starts");
+    println!("        — you should see an `obs.context` line within a second.");
 
     // ── Daemon restart ──────────────────────────────────────────────────────
     // After an install (often following a binary upgrade), an old daemon may
@@ -399,6 +417,52 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
     let text = serde_json::to_string_pretty(&root)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     fs::write(path, text + "\n")?;
+    Ok(true)
+}
+
+/// Patch a project-level `<cwd>/.claude/settings.json` to add memlayer hooks
+/// alongside any existing entries (Catalyst, team-shared, etc.). Unlike
+/// `patch_claude_settings`, this never touches `permissions`, `sandbox`, or
+/// `autoMemoryEnabled` — those belong in the user-level file. Writes a
+/// `<path>.bak` before modifying the file so a user can recover if anything
+/// goes wrong. Idempotent via the same prefix-match rule as the global patch.
+fn patch_claude_settings_project_hooks(path: &PathBuf) -> std::io::Result<bool> {
+    let text = fs::read_to_string(path)?;
+    let mut root: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+
+    let original = root.clone();
+
+    ensure_hook(&mut root, "SessionStart", "memlayer obs context --limit 20");
+    ensure_hook(
+        &mut root,
+        "Stop",
+        "memlayer session summarize \"$CLAUDE_SESSION_ID\" --auto",
+    );
+    ensure_pretool_hook(
+        &mut root,
+        "Grep",
+        "memlayer hook pre-tool --tool Grep --pattern \"$CLAUDE_TOOL_INPUT_pattern\"",
+    );
+    ensure_pretool_hook(
+        &mut root,
+        "Read",
+        "memlayer hook pre-tool --tool Read --path \"$CLAUDE_TOOL_INPUT_file_path\"",
+    );
+
+    if root == original {
+        return Ok(false);
+    }
+
+    // Backup original before overwriting — project-level settings.json is
+    // usually committed to git, so a recoverable copy on-disk is cheap
+    // insurance against a botched merge.
+    let bak = path.with_extension("json.bak");
+    fs::write(&bak, &text)?;
+
+    let new_text = serde_json::to_string_pretty(&root)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    fs::write(path, new_text + "\n")?;
     Ok(true)
 }
 
@@ -692,5 +756,106 @@ mod tests {
                 && b["hooks"][0]["command"].as_str() == Some("user-thing")
         });
         assert!(bash_intact, "user's Bash matcher must be preserved");
+    }
+
+    #[test]
+    fn project_patch_merges_alongside_catalyst_hooks() {
+        // Simulate the exact scenario that bit this repo: project-level
+        // settings.json defines Catalyst's SessionStart hook, which shadows
+        // memlayer's global one. The patch must append memlayer entries
+        // without disturbing Catalyst.
+        let tmp = std::env::temp_dir().join(format!(
+            "memlayer-test-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let before = json!({
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "catalyst session-start", "timeout": 5}]}
+                ],
+                "Stop": [
+                    {"hooks": [{"type": "command", "command": "catalyst stop", "timeout": 5}]}
+                ]
+            }
+        });
+        fs::write(&tmp, serde_json::to_string_pretty(&before).unwrap()).unwrap();
+
+        let changed = patch_claude_settings_project_hooks(&tmp).unwrap();
+        assert!(changed, "project file with shadowing hooks must be modified");
+
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&tmp).unwrap()).unwrap();
+        let ss = after["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(ss.len(), 2, "Catalyst entry preserved + memlayer appended");
+        assert_eq!(
+            ss[0]["hooks"][0]["command"].as_str().unwrap(),
+            "catalyst session-start",
+            "Catalyst entry must remain first (= runs first)",
+        );
+        assert!(
+            ss[1]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .starts_with("memlayer obs context"),
+            "memlayer SessionStart appended last",
+        );
+
+        // .bak written
+        let bak = tmp.with_extension("json.bak");
+        assert!(bak.exists(), "backup must be written before overwrite");
+        let bak_text = fs::read_to_string(&bak).unwrap();
+        let bak_val: serde_json::Value = serde_json::from_str(&bak_text).unwrap();
+        assert_eq!(bak_val["hooks"]["SessionStart"].as_array().unwrap().len(), 1,
+                   ".bak must contain pre-merge state");
+
+        // Idempotent on re-run
+        let changed_again = patch_claude_settings_project_hooks(&tmp).unwrap();
+        assert!(!changed_again, "second run must be a no-op");
+
+        let _ = fs::remove_file(&tmp);
+        let _ = fs::remove_file(&bak);
+    }
+
+    #[test]
+    fn project_patch_skips_when_no_project_settings_changes_needed() {
+        // If memlayer hooks are already merged, the function should return
+        // false and write neither the file nor the .bak.
+        let tmp = std::env::temp_dir().join(format!(
+            "memlayer-noop-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let already_merged = json!({
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "memlayer obs context --limit 20", "timeout": 30}]}
+                ],
+                "Stop": [
+                    {"hooks": [{"type": "command", "command": "memlayer session summarize \"$CLAUDE_SESSION_ID\" --auto", "timeout": 30}]}
+                ],
+                "PreToolUse": [
+                    {"matcher": "Grep", "hooks": [{"type": "command", "command": "memlayer hook pre-tool --tool Grep --pattern x"}]},
+                    {"matcher": "Read", "hooks": [{"type": "command", "command": "memlayer hook pre-tool --tool Read --path x"}]}
+                ]
+            }
+        });
+        fs::write(&tmp, serde_json::to_string_pretty(&already_merged).unwrap()).unwrap();
+        let original_mtime = fs::metadata(&tmp).unwrap().modified().unwrap();
+
+        let changed = patch_claude_settings_project_hooks(&tmp).unwrap();
+        assert!(!changed, "already-merged file must be a no-op");
+        assert!(!tmp.with_extension("json.bak").exists(), "no .bak on no-op");
+        assert_eq!(
+            fs::metadata(&tmp).unwrap().modified().unwrap(),
+            original_mtime,
+            "file must not be rewritten on no-op",
+        );
+
+        let _ = fs::remove_file(&tmp);
     }
 }
