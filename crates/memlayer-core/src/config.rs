@@ -227,6 +227,7 @@ pub struct MemlayerConfig {
     pub extract: ExtractConfig,
     pub rerank: RerankConfig,
     pub embed: EmbedConfig,
+    pub conflict: ConflictConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -275,6 +276,30 @@ pub struct EmbedConfig {
 impl Default for EmbedConfig {
     fn default() -> Self {
         Self { workers: 2 }
+    }
+}
+
+/// Config for the LLM-based conflict / supersession classifier (Spec 4).
+/// Off by default — the existing BM25-title-match heuristic is the fallback.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ConflictConfig {
+    /// When false the LLM judge is never called; the existing FTS5 heuristic
+    /// runs unconditionally.
+    pub enabled: bool,
+    /// Which Claude model to use for classification.
+    pub model: ModelKind,
+    /// Hard timeout per LLM call. On timeout the heuristic wins.
+    pub timeout_secs: u64,
+}
+
+impl Default for ConflictConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: ModelKind::Haiku,
+            timeout_secs: 5,
+        }
     }
 }
 
@@ -446,6 +471,21 @@ fn apply_memlayer_env_overrides(cfg: &mut MemlayerConfig) {
     if let Ok(v) = std::env::var("MEMLAYER_EMBED_WORKERS") {
         if let Ok(n) = v.parse() {
             cfg.embed.workers = n;
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_CONFLICT_ENABLED") {
+        cfg.conflict.enabled = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_CONFLICT_MODEL") {
+        if let Some(m) = parse_model(&v) {
+            cfg.conflict.model = m;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_CONFLICT_MODEL: must be haiku or sonnet");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_CONFLICT_TIMEOUT_SECS") {
+        if let Ok(n) = v.parse() {
+            cfg.conflict.timeout_secs = n;
         }
     }
 }

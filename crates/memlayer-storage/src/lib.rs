@@ -9,6 +9,7 @@
 //! `refinery::embed_migrations!`. Every connection sets the pragmas in
 //! `pragmas::apply_pragmas` (PRD §5.2).
 
+pub mod conflict_judge;
 pub mod cursor;
 pub mod db;
 pub mod dedupe;

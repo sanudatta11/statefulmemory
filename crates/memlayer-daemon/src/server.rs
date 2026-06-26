@@ -112,6 +112,31 @@ pub async fn run(cfg: Config) -> Result<()> {
     let claude_client: Arc<dyn memlayer_extract::claude_cli::ClaudeClient> =
         Arc::new(memlayer_extract::claude_cli::ClaudeCliClient::new());
 
+    // Build the conflict classifier and attach it to the registry so every
+    // project write thread receives it. The `cfg.conflict.enabled` flag is
+    // re-checked inside `should_supersede` so per-project overrides take effect
+    // without a daemon restart.
+    let conflict_classifier: std::sync::Arc<dyn memlayer_storage::conflict_judge::ConflictClassifier> =
+        std::sync::Arc::new(
+            crate::conflict_judge::ClaudeConflictClassifier::new(
+                claude_client.clone(),
+                memlayer_cfg.conflict.model,
+            )
+            .with_timeout(memlayer_cfg.conflict.timeout_secs),
+        );
+    // Re-build registry with the classifier now that claude_client is available.
+    let registry_with_judge = Arc::new(
+        memlayer_storage::registry::ProjectRegistry::new(
+            cfg.project_lru_capacity,
+            cfg.write_batch_max,
+            cfg.write_batch_window,
+        )
+        .with_conflict_classifier(conflict_classifier),
+    );
+    // Replace the plain registry with the judge-enabled one.
+    drop(registry);
+    let registry = registry_with_judge;
+
     // Spawn the extract worker pool. Always-on at the pool level — the
     // workers themselves re-resolve cfg.extract.enabled per task (SC-7),
     // so flipping the toggle in `~/.memlayer/config.toml` takes effect

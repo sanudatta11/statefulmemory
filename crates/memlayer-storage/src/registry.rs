@@ -58,6 +58,9 @@ pub struct ProjectRegistry {
     inner: Arc<Mutex<RegistryInner>>,
     write_batch_max: usize,
     write_batch_window: Duration,
+    /// Optional LLM-based conflict classifier injected at daemon startup.
+    /// Passed into each project's write thread when the thread is spawned.
+    conflict_classifier: Option<std::sync::Arc<dyn crate::conflict_judge::ConflictClassifier>>,
 }
 
 struct RegistryInner {
@@ -84,7 +87,18 @@ impl ProjectRegistry {
             })),
             write_batch_max,
             write_batch_window,
+            conflict_classifier: None,
         }
+    }
+
+    /// Attach a conflict classifier to all new project write threads.
+    /// Must be called before any `get_or_open` call for the classifier to take effect.
+    pub fn with_conflict_classifier(
+        mut self,
+        classifier: std::sync::Arc<dyn crate::conflict_judge::ConflictClassifier>,
+    ) -> Self {
+        self.conflict_classifier = Some(classifier);
+        self
     }
 
     /// Resolve a project: normalize its display name, open / create the DB
@@ -147,6 +161,7 @@ impl ProjectRegistry {
             db_path.clone(),
             self.write_batch_max,
             self.write_batch_window,
+            self.conflict_classifier.clone(),
         )?;
         let state = Arc::new(ProjectState {
             normalized: normalized.clone(),

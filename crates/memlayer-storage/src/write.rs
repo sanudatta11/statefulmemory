@@ -177,6 +177,7 @@ pub fn spawn_write_thread(
     db_path: PathBuf,
     batch_max: usize,
     batch_window: Duration,
+    conflict_classifier: Option<std::sync::Arc<dyn crate::conflict_judge::ConflictClassifier>>,
 ) -> Result<WriteHandle> {
     let (tx, rx) = crossbeam_channel::bounded::<WriteRequest>(1024);
     let conn = crate::db::open_write(&db_path)?;
@@ -184,7 +185,7 @@ pub fn spawn_write_thread(
     thread::Builder::new()
         .name(format!("memlayer-write-{project_id}"))
         .spawn(move || {
-            run_write_loop(pid_clone, conn, rx, batch_max, batch_window);
+            run_write_loop(pid_clone, conn, rx, batch_max, batch_window, conflict_classifier);
         })
         .map_err(|e| Error::internal(format!("spawn write thread: {e}")))?;
     debug!(%project_id, "spawned write thread");
@@ -201,6 +202,7 @@ fn run_write_loop(
     rx: Receiver<WriteRequest>,
     batch_max: usize,
     batch_window: Duration,
+    conflict_classifier: Option<std::sync::Arc<dyn crate::conflict_judge::ConflictClassifier>>,
 ) {
     loop {
         // Block until first message.
@@ -231,13 +233,17 @@ fn run_write_loop(
         // so the channel stays alive (EH-2 / EC-18: write-thread crash recovery
         // is handled at the registry layer; here we just ensure we don't kill
         // the thread on a single bad message).
-        if let Err(e) = process_batch(&mut conn, &mut batch) {
+        if let Err(e) = process_batch(&mut conn, &mut batch, conflict_classifier.as_deref()) {
             error!(%project_id, error=%e, "batch failed");
         }
     }
 }
 
-fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result<()> {
+fn process_batch(
+    conn: &mut Connection,
+    batch: &mut Vec<WriteRequest>,
+    conflict_classifier: Option<&dyn crate::conflict_judge::ConflictClassifier>,
+) -> Result<()> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| Error::internal(format!("BEGIN IMMEDIATE: {e}")))?;
@@ -247,7 +253,7 @@ fn process_batch(conn: &mut Connection, batch: &mut Vec<WriteRequest>) -> Result
     for req in batch.drain(..) {
         match req {
             WriteRequest::SaveObservation { input, reply } => {
-                let result = handle_save_observation(&tx, input);
+                let result = handle_save_observation(&tx, input, conflict_classifier);
                 replies.push(Box::new(move || {
                     let _ = reply.send(result);
                 }));
@@ -368,12 +374,13 @@ pub(crate) fn handle_save_observation_for_tests(
     tx: &rusqlite::Transaction<'_>,
     input: SaveObservationInput,
 ) -> Result<Observation> {
-    handle_save_observation(tx, input)
+    handle_save_observation(tx, input, None)
 }
 
 fn handle_save_observation(
     tx: &rusqlite::Transaction<'_>,
     input: SaveObservationInput,
+    conflict_classifier: Option<&dyn crate::conflict_judge::ConflictClassifier>,
 ) -> Result<Observation> {
     // Validate.
     if input.content.trim().is_empty() {
@@ -495,10 +502,17 @@ fn handle_save_observation(
     // 5. Conflict detection: find existing active observations of the same
     //    type+scope that likely describe the same fact with a conflicting value.
     //    Uses FTS5 BM25 on the title — top-1 hit within same type+scope.
-    //    If found, soft-delete it (delete_reason = 'superseded') and link via
-    //    superseded_by_id so callers know which observation was replaced.
+    //    If found, optionally consult the LLM conflict judge before deciding
+    //    whether to supersede. On judge error/timeout fall back to the BM25
+    //    heuristic (unconditional supersession).
     let superseded_id = find_conflict_candidate(tx, id, &input)?;
-    if let Some(old_id) = superseded_id {
+    let do_supersede = if let Some(old_id) = superseded_id {
+        should_supersede(old_id, tx, &input, conflict_classifier)
+    } else {
+        false
+    };
+    if do_supersede {
+        let old_id = superseded_id.unwrap();
         tx.execute(
             "UPDATE observations
                 SET deleted_at = ?2,
@@ -517,8 +531,8 @@ fn handle_save_observation(
 
     let mut obs = fetch_observation_by_id(tx, id)?
         .ok_or_else(|| Error::internal("post-insert fetch: row vanished"))?;
-    if let Some(old_id) = superseded_id {
-        obs.superseded_ids = vec![old_id];
+    if do_supersede {
+        obs.superseded_ids = vec![superseded_id.unwrap()];
     }
     Ok(obs)
 }
@@ -918,6 +932,72 @@ fn find_conflict_candidate(
     Ok(result)
 }
 
+/// Decide whether to supersede `old_id` given the new `input`.
+///
+/// 1. If a `conflict_classifier` is present and `cfg.conflict.enabled` is
+///    true for this project, ask the LLM. `Supersedes` or `ConflictsWith`
+///    → supersede; `Compatible` or `NotConflict` → keep both.
+/// 2. On any error (timeout, network, parse) fall back to heuristic
+///    (supersede unconditionally, matching pre-Spec-4 behavior).
+/// 3. If no classifier is wired, always supersede (current default).
+fn should_supersede(
+    old_id: i64,
+    tx: &rusqlite::Transaction<'_>,
+    input: &SaveObservationInput,
+    classifier: Option<&dyn crate::conflict_judge::ConflictClassifier>,
+) -> bool {
+    use crate::conflict_judge::ConflictVerdict;
+
+    let classifier = match classifier {
+        Some(c) => c,
+        None => return true, // no judge: heuristic supersession
+    };
+
+    // Re-resolve project config so per-project overrides apply. We pass the
+    // project name from the normalized DB path; storage doesn't know it, but
+    // the write thread was spawned with it as `project_id`. Rather than
+    // threading the name here we just call load_resolved(None) — that gives
+    // the global config, which is sufficient for the default-off guard.
+    let cfg = memlayer_core::config::load_resolved(None);
+    if !cfg.conflict.enabled {
+        return true; // feature disabled: heuristic
+    }
+
+    // Fetch the old observation's title + content for the judge prompt.
+    let old: Option<(String, String)> = tx
+        .query_row(
+            "SELECT title, content FROM observations WHERE id = ?1",
+            params![old_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap_or(None);
+    let (old_title, old_content) = match old {
+        Some(p) => p,
+        None => return true, // old row missing (race): supersede to be safe
+    };
+
+    match classifier.classify(&old_title, &old_content, &input.title, &input.content) {
+        Ok(ConflictVerdict::Supersedes) | Ok(ConflictVerdict::ConflictsWith) => true,
+        Ok(ConflictVerdict::Compatible) | Ok(ConflictVerdict::NotConflict) => {
+            tracing::debug!(
+                old_id,
+                new_title = %input.title,
+                "conflict judge: NOT superseding (Compatible/NotConflict)"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                old_id,
+                error = %e,
+                "conflict judge error; falling back to heuristic supersession"
+            );
+            true
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -960,7 +1040,7 @@ mod tests {
     fn sc4_save_get_roundtrip() {
         let (_d, mut conn) = open_test_db();
         let tx = conn.transaction().unwrap();
-        let obs = handle_save_observation(&tx, save_input("hello")).unwrap();
+        let obs = handle_save_observation(&tx, save_input("hello"), None).unwrap();
         tx.commit().unwrap();
         assert_eq!(obs.revision_count, 1);
         assert_eq!(obs.duplicate_count, 1);
@@ -980,8 +1060,8 @@ mod tests {
         input2.topic_key = Some("t/foo".into());
 
         let tx = conn.transaction().unwrap();
-        let _o1 = handle_save_observation(&tx, input1).unwrap();
-        let o2 = handle_save_observation(&tx, input2).unwrap();
+        let _o1 = handle_save_observation(&tx, input1, None).unwrap();
+        let o2 = handle_save_observation(&tx, input2, None).unwrap();
         tx.commit().unwrap();
         assert_eq!(o2.revision_count, 2);
         assert_eq!(o2.content, "second");
@@ -1003,8 +1083,8 @@ mod tests {
         let mut b = save_input("same   CONTENT");
         b.title = "title-b".into();
         let tx = conn.transaction().unwrap();
-        let _o1 = handle_save_observation(&tx, a).unwrap();
-        let o2 = handle_save_observation(&tx, b).unwrap();
+        let _o1 = handle_save_observation(&tx, a, None).unwrap();
+        let o2 = handle_save_observation(&tx, b, None).unwrap();
         tx.commit().unwrap();
         assert_eq!(o2.duplicate_count, 2);
     }
@@ -1017,8 +1097,8 @@ mod tests {
         let mut b = save_input("payload-different");
         b.sync_id = Some("fixed-sync-id".into());
         let tx = conn.transaction().unwrap();
-        let _o1 = handle_save_observation(&tx, a).unwrap();
-        let o2 = handle_save_observation(&tx, b).unwrap();
+        let _o1 = handle_save_observation(&tx, a, None).unwrap();
+        let o2 = handle_save_observation(&tx, b, None).unwrap();
         tx.commit().unwrap();
         // Second save is a no-op — original row returned unchanged.
         assert_eq!(o2.content, "payload");
@@ -1030,7 +1110,7 @@ mod tests {
         let mut input = save_input("policy text");
         input.r#type = "decision".into();
         let tx = conn.transaction().unwrap();
-        let obs = handle_save_observation(&tx, input).unwrap();
+        let obs = handle_save_observation(&tx, input, None).unwrap();
         tx.commit().unwrap();
         assert!(obs.review_after.is_some());
     }
@@ -1041,7 +1121,7 @@ mod tests {
         let mut input = save_input("   ");
         input.content = "   ".into();
         let tx = conn.transaction().unwrap();
-        let r = handle_save_observation(&tx, input);
+        let r = handle_save_observation(&tx, input, None);
         assert!(matches!(r, Err(Error::InvalidArgument(_))));
     }
 
@@ -1051,7 +1131,7 @@ mod tests {
         let mut input = save_input(&"a".repeat(60_000));
         input.max_content_chars = 50_000;
         let tx = conn.transaction().unwrap();
-        let r = handle_save_observation(&tx, input);
+        let r = handle_save_observation(&tx, input, None);
         assert!(matches!(r, Err(Error::InvalidArgument(_))));
     }
 
@@ -1061,7 +1141,7 @@ mod tests {
         let mut input = save_input("ok");
         input.scope = "bogus".into();
         let tx = conn.transaction().unwrap();
-        let r = handle_save_observation(&tx, input);
+        let r = handle_save_observation(&tx, input, None);
         assert!(matches!(r, Err(Error::InvalidArgument(_))));
     }
 
@@ -1073,8 +1153,8 @@ mod tests {
         let mut b = save_input("x");
         b.dedupe_window_secs = 0;
         let tx = conn.transaction().unwrap();
-        let _o1 = handle_save_observation(&tx, a).unwrap();
-        let _o2 = handle_save_observation(&tx, b).unwrap();
+        let _o1 = handle_save_observation(&tx, a, None).unwrap();
+        let _o2 = handle_save_observation(&tx, b, None).unwrap();
         let n: i64 = tx
             .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
             .unwrap();
@@ -1088,13 +1168,13 @@ mod tests {
         let mut a = save_input("first");
         a.topic_key = Some("t/x".into());
         let tx = conn.transaction().unwrap();
-        let o1 = handle_save_observation(&tx, a).unwrap();
+        let o1 = handle_save_observation(&tx, a, None).unwrap();
         // Soft-delete it.
         handle_soft_delete_obs(&tx, &ObservationKey::Id(o1.id)).unwrap();
         // Now re-save with the same topic_key — must insert a new row, not resurrect.
         let mut b = save_input("second");
         b.topic_key = Some("t/x".into());
-        let o2 = handle_save_observation(&tx, b).unwrap();
+        let o2 = handle_save_observation(&tx, b, None).unwrap();
         assert_ne!(o1.id, o2.id);
         let n: i64 = tx
             .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
@@ -1111,7 +1191,7 @@ mod tests {
     fn update_bumps_revision_and_locks_sync_id() {
         let (_d, mut conn) = open_test_db();
         let tx = conn.transaction().unwrap();
-        let original = handle_save_observation(&tx, save_input("v1 content")).unwrap();
+        let original = handle_save_observation(&tx, save_input("v1 content"), None).unwrap();
         let original_sync_id = original.sync_id.clone();
         let original_created_at = original.created_at.clone();
         assert_eq!(original.revision_count, 1);
@@ -1144,7 +1224,7 @@ mod tests {
     fn update_rejects_soft_deleted_observation() {
         let (_d, mut conn) = open_test_db();
         let tx = conn.transaction().unwrap();
-        let obs = handle_save_observation(&tx, save_input("v1")).unwrap();
+        let obs = handle_save_observation(&tx, save_input("v1"), None).unwrap();
         handle_soft_delete_obs(&tx, &ObservationKey::Id(obs.id)).unwrap();
         let patch = ObservationPatch {
             title: Some("new".into()),
@@ -1159,7 +1239,7 @@ mod tests {
     fn hard_delete_removes_row_and_fts() {
         let (_d, mut conn) = open_test_db();
         let tx = conn.transaction().unwrap();
-        let obs = handle_save_observation(&tx, save_input("uniqueneedlexyz")).unwrap();
+        let obs = handle_save_observation(&tx, save_input("uniqueneedlexyz"), None).unwrap();
         tx.commit().unwrap();
 
         // FTS5 row should be present pre-delete.
@@ -1228,7 +1308,7 @@ mod tests {
             },
         ];
 
-        process_batch(&mut conn, &mut batch).expect("process_batch");
+        process_batch(&mut conn, &mut batch, None).expect("process_batch");
 
         // The SaveObservation reply must arrive — its write was committed.
         let saved = save_rx
