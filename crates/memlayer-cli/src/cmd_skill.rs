@@ -63,8 +63,17 @@ If `memlayer` is not on PATH, use the full path: `~/.local/bin/memlayer`.
 
 At the start of every session memlayer's SessionStart hook automatically
 injects the briefing (last session summary + decisions due for review +
-recent observations). You do NOT need to run `obs context` first. Re-run
+recent observations) — **if the hook is allowed to run**. Look for a
+"memlayer briefing" / "Last session summary" / "Pending review" section
+in your initial context.
+
+If you see the briefing: do NOT run `obs context` first. Re-run
 `memlayer obs context --query "<topic>"` mid-session when switching tasks.
+
+If you do NOT see the briefing: the hook didn't fire (enterprise policy
+may block it via `allowManagedHooksOnly: true`, or `memlayer install`
+hasn't been run yet). Run `memlayer obs context --limit 20` as your
+first action of the session, then proceed.
 
 Before any Grep or Read tool call, memlayer's PreToolUse hooks run
 `memlayer hook pre-tool` automatically. If matching prior observations
@@ -107,18 +116,22 @@ const CLAUDE_MD_RULE: &str = r#"## memlayer memory protocol
 
 **memlayer is the ONLY memory store. Never use built-in or auto-memory.**
 
-The SessionStart hook auto-injects a briefing (last session summary +
-pending review items + recent observations). The Stop hook auto-rolls up
-the session into a summary observation. PreToolUse[Grep] / PreToolUse[Read]
-hooks fire before grep/read and surface matching prior observations
-automatically. Don't call `obs context` at session start manually and
-don't run `obs search` before greppping — the hooks do it for you.
+When hooks are allowed to run: SessionStart auto-injects a briefing,
+Stop auto-rolls up the session, and PreToolUse[Grep]/PreToolUse[Read]
+surface prior observations before grep/read. **On your first turn,
+check whether the briefing is in your context** ("Last session summary"
+/ "Pending review" sections). If yes — don't call `obs context` again
+on the first turn. If no — the hook is blocked (enterprise policy can
+suppress user hooks via `allowManagedHooksOnly: true`); run
+`memlayer obs context --limit 20` as your first action.
 
 | Trigger | Command |
 |---|---|
+| First turn, no briefing visible | `memlayer obs context --limit 20` |
 | Mid-session task switch | `memlayer obs context --query "<topic>"` |
 | Before new pattern/dep/convention | `memlayer obs search "<keyword>"` |
 | After decision, fix, or user correction | `memlayer obs save --type <decision\|fix\|feedback\|pattern\|note> --title "..." --content "..." --session "$SESSION_ID"` |
+| End of session, if Stop hook is blocked | `memlayer session summarize "$CLAUDE_SESSION_ID" --auto` |
 | `/memlayer <text>` or "remember X" | Run `obs save` immediately — no confirmation, no built-in memory |
 
 MUST NOT cite memories not in `obs context` / `obs recent` output.

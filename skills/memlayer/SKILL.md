@@ -13,15 +13,26 @@ context`. If `memlayer` is unavailable, tell the user — do not fall back.
 
 ## Hard rules (non-negotiable)
 
-- **Briefing auto-injects at session start via `SessionStart` hook.** Do NOT
-  call `obs context` first turn. Re-run `obs context --query "<topic>"`
-  mid-session when switching tasks.
+- **Check for an auto-injected briefing on your first turn.** Look for a
+  "memlayer briefing" / "Last session summary" / `# Pending review` section
+  in your initial context. If present, the `SessionStart` hook ran — proceed
+  normally and re-run `obs context --query "<topic>"` only when switching
+  tasks mid-session.
+- **If NO briefing was injected, the hook didn't fire** (managed enterprise
+  policy may block user hooks via `allowManagedHooksOnly: true`, or the user
+  may not have installed them). Run `memlayer obs context --limit 20` as
+  your **first action** before doing anything else. Same expectation for the
+  rest of this skill: prefer hooks, but the CLI is always the source of
+  truth — if a hook can't run, you run the command.
 - **MUST run `memlayer obs search "<keyword>"` before introducing a new
   pattern, dependency, or convention.** If a prior decision exists, follow
   it unless the user asks to revisit.
 - **MUST save an observation after:** non-obvious decisions, user
   corrections / "stop doing X" instructions, bug fixes whose root cause
   might recur, conventions discovered in code that aren't in CLAUDE.md.
+  Don't wait for a `Stop` hook to roll up — save observations as they
+  happen. The hook (if it fires) only summarizes; it does not replace
+  in-flight saves.
 - **MUST cite only observations that appeared in `obs context` / `obs
   recent` output.** Never fabricate a memory.
 - **MUST NOT save trivial activity** (read file X, ran tests, edited a

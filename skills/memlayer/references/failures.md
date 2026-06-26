@@ -3,6 +3,36 @@
 What to do when something goes wrong with the CLI. **Never** fall back to
 the agent's built-in memory.
 
+## Hooks blocked / not running
+
+Symptom: on your first turn there is no memlayer briefing in your context
+— no `# Last session summary`, no `# Pending review`, no recent
+observations list. Causes:
+
+- **Managed enterprise policy** (most common in Capital One / corporate
+  installs): `/Library/Application Support/ClaudeCode/managed-settings.json`
+  sets `allowManagedHooksOnly: true` and excludes `SessionStart` / `Stop`.
+  User-level and project-level hooks for those events are silently ignored.
+  This is not fixable without an IT admin change.
+- **Stale session.** Settings were read at session launch; `memlayer
+  install` was run later. Restart Claude Code.
+- **Project shadowing.** A `<cwd>/.claude/settings.json` defines hooks for
+  the same events. `memlayer install` v0.1.0+ merges into it automatically.
+
+**Workaround (always available):** run the underlying CLI commands
+yourself.
+
+```bash
+# First action of the session — replaces what SessionStart would have done
+memlayer obs context --limit 20
+
+# End of session — replaces what Stop would have done
+memlayer session summarize "$CLAUDE_SESSION_ID" --auto
+```
+
+For PreToolUse Grep/Read nudges, run `obs search "<keyword>"` manually
+before introducing new patterns / dependencies.
+
 ## CLI not installed (`command not found: memlayer`)
 
 - Warn the user **once** per session: "memlayer CLI not on PATH — memory

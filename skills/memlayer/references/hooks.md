@@ -1,10 +1,37 @@
 # memlayer — lifecycle hooks
 
 `memlayer install` patches `~/.claude/settings.json` with three Claude
-Code lifecycle hooks. They run automatically — you do not call the
-underlying commands yourself.
+Code lifecycle hooks. They run automatically when the runtime allows it.
 
-## SessionStart — auto-injected briefing
+## When hooks DON'T run
+
+Hooks can be silently disabled, most commonly by:
+
+- **Enterprise policy.** `/Library/Application Support/ClaudeCode/managed-settings.json`
+  (Capital One, other managed installs) often sets `allowManagedHooksOnly: true`
+  and only allows `PreToolUse` / `PostToolUse` / `UserPromptSubmit`. In that
+  configuration, `SessionStart` and `Stop` are blocked entirely — your hooks
+  never fire, and there's no error message.
+- **Stale session.** Settings are read once at session launch. If
+  `memlayer install` ran after the session started, hooks won't activate
+  until the next restart.
+- **Project-level shadowing.** `<cwd>/.claude/settings.json` replaces
+  global hook entries for the same event. `memlayer install` >= v0.1.0
+  merges into the project file when it exists; older versions don't.
+
+**The signal that hooks didn't run:** on your first turn you don't see a
+memlayer briefing — no `# Last session summary`, no `# Pending review`, no
+recent observations list. If you don't see those, run `obs context`
+yourself as your first action:
+
+```bash
+memlayer obs context --limit 20
+```
+
+The same logic applies to the `Stop` hook: if it can't run, you save
+observations as they happen instead of relying on an end-of-session rollup.
+
+## SessionStart — auto-injected briefing (when allowed)
 
 ```bash
 memlayer obs context --limit 20
@@ -18,10 +45,10 @@ reads any code. The output includes:
 - `# Pending review` — decisions whose `review_after` has elapsed
 - Recent observations grouped by topic
 
-**Do NOT call `obs context` manually at session start.** It's already
-been injected.
+**If the briefing is present, do NOT call `obs context` manually for the
+first turn.** Re-run with `--query "<topic>"` later when switching tasks.
 
-## Stop — session rollup
+## Stop — session rollup (when allowed)
 
 ```bash
 memlayer session summarize "$CLAUDE_SESSION_ID" --auto
@@ -32,6 +59,11 @@ compaction). Groups the session's observations by `topic_key`, picks the
 latest per group, and saves an Engram-shaped markdown rollup with
 `topic_key="session-summary/<id>"`. The next session's briefing surfaces
 it as `# Last session summary`.
+
+**If the Stop hook is blocked** (enterprise policy, etc.), save each
+significant decision/fix/pattern with `obs save` as it happens. Without
+the hook there is no rollup — but individual observations still show up
+in `obs recent` and `obs search` on the next session.
 
 **Override with agent-written prose** if you have a richer summary:
 ```bash
@@ -57,15 +89,16 @@ memlayer hook pre-tool --tool Read --path "<path>"
   obs search "write"\``). Bodies are NOT injected.
 
 The hook always exits 0, has a 500 ms hard cap, and is silent on misses
-or daemon failures. **You do not need to call `obs search` separately
-for Grep/Read keywords** — the hook does it for you.
+or daemon failures. **When the hook runs**, you do not need to call
+`obs search` separately for Grep/Read keywords. **When it doesn't run**
+(uncommon — PreToolUse is allowed by most managed policies), run
+`obs search "<keyword>"` yourself before introducing a new pattern.
 
 ## Mid-session focused recall
 
-Re-run `obs context` with a query when you switch tasks:
+Re-run `obs context` with a query when you switch tasks, regardless of
+whether SessionStart hook ran:
 
 ```bash
 memlayer obs context --query "<topic>" --limit 10
 ```
-
-This is the one case where you call `obs context` manually.
