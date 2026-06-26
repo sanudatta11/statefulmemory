@@ -259,6 +259,37 @@ message GetObservationHistoryResponse {
   repeated ObservationHistoryEntry entries = 1;
 }
 
+// ---
+// Bulk reextract (Spec 1c) + bulk reindex (Spec 1d).
+// ---
+
+// Queue fact re-extraction for observations that have no facts yet (or all,
+// when only_missing = false). Requires extract.enabled = true in config.
+message ReextractObservationsRequest {
+  string  project_name = 1;
+  // RFC-3339 lower bound on created_at. Empty = all time.
+  optional string since = 2;
+  // When true (default), skip observations that already have at least one fact.
+  bool only_missing = 3;
+}
+message ReextractObservationsResponse {
+  int64 queued  = 1;
+  int64 skipped = 2;
+}
+
+// Queue re-embedding for observations. Use force=true to wipe existing
+// embeddings and re-embed from scratch (e.g. after a model change).
+message ReindexObservationsRequest {
+  string project_name = 1;
+  // Re-embed even if observation_embedding_meta row already exists.
+  bool force = 2;
+}
+message ReindexObservationsResponse {
+  int64 queued  = 1;
+  int64 skipped = 2;
+  int64 cleared = 3;
+}
+
 message TimelineRequest {
   string project_name = 1;
   oneof anchor {
@@ -637,6 +668,10 @@ service Memlayer {
 
   // Observation history — walk the superseded_by_id chain (Spec 5).
   rpc GetObservationHistory  (GetObservationHistoryRequest)  returns (GetObservationHistoryResponse);
+
+  // Bulk background operations (Specs 1c, 1d).
+  rpc ReextractObservations  (ReextractObservationsRequest)  returns (ReextractObservationsResponse);
+  rpc ReindexObservations    (ReindexObservationsRequest)    returns (ReindexObservationsResponse);
 
   // Sessions
   rpc StartSession           (StartSessionRequest)           returns (StartSessionResponse);

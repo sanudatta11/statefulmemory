@@ -881,6 +881,165 @@ impl Memlayer for MemlayerService {
         }))
     }
 
+    /// Bulk fact re-extraction (Spec 1c). Enqueues observations with no
+    /// facts (or all, when only_missing=false) into the extract worker pool.
+    async fn reextract_observations(
+        &self,
+        req: Request<ReextractObservationsRequest>,
+    ) -> Result<Response<ReextractObservationsResponse>, Status> {
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+
+        // Guard: extract must be enabled for this project.
+        let cfg = memlayer_core::config::load_resolved(Some(&r.project_name));
+        if !cfg.extract.enabled {
+            return Err(Status::failed_precondition(
+                "extract is disabled for this project; run: memlayer config set extract.enabled true",
+            ));
+        }
+
+        let extract_pool = match &self.state.extract_pool {
+            Some(p) => p,
+            None => return Err(Status::failed_precondition("extract worker pool is not running")),
+        };
+
+        let conn = map(project.open_read_conn())?;
+        let only_missing = r.only_missing;
+        let since_clause = if r.since.as_deref().filter(|s| !s.is_empty()).is_some() {
+            "AND created_at >= ?1"
+        } else {
+            ""
+        };
+        let facts_clause = if only_missing {
+            "AND NOT EXISTS (SELECT 1 FROM facts WHERE obs_id = observations.id)"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT id, title, content, session_id FROM observations \
+             WHERE deleted_at IS NULL {since_clause} {facts_clause}"
+        );
+        let since_val = r.since.as_deref().unwrap_or("").to_string();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| Status::internal(format!("reextract prepare: {e}")))?;
+
+        // Use a consistent closure so both branches have the same type.
+        let rows: Vec<(i64, String, String, Option<String>)> = {
+            let res: Vec<rusqlite::Result<(i64, String, String, Option<String>)>> =
+                if since_val.is_empty() {
+                    stmt.query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })
+                    .map_err(|e| Status::internal(format!("reextract query: {e}")))?
+                    .collect()
+                } else {
+                    stmt.query_map(rusqlite::params![since_val], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })
+                    .map_err(|e| Status::internal(format!("reextract query: {e}")))?
+                    .collect()
+                };
+            res.into_iter()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| Status::internal(format!("reextract row: {e}")))?
+        };
+
+        let mut queued: i64 = 0;
+        let mut skipped: i64 = 0;
+        for (obs_id, title, content, session_id) in rows {
+            use crate::extract_worker::{ExtractTask, QueueResult};
+            match extract_pool.try_queue(ExtractTask {
+                project_name: r.project_name.clone(),
+                obs_id,
+                title,
+                content,
+                session_id,
+            }) {
+                QueueResult::Queued => queued += 1,
+                _ => skipped += 1,
+            }
+        }
+        Ok(Response::new(ReextractObservationsResponse { queued, skipped }))
+    }
+
+    /// Bulk re-embedding (Spec 1d). Enqueues observations without embeddings
+    /// (or all, when force=true) into the embed worker pool.
+    async fn reindex_observations(
+        &self,
+        req: Request<ReindexObservationsRequest>,
+    ) -> Result<Response<ReindexObservationsResponse>, Status> {
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+
+        let embed_pool = match &self.state.embed_pool {
+            Some(p) => p,
+            None => return Err(Status::failed_precondition(
+                "embed worker pool is not running (BGE-small failed to load at startup)",
+            )),
+        };
+
+        let mut cleared: i64 = 0;
+        if r.force {
+            // Wipe existing embeddings for this project first.
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            map(project.write.send(
+                memlayer_storage::write::WriteRequest::Custom {
+                    f: Box::new(|conn| {
+                        conn.execute("DELETE FROM observations_vec", [])
+                            .map_err(|e| memlayer_core::error::Error::internal(format!("delete vec: {e}")))?;
+                        conn.execute("DELETE FROM observation_embedding_meta", [])
+                            .map_err(|e| memlayer_core::error::Error::internal(format!("delete meta: {e}")))?;
+                        Ok(())
+                    }),
+                    reply: reply_tx,
+                },
+            ))?;
+            let del_result = reply_rx
+                .await
+                .map_err(|_| Status::internal("write thread crashed during reindex clear"))?;
+            map(del_result)?;
+            cleared = -1; // actual row count isn't returned; -1 signals "all cleared"
+        }
+
+        let conn = map(project.open_read_conn())?;
+        let missing_clause = if r.force {
+            ""
+        } else {
+            "AND id NOT IN (SELECT observation_id FROM observation_embedding_meta)"
+        };
+        let sql = format!(
+            "SELECT id, title, content FROM observations \
+             WHERE deleted_at IS NULL {missing_clause}"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| Status::internal(format!("reindex prepare: {e}")))?;
+        let rows: Vec<(i64, String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| Status::internal(format!("reindex query: {e}")))?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| Status::internal(format!("reindex row: {e}")))?;
+
+        let mut queued: i64 = 0;
+        let mut skipped: i64 = 0;
+        for (obs_id, title, content) in rows {
+            use crate::embed_worker::{EmbedTask, QueueResult};
+            match embed_pool.try_queue(EmbedTask {
+                project_name: r.project_name.clone(),
+                obs_id,
+                title,
+                content,
+            }) {
+                QueueResult::Queued => queued += 1,
+                _ => skipped += 1,
+            }
+        }
+        Ok(Response::new(ReindexObservationsResponse { queued, skipped, cleared }))
+    }
+
     // ---- Sessions ----
 
     #[instrument(skip(self, req), fields(rpc="StartSession"))]

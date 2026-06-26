@@ -52,7 +52,7 @@ pub async fn dispatch(
         ObsVerb::SuggestTopicKey(a) => suggest_topic_key(client, project_name, fmt, a).await,
         ObsVerb::CapturePassive(a) => capture_passive(client, project_name, fmt, a).await,
         ObsVerb::Facts(a) => facts(client, project_name, fmt, a).await,
-        ObsVerb::Reextract(a) => reextract(a).await,
+        ObsVerb::Reextract(a) => reextract(client, project_name, a).await,
         ObsVerb::History(a) => history(client, project_name, fmt, a).await,
     };
     match result {
@@ -637,19 +637,22 @@ async fn facts(
 }
 
 /// Stub implementation for `obs reextract`. Lands in rp-t13 as a
-/// deferred-feature stub; full implementation is a future spec. Exits 0
-/// so `set -e` scripts that probe the verb don't fail.
-async fn reextract(_a: ObsReextractArgs) -> Result<(), VerbError> {
+/// `obs reextract [--since <rfc3339>]` — queue historical observations for
+/// fact re-extraction. Requires extract.enabled = true in the project config.
+async fn reextract(
+    client: &mut Client,
+    project_name: &str,
+    a: ObsReextractArgs,
+) -> Result<(), VerbError> {
+    let req = p::ReextractObservationsRequest {
+        project_name: project_name.to_string(),
+        since: a.since.clone(),
+        only_missing: true,
+    };
+    let resp = client.reextract_observations(req).await?.into_inner();
     eprintln!(
-        "memlayer obs reextract is not yet implemented in v1.\n\
-         \n\
-         To start extracting facts on new saves, enable the extract worker:\n\
-         \n\
-           memlayer config set extract.enabled true\n\
-           memlayer config set extract.model haiku   # or sonnet\n\
-         \n\
-         Bulk re-extraction across historical observations is tracked in a\n\
-         follow-up spec.",
+        "Queued {} observations for re-extraction, skipped {}.",
+        resp.queued, resp.skipped,
     );
     Ok(())
 }

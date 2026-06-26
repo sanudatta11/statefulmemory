@@ -20,6 +20,7 @@ use memlayer_cli::{autospawn, exit};
 use memlayer_cli::formatter::Formatter;
 use memlayer_cli::project_detect::{self, ProjectDetection};
 use memlayer_client::{channel as client_channel, ClientError, MemlayerClient};
+use memlayer_proto as p;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
@@ -122,22 +123,29 @@ async fn main() -> ExitCode {
             },
         },
         Command::Config(args) => memlayer_cli::cmd_config::dispatch(args.verb).await,
-        Command::Reindex(_args) => {
-            eprintln!(
-                "memlayer reindex is not yet implemented in v1.\n\
-                 \n\
-                 To clear vector embeddings manually:\n\
-                 \n\
-                 1. Stop the daemon:    memlayer daemon stop\n\
-                 2. Drop the vec table: sqlite3 ~/.memlayer/projects/<project>.db \\\n\
-                    \"DELETE FROM observations_vec; DELETE FROM observation_embedding_meta;\"\n\
-                 3. Restart:            memlayer daemon start\n\
-                 \n\
-                 The embed worker will rebuild vectors lazily as new observations are saved.\n\
-                 Bulk re-embedding of historical observations is tracked in a follow-up spec."
-            );
-            ExitCode::SUCCESS
-        }
+        Command::Reindex(args) => match open_client(cli.output, cli.project).await {
+            Ok((mut client, detection, _fmt)) => {
+                let req = p::ReindexObservationsRequest {
+                    project_name: detection.normalized.clone(),
+                    force: args.force,
+                };
+                match client.reindex_observations(req).await {
+                    Ok(resp) => {
+                        let r = resp.into_inner();
+                        eprintln!(
+                            "Queued {} observations for re-embedding, skipped {}, cleared {}.",
+                            r.queued, r.skipped, r.cleared
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    Err(s) => {
+                        eprintln!("memlayer reindex: {}", s.message());
+                        ExitCode::from(memlayer_cli::exit::from_status(s.code()))
+                    }
+                }
+            }
+            Err(code) => code,
+        },
     }
 }
 
