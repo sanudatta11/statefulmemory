@@ -84,6 +84,10 @@ pub enum WriteRequest {
         obs_id: i64,
         embedding: Vec<f32>,
         model: String,
+        /// When true the embed worker has already quantized the vector; the
+        /// handler stores the int8 BLOB + scale in observation_embedding_meta
+        /// and skips the observations_vec write.
+        quantize: bool,
         reply: oneshot::Sender<Result<()>>,
     },
     /// Insert a batch of atomic facts extracted from an observation. Written
@@ -319,9 +323,10 @@ fn process_batch(
                 obs_id,
                 embedding,
                 model,
+                quantize,
                 reply,
             } => {
-                let r = handle_insert_embedding(&tx, obs_id, &embedding, &model);
+                let r = handle_insert_embedding(&tx, obs_id, &embedding, &model, quantize);
                 replies.push(Box::new(move || {
                     let _ = reply.send(r);
                 }));
@@ -748,12 +753,28 @@ fn handle_insert_embedding(
     obs_id: i64,
     embedding: &[f32],
     model: &str,
+    quantize: bool,
 ) -> Result<()> {
     if embedding.len() != 384 {
         return Err(Error::invalid(format!(
             "embedding dim mismatch: got {}, expected 384",
             embedding.len()
         )));
+    }
+    if quantize {
+        // Store int8 representation. Skip observations_vec.
+        let scale = memlayer_embed::quantize::calibrate_scale(&[embedding]);
+        let int8: Vec<i8> = memlayer_embed::quantize::f32_to_int8(embedding, scale);
+        // Store raw bytes: i8 → u8 reinterpret (safe, same bit pattern).
+        let blob: Vec<u8> = int8.iter().map(|&x| x as u8).collect();
+        tx.execute(
+            "INSERT OR REPLACE INTO observation_embedding_meta \
+                (observation_id, model, dim, created_at, quantized, quantized_blob, scale) \
+             VALUES (?1, ?2, ?3, datetime('now'), 1, ?4, ?5)",
+            params![obs_id, model, 384i64, blob, scale],
+        )
+        .map_err(|e| Error::internal(format!("insert quantized meta: {e}")))?;
+        return Ok(());
     }
     let mut blob = Vec::with_capacity(embedding.len() * 4);
     for f in embedding {

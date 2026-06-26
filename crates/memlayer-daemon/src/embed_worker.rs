@@ -169,6 +169,10 @@ fn process(
         .pop()
         .ok_or_else(|| anyhow::anyhow!("embedder returned empty result"))?;
 
+    // Re-resolve config per task so per-project overrides apply.
+    let cfg = memlayer_core::config::load_resolved(Some(&task.project_name));
+    let quantize = cfg.embed.quantize;
+
     let project = registry
         .get_or_open(&task.project_name)
         .map_err(|e| anyhow::anyhow!("open project: {e}"))?;
@@ -180,6 +184,7 @@ fn process(
             obs_id: task.obs_id,
             embedding: vec,
             model: STORED_EMBED_MODEL.to_string(),
+            quantize,
             reply: reply_tx,
         })
         .map_err(|e| anyhow::anyhow!("send InsertEmbedding: {e}"))?;

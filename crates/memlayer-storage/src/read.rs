@@ -5,7 +5,7 @@
 //! All read queries filter `deleted_at IS NULL` so soft-deleted rows are
 //! invisible across the board (SC-12). FTS5 search uses BM25 ranking.
 
-use rusqlite::{params, params_from_iter, Connection, ToSql};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use tracing::warn;
 
 use memlayer_core::error::{Error, Result};
@@ -114,6 +114,34 @@ pub fn search_dense(
         )));
     }
     let limit = limit.clamp(1, MAX_LIMIT as i64);
+
+    // Detect whether this DB is running in int8-quantized mode (Spec 1a).
+    // A project is considered "quantized-only" if every meta row has a
+    // non-null quantized_blob. Mixed-mode (some quantized, some vec0) falls
+    // back to the vec0 path — the quantized rows will have no vec0 rowid and
+    // simply won't appear.
+    let maybe_all_quantized: bool = conn
+        .query_row(
+            "SELECT COUNT(*) = 0 FROM observation_embedding_meta \
+             WHERE (quantized IS NULL OR quantized = 0) AND observation_id IS NOT NULL",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+
+    let has_quantized: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM observation_embedding_meta WHERE quantized = 1",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+
+    if has_quantized && maybe_all_quantized {
+        // Brute-force cosine similarity over int8 BLOBs.
+        return search_dense_quantized(conn, q_vec, limit);
+    }
+
     let mut blob = Vec::with_capacity(q_vec.len() * 4);
     for f in q_vec {
         blob.extend_from_slice(&f.to_le_bytes());
@@ -148,6 +176,77 @@ pub fn search_dense(
         out.push(r.map_err(|e| Error::internal(format!("search_dense row: {e}")))?);
     }
     Ok(out)
+}
+
+/// Brute-force cosine top-K over int8 quantized embeddings stored in
+/// `observation_embedding_meta.quantized_blob + scale` (Spec 1a).
+fn search_dense_quantized(
+    conn: &Connection,
+    q_vec: &[f32],
+    limit: i64,
+) -> Result<Vec<Observation>> {
+    use memlayer_embed::quantize::int8_to_f32;
+
+    // Load all quantized rows into memory. At 384 bytes per row, 10K obs ≈
+    // 3.8 MB — trivially fits in RAM.
+    let mut candidates: Vec<(i64, f32)> = Vec::new(); // (obs_id, cosine_sim)
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT observation_id, quantized_blob, scale \
+             FROM observation_embedding_meta \
+             WHERE quantized = 1 AND quantized_blob IS NOT NULL AND scale IS NOT NULL",
+        )
+        .map_err(|e| Error::internal(format!("search_dense_quantized prepare: {e}")))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let obs_id: i64 = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            let scale: f32 = row.get(2)?;
+            Ok((obs_id, blob, scale))
+        })
+        .map_err(|e| Error::internal(format!("search_dense_quantized query: {e}")))?;
+
+    for r in rows {
+        let (obs_id, blob, scale) = r.map_err(|e| Error::internal(format!("search_dense_quantized row: {e}")))?;
+        if blob.len() != 384 {
+            continue; // skip malformed rows
+        }
+        let int8: Vec<i8> = blob.iter().map(|&x| x as i8).collect();
+        let f32_vec = int8_to_f32(&int8, scale);
+        let sim = cosine_similarity(q_vec, &f32_vec);
+        candidates.push((obs_id, sim));
+    }
+
+    // Sort by similarity descending, take top-K.
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.truncate(limit as usize);
+
+    // Fetch Observation rows for the top-K ids.
+    let mut out = Vec::with_capacity(candidates.len());
+    for (obs_id, _sim) in candidates {
+        let obs: Option<Observation> = conn
+            .query_row(
+                &format!("SELECT {SELECT_COLS} FROM observations WHERE id = ?1 AND deleted_at IS NULL"),
+                params![obs_id],
+                Observation::from_row,
+            )
+            .optional()
+            .map_err(|e| Error::internal(format!("search_dense_quantized fetch: {e}")))?;
+        if let Some(o) = obs {
+            out.push(o);
+        }
+    }
+    Ok(out)
+}
+
+/// Cosine similarity between two equal-length f32 slices.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (norm_a * norm_b) }
 }
 
 /// Cross-project search via ATTACH on up to 32 most-recently-active projects.
@@ -1026,5 +1125,103 @@ mod tests {
         let chain = history_chain(&conn, v1).unwrap();
         let has_deleted = chain.iter().any(|e| e.observation.deleted_at.is_some());
         assert!(has_deleted, "chain must include soft-deleted entries");
+    }
+
+    // ---------------------------------------------------------------------------
+    // int8 quantize round-trip (Spec 1a)
+    // ---------------------------------------------------------------------------
+
+    fn insert_quantized(conn: &Connection, obs_id: i64, vec: &[f32], model: &str) {
+        use memlayer_embed::quantize::{calibrate_scale, f32_to_int8};
+        let scale = calibrate_scale(&[vec]);
+        let int8: Vec<i8> = f32_to_int8(vec, scale);
+        let blob: Vec<u8> = int8.iter().map(|&x| x as u8).collect();
+        conn.execute(
+            "INSERT OR REPLACE INTO observation_embedding_meta \
+                (observation_id, model, dim, created_at, quantized, quantized_blob, scale) \
+             VALUES (?1, ?2, 384, datetime('now'), 1, ?3, ?4)",
+            rusqlite::params![obs_id, model, blob, scale],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_dense_quantized_returns_closest_row() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("q.db");
+        let mut conn = crate::db::open_write(&path).unwrap();
+        conn.execute("INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')", []).unwrap();
+        for content in ["alpha vec", "beta vec"] {
+            let tx = conn.transaction().unwrap();
+            handle_save_observation_for_tests(
+                &tx,
+                crate::write::SaveObservationInput {
+                    sync_id: None,
+                    session_id: "s1".into(),
+                    r#type: "note".into(),
+                    title: format!("t-{content}"),
+                    content: content.into(),
+                    tool_name: None,
+                    scope: "project".into(),
+                    created_by: None,
+                    topic_key: None,
+                    dedupe_window_secs: 0,
+                    max_content_chars: 50_000,
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM observations ORDER BY id ASC").unwrap()
+            .query_map([], |r| r.get::<_, i64>(0)).unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // Seed two distinct 384-dim vectors.
+        let q = unit_vector(0);
+        let other = unit_vector(99);
+        insert_quantized(&conn, ids[0], &q, "bge-small-en-v1.5");
+        insert_quantized(&conn, ids[1], &other, "bge-small-en-v1.5");
+
+        // Query with the exact vector for ids[0] — should rank first.
+        let hits = search_dense(&conn, &q, 2).unwrap();
+        assert_eq!(hits.len(), 2, "expected 2 quantized hits");
+        assert_eq!(hits[0].id, ids[0], "exact-match row should rank first (cosine sim ≈ 1.0)");
+    }
+
+    #[test]
+    fn search_dense_quantized_excludes_soft_deleted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("q2.db");
+        let mut conn = crate::db::open_write(&path).unwrap();
+        conn.execute("INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')", []).unwrap();
+        for content in ["live", "dead"] {
+            let tx = conn.transaction().unwrap();
+            handle_save_observation_for_tests(
+                &tx,
+                crate::write::SaveObservationInput {
+                    sync_id: None, session_id: "s1".into(), r#type: "note".into(),
+                    title: format!("t-{content}"), content: content.into(),
+                    tool_name: None, scope: "project".into(), created_by: None,
+                    topic_key: None, dedupe_window_secs: 0, max_content_chars: 50_000,
+                },
+            ).unwrap();
+            tx.commit().unwrap();
+        }
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM observations ORDER BY id ASC").unwrap()
+            .query_map([], |r| r.get::<_, i64>(0)).unwrap()
+            .map(|r| r.unwrap()).collect();
+        let q = unit_vector(5);
+        insert_quantized(&conn, ids[0], &q, "bge-small-en-v1.5");
+        insert_quantized(&conn, ids[1], &q, "bge-small-en-v1.5");
+        conn.execute(
+            "UPDATE observations SET deleted_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![ids[1]],
+        ).unwrap();
+        let hits = search_dense(&conn, &q, 5).unwrap();
+        assert_eq!(hits.len(), 1, "soft-deleted row must not surface in quantized search");
+        assert_eq!(hits[0].id, ids[0]);
     }
 }

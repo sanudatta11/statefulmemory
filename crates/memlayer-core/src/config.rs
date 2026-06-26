@@ -271,11 +271,15 @@ impl Default for RerankConfig {
 #[serde(default)]
 pub struct EmbedConfig {
     pub workers: usize,
+    /// When true, embeddings are stored as int8 BLOBs + per-row scale
+    /// (384 bytes vs 1,536 bytes per obs). Dense search falls back to
+    /// brute-force cosine in Rust rather than the vec0 vtable.
+    pub quantize: bool,
 }
 
 impl Default for EmbedConfig {
     fn default() -> Self {
-        Self { workers: 2 }
+        Self { workers: 2, quantize: false }
     }
 }
 
@@ -472,6 +476,9 @@ fn apply_memlayer_env_overrides(cfg: &mut MemlayerConfig) {
         if let Ok(n) = v.parse() {
             cfg.embed.workers = n;
         }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_EMBED_QUANTIZE") {
+        cfg.embed.quantize = parse_bool_env(&v);
     }
     if let Ok(v) = std::env::var("MEMLAYER_CONFLICT_ENABLED") {
         cfg.conflict.enabled = parse_bool_env(&v);
