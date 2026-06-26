@@ -533,6 +533,49 @@ pub fn history_chain(conn: &Connection, anchor_id: i64) -> Result<Vec<HistoryEnt
     Ok(out)
 }
 
+/// Dense (cosine) fan-out search across multiple per-project DBs. Used by the
+/// daemon's `--all-projects --mode hybrid` path to add a dense lane alongside
+/// the existing global-DB BM25 lane.
+///
+/// Opens each project's DB read-only, registers the sqlite-vec extension,
+/// calls [`search_dense`], and tags each result with the project name.
+/// Capped at `ALL_PROJECTS_CAP` (32) projects; extras are silently skipped.
+///
+/// Errors opening individual project DBs are logged at warn level and skipped
+/// (partial results preferred over hard failure).
+pub fn search_dense_multi(
+    project_db_paths: &[(String, std::path::PathBuf)],
+    q_vec: &[f32],
+    per_project_limit: i64,
+) -> Result<Vec<(String, Observation)>> {
+    crate::pragmas::ensure_sqlite_vec_extension();
+    let capped = project_db_paths.iter().take(ALL_PROJECTS_CAP);
+    let mut out: Vec<(String, Observation)> = Vec::new();
+    for (project_name, db_path) in capped {
+        if !db_path.exists() {
+            continue;
+        }
+        let conn = match crate::db::open_read(db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(project = %project_name, error = %e, "search_dense_multi: skipping project (open failed)");
+                continue;
+            }
+        };
+        match search_dense(&conn, q_vec, per_project_limit) {
+            Ok(hits) => {
+                for obs in hits {
+                    out.push((project_name.clone(), obs));
+                }
+            }
+            Err(e) => {
+                warn!(project = %project_name, error = %e, "search_dense_multi: dense search failed for project");
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

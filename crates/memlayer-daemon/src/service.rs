@@ -611,6 +611,91 @@ impl Memlayer for MemlayerService {
         let limit = if r.limit == 0 { read_q::DEFAULT_LIMIT } else { r.limit };
         let conn = map(project.open_read_conn())?;
         if r.all_projects {
+            let mode = memlayer_retrieval::hybrid::HybridMode::parse_wire(r.mode.as_deref());
+
+            if mode == memlayer_retrieval::hybrid::HybridMode::Hybrid {
+                // Hybrid cross-project: BM25 via global DB + dense fan-out to
+                // per-project DBs, then RRF-fused on (project, source_id) key.
+                if let Some(embedder) = &self.state.query_embedder {
+                    let q_vec = match embedder.embed(&[r.query.as_str()]) {
+                        Ok(mut vs) => vs.pop(),
+                        Err(e) => {
+                            tracing::warn!(error=%e, "hybrid all-projects: query embed failed; falling back to BM25");
+                            None
+                        }
+                    };
+                    if let Some(q_vec) = q_vec {
+                        const RRF_DEPTH: i64 = 30;
+                        const RRF_K: u32 = 60;
+                        // BM25 ids from the global mirror.
+                        let bm25_keys: Vec<(String, i64)> = if let Some(global) = &self.state.global_db {
+                            let guard = global.lock();
+                            match guard.search(&r.query, RRF_DEPTH) {
+                                Ok(hits) => hits.into_iter().map(|h| (h.project.clone(), h.source_id)).collect(),
+                                Err(_) => vec![],
+                            }
+                        } else { vec![] };
+
+                        // Dense ids from per-project fan-out.
+                        let projects = map(ProjectRegistry::list_known_on_disk())?;
+                        let project_paths: Vec<(String, std::path::PathBuf)> = projects
+                            .into_iter()
+                            .map(|(name, _)| {
+                                let path = memlayer_core::paths::project_db_path(&name);
+                                (name, path)
+                            })
+                            .collect();
+                        let dense_hits = map(read_q::search_dense_multi(&project_paths, &q_vec, RRF_DEPTH))?;
+                        let dense_keys: Vec<(String, i64)> = dense_hits.iter()
+                            .map(|(proj, obs)| (proj.clone(), obs.id))
+                            .collect();
+
+                        let fused_keys = memlayer_retrieval::rrf::rrf_fuse_keyed(
+                            &[bm25_keys, dense_keys],
+                            RRF_K,
+                        );
+
+                        // Build a lookup from (project, id) to Observation.
+                        let mut obs_map: std::collections::HashMap<(String, i64), memlayer_proto::Observation> =
+                            std::collections::HashMap::new();
+                        if let Some(global) = &self.state.global_db {
+                            let guard = global.lock();
+                            if let Ok(bm25_obs) = guard.search(&r.query, RRF_DEPTH) {
+                                for h in bm25_obs {
+                                    let key = (h.project.clone(), h.source_id);
+                                    obs_map.entry(key).or_insert_with(|| memlayer_proto::Observation {
+                                        id: h.source_id, sync_id: String::new(), session_id: String::new(),
+                                        r#type: h.r#type, title: h.title, content: h.content,
+                                        tool_name: None, scope: "project".into(), created_by: None,
+                                        topic_key: h.topic_key, normalized_hash: None,
+                                        revision_count: 1, duplicate_count: 1, last_seen_at: None,
+                                        created_at: h.created_at.clone(), updated_at: h.created_at,
+                                        deleted_at: None, review_after: None, project_name: Some(h.project),
+                                    });
+                                }
+                            }
+                        }
+                        for (proj, obs) in dense_hits {
+                            let key = (proj.clone(), obs.id);
+                            obs_map.entry(key).or_insert_with(|| {
+                                let mut p = obs_to_proto(obs);
+                                p.project_name = Some(proj);
+                                p
+                            });
+                        }
+
+                        let observations: Vec<memlayer_proto::Observation> = fused_keys
+                            .into_iter()
+                            .take(limit as usize)
+                            .filter_map(|k| obs_map.remove(&k))
+                            .collect();
+
+                        return Ok(Response::new(SearchObservationsResponse { observations, warning: None }));
+                    }
+                }
+                // Fall through to BM25-only if no embedder.
+            }
+
             // Prefer the cross-project global mirror DB when available — one
             // BM25-ranked corpus instead of per-project fan-out.
             if let Some(global) = &self.state.global_db {

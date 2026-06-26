@@ -67,6 +67,51 @@ pub fn reciprocal_rank_fusion(lists: &[Vec<u64>], k_const: u32) -> Vec<u64> {
     rrf_fuse(lists, k_const)
 }
 
+/// Generic RRF over any hashable, cloneable key type. Used by the daemon's
+/// cross-project hybrid path where the dedup key is `(project, obs_id)` rather
+/// than a plain `u64` id.
+///
+/// Semantics are identical to [`rrf_fuse`]: each list is a ranking (index 0 =
+/// most relevant), duplicate keys across lists are fused via summed RRF scores,
+/// and ties are broken by first-appearance order.
+pub fn rrf_fuse_keyed<K>(lists: &[Vec<K>], k_const: u32) -> Vec<K>
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    use std::collections::HashMap;
+    if lists.is_empty() {
+        return Vec::new();
+    }
+    let k = k_const as f64;
+    let mut scores: HashMap<K, f64> = HashMap::new();
+    let mut first_seen: HashMap<K, usize> = HashMap::new();
+    let mut seq: usize = 0;
+    for list in lists {
+        for (i, key) in list.iter().enumerate() {
+            let rank = (i + 1) as f64;
+            *scores.entry(key.clone()).or_insert(0.0) += 1.0 / (k + rank);
+            first_seen.entry(key.clone()).or_insert_with(|| {
+                let s = seq;
+                seq += 1;
+                s
+            });
+        }
+    }
+    let mut merged: Vec<(K, f64, usize)> = scores
+        .into_iter()
+        .map(|(key, s)| {
+            let fs = *first_seen.get(&key).unwrap();
+            (key, s, fs)
+        })
+        .collect();
+    merged.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.2.cmp(&b.2))
+    });
+    merged.into_iter().map(|(key, _, _)| key).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +155,31 @@ mod tests {
     fn alias_matches_canonical_name() {
         let lists = vec![vec![1, 2, 3], vec![3, 2, 1]];
         assert_eq!(reciprocal_rank_fusion(&lists, 60), rrf_fuse(&lists, 60));
+    }
+
+    #[test]
+    fn keyed_fuse_with_string_keys() {
+        let lists = vec![
+            vec!["a", "b"],
+            vec!["b", "a"],
+        ];
+        let result = rrf_fuse_keyed(&lists, 60);
+        // "b" appears at rank 2 and rank 1; "a" at rank 1 and rank 2.
+        // Scores equal → tie broken by first appearance (a first).
+        // Actually score("a") = 1/61 + 1/62, score("b") = 1/62 + 1/61 → equal.
+        // Tie-break: "a" first_seen in list[0][0], "b" first_seen in list[0][1] → a wins.
+        assert_eq!(result[0], "a");
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn keyed_fuse_dedup_id_in_both_lists() {
+        let a = ("proj-a".to_string(), 1i64);
+        let b = ("proj-b".to_string(), 1i64); // same obs_id but different project — distinct keys
+        let c = ("proj-a".to_string(), 2i64);
+        let lists = vec![vec![a.clone(), c.clone()], vec![a.clone(), b.clone()]];
+        let result = rrf_fuse_keyed(&lists, 60);
+        assert_eq!(result.len(), 3, "three distinct (project,id) pairs");
+        assert_eq!(result[0], a, "a appears in both lists → highest score");
     }
 }
