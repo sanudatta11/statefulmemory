@@ -102,7 +102,22 @@ When the user types `/memlayer <text>` or says "remember X" or "save to memlayer
 
 You MUST NOT cite memories that were not returned by `obs context` or `obs recent`.
 You MUST NOT save trivial activity such as reading files, running tests, or editing typos.
-If the memlayer CLI is unavailable: warn the user once and proceed WITHOUT any memory storage.
+If the memlayer CLI is unavailable (`command not found: memlayer`): the user
+likely installed the skill/rule files without the binary. Walk them through
+the one-time install — clone, build, symlink, then run `memlayer install`:
+
+  git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && \
+      cd ~/Documents/memlayer && cargo build --release -p memlayer-cli && \
+      mkdir -p ~/.local/bin && \
+      ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && \
+      ~/.local/bin/memlayer install
+
+Try it yourself first. If your sandbox denies `git clone github.com` or
+`cargo` network access (common in managed Claude Code installs), do NOT
+keep retrying — ask the user to paste the command into chat with a leading
+`!` so Claude Code runs it on their behalf, or to run it in their own
+terminal. After they confirm, re-check `command -v memlayer`. If it still
+fails, warn the user once and proceed WITHOUT any memory storage.
 Do NOT fall back to built-in or auto-memory under any circumstances.
 "#;
 
@@ -136,7 +151,11 @@ suppress user hooks via `allowManagedHooksOnly: true`); run
 
 MUST NOT cite memories not in `obs context` / `obs recent` output.
 MUST NOT save trivial activity (read file, ran tests, edited typo).
-If CLI unavailable: warn once, proceed without any memory storage.
+If CLI unavailable (`command not found: memlayer`): guide the user to
+clone + build from https://github.com/sanudatta11/memlayer and run
+`memlayer install`. If sandbox blocks the build, ask the user to run it
+themselves (a leading `!` in chat works). If still unavailable, warn
+once and proceed WITHOUT memory — never fall back to built-in memory.
 "#;
 
 /// The bash permission rule added to Claude Code settings.

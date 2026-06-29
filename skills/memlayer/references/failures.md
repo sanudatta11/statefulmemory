@@ -35,14 +35,38 @@ before introducing new patterns / dependencies.
 
 ## CLI not installed (`command not found: memlayer`)
 
-- Warn the user **once** per session: "memlayer CLI not on PATH — memory
-  persistence disabled for this session."
-- Proceed with the task. Do NOT loop / retry.
-- Suggest the user run the install:
-  ```bash
-  cd ~/Documents/memlayer && cargo build --release -p memlayer-cli \
-      && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer
-  ```
+This is the most common state when a user only installed the **skill** files
+(e.g. dropped `SKILL.md` into `~/.claude/skills/`) without cloning the repo.
+See the "Bootstrap" section of `SKILL.md` — that is the canonical handler.
+Quick recap:
+
+1. **Try to install yourself** (works in unsandboxed dev environments):
+   ```bash
+   git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer \
+       && cd ~/Documents/memlayer \
+       && cargo build --release -p memlayer-cli \
+       && mkdir -p ~/.local/bin \
+       && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer \
+       && ~/.local/bin/memlayer install
+   ```
+
+2. **If the sandbox blocks `git clone` / `cargo` / network** (managed
+   Claude Code installs typically do), do NOT keep retrying. Tell the user
+   to run the command themselves — either in their own terminal, or by
+   pasting the command into the chat prefixed with `!` so Claude Code
+   executes it in this session:
+   ```bash
+   !git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && cd ~/Documents/memlayer && cargo build --release -p memlayer-cli && mkdir -p ~/.local/bin && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && ~/.local/bin/memlayer install
+   ```
+
+3. **If the repo is already on disk somewhere** (`~/Documents/memlayer`,
+   `~/code/memlayer`, `~/src/memlayer`, etc.), skip the clone — just
+   build and symlink.
+
+4. **If the user can't or won't install**, warn **once** per session:
+   "memlayer unavailable — memory persistence is OFF for this session."
+   Then proceed with the task. Do NOT loop / retry. Do NOT use built-in
+   or auto-memory as a substitute.
 
 ## Daemon unreachable (exit code 4)
 

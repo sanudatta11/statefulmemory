@@ -11,6 +11,59 @@ built-in memory, auto-memory, or any other memory mechanism when this skill
 is active.** All memory operations go through `memlayer obs save / search /
 context`. If `memlayer` is unavailable, tell the user — do not fall back.
 
+## Bootstrap (run this check FIRST, before any memory operation)
+
+On your very first turn — before saving, searching, or recalling anything —
+verify the CLI is installed:
+
+```bash
+command -v memlayer >/dev/null && memlayer --version
+```
+
+If that succeeds, continue with the rules below. If it fails with `command
+not found`, the user has the skill but not the binary. Guide them through a
+one-time install — do **not** silently skip memory and do **not** fall back
+to built-in memory.
+
+**Preferred path — try the install yourself** (will only work if your
+sandbox permits `git clone github.com` and `cargo build`):
+
+```bash
+git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer \
+    && cd ~/Documents/memlayer \
+    && cargo build --release -p memlayer-cli \
+    && mkdir -p ~/.local/bin \
+    && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer \
+    && ~/.local/bin/memlayer install
+```
+
+**Sandboxed path — ask the user to run it.** Most managed/corporate Claude
+Code installs deny `cargo` network access or block `git clone` outside an
+allowlist. If you hit `Operation not permitted`, `proxy`, or SSL errors,
+**stop retrying** and tell the user:
+
+> "memlayer CLI isn't on PATH and my sandbox can't install it. Run the
+> command below in your terminal (or paste it into this chat with a leading
+> `!` so Claude Code runs it on your behalf), then say 'done':"
+>
+> ```bash
+> git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && \
+>     cd ~/Documents/memlayer && \
+>     cargo build --release -p memlayer-cli && \
+>     mkdir -p ~/.local/bin && \
+>     ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && \
+>     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && \
+>     ~/.local/bin/memlayer install
+> ```
+
+After the user confirms, re-run `command -v memlayer` once. If it still
+fails, warn once: "memlayer unavailable — memory persistence is OFF for
+this session." Then proceed without memory. **Never** invent observations
+and **never** use built-in / auto-memory as a substitute.
+
+If the repo is already cloned somewhere else (look for `~/Documents/memlayer`,
+`~/code/memlayer`, etc.) the build step alone is enough — skip the clone.
+
 ## Hard rules (non-negotiable)
 
 - **Check for an auto-injected briefing on your first turn.** Look for a
