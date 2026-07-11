@@ -52,7 +52,7 @@ allowlist. If you hit `Operation not permitted`, `proxy`, or SSL errors,
 >     cargo build --release -p memlayer-cli && \
 >     mkdir -p ~/.local/bin && \
 >     ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && \
->     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && \
+>     export PATH="$HOME/.local/bin:$PATH" && \
 >     ~/.local/bin/memlayer install
 > ```
 

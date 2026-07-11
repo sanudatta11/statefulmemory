@@ -56,7 +56,7 @@ Quick recap:
    pasting the command into the chat prefixed with `!` so Claude Code
    executes it in this session:
    ```bash
-   !git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && cd ~/Documents/memlayer && cargo build --release -p memlayer-cli && mkdir -p ~/.local/bin && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && ~/.local/bin/memlayer install
+   !git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && cd ~/Documents/memlayer && cargo build --release -p memlayer-cli && mkdir -p ~/.local/bin && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && export PATH="$HOME/.local/bin:$PATH" && ~/.local/bin/memlayer install
    ```
 
 3. **If the repo is already on disk somewhere** (`~/Documents/memlayer`,
