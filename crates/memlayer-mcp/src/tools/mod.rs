@@ -9,7 +9,7 @@
 //! omitted the server's cwd-derived base project is used
 //! (see [`crate::scope::resolve_project`]).
 
-use rmcp::schemars::{self, JsonSchema};
+use rmcp::schemars::JsonSchema;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

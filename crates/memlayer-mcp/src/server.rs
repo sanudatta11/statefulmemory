@@ -4,15 +4,21 @@
 //! Tool bodies are stubs here (mcp-t3); the daemon client wiring lands in
 //! mcp-t4 and the per-tool RPC logic in mcp-t6..t9.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
+use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
 
+use crate::client::LazyClient;
 use crate::tools::{AddArgs, ContextArgs, FactsArgs, HealthArgs, RecentArgs, SearchArgs};
 
 /// Local stdio MCP server exposing memlayer memory operations as tools.
 #[derive(Clone)]
 pub struct MemoryServer {
+    /// Lazily-connected daemon client (shared across cloned handler instances).
+    pub(crate) client: Arc<LazyClient>,
     /// cwd-derived project used when a tool call omits `project`.
     pub(crate) base_project: String,
     /// MCP client identity ("name@version"), recorded as `created_by` on writes.
@@ -20,12 +26,29 @@ pub struct MemoryServer {
 }
 
 impl MemoryServer {
-    pub fn new(base_project: String, client_info: String) -> Self {
+    pub fn new(socket_path: PathBuf, base_project: String, client_info: String) -> Self {
         Self {
+            client: Arc::new(LazyClient::new(socket_path)),
             base_project,
             client_info,
         }
     }
+}
+
+/// Run the MCP server over stdio until the client disconnects (stdin EOF).
+///
+/// Starts even if the daemon is unreachable — connection is deferred to the
+/// first tool call, and `memory_health` reports a dead daemon rather than
+/// failing to start. Diagnostics go to stderr; stdout carries MCP frames.
+pub async fn serve(
+    socket_path: PathBuf,
+    project: String,
+    client_info: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let server = MemoryServer::new(socket_path, project, client_info);
+    let running = server.serve(rmcp::transport::io::stdio()).await?;
+    running.waiting().await?;
+    Ok(())
 }
 
 #[tool_router(vis = "pub")]
@@ -121,7 +144,11 @@ mod tests {
     use super::*;
 
     fn server() -> MemoryServer {
-        MemoryServer::new("test-project".to_string(), "test-client@0".to_string())
+        MemoryServer::new(
+            PathBuf::from("/nonexistent/memlayer-test.sock"),
+            "test-project".to_string(),
+            "test-client@0".to_string(),
+        )
     }
 
     #[test]
@@ -129,5 +156,6 @@ mod tests {
         // Constructing the server must not touch the daemon.
         let s = server();
         assert_eq!(s.base_project, "test-project");
+        assert_eq!(s.client_info, "test-client@0");
     }
 }
