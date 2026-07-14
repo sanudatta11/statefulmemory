@@ -15,6 +15,8 @@
 
 pub mod error;
 pub mod scope;
+pub mod server;
+pub mod tools;
 
 /// Entry point invoked by the `memlayer mcp` subcommand.
 ///
