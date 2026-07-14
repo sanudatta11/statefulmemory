@@ -13,6 +13,9 @@
 //! - `server` — rmcp stdio server + event loop (mcp-t4)
 //! - `render` — `Observation` -> structured MCP content (mcp-t6)
 
+pub mod error;
+pub mod scope;
+
 /// Entry point invoked by the `memlayer mcp` subcommand.
 ///
 /// Starts the stdio MCP server for the given daemon `socket_path`, scoped by
