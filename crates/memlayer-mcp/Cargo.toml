@@ -1,0 +1,29 @@
+[package]
+name = "memlayer-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "memlayer local stdio MCP server: exposes daemon memory operations as MCP tools."
+
+[dependencies]
+memlayer-client = { path = "../memlayer-client" }
+memlayer-proto = { path = "../memlayer-proto" }
+memlayer-core = { path = "../memlayer-core" }
+
+tokio.workspace = true
+tonic.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+tracing.workspace = true
+thiserror.workspace = true
+rmcp = "2.2.0"
+
+# NOTE: `rmcp` (the official Rust MCP SDK) is added via `cargo add rmcp`
+# during the pre-fetch step so its exact version + features resolve against
+# the registry. It provides the stdio transport and tool-registration API
+# used by src/server.rs.
