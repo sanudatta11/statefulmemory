@@ -44,6 +44,7 @@ pub async fn dispatch(fmt: Formatter, verb: DaemonVerb) -> ExitCode {
         DaemonVerb::Stop => stop(fmt).await,
         DaemonVerb::Status => status(fmt).await,
         DaemonVerb::Restart => restart(fmt).await,
+        DaemonVerb::ForceStart => force_start(fmt).await,
     }
 }
 
@@ -142,6 +143,17 @@ async fn restart(fmt: Formatter) -> ExitCode {
                 return ExitCode::from(exit::from_status(s.code()));
             }
             wait_for_socket_to_vanish(&socket, Duration::from_secs(5)).await;
+        }
+    }
+    start(fmt, false).await
+}
+
+async fn force_start(fmt: Formatter) -> ExitCode {
+    let cfg = default_autospawn_config();
+    if cfg.socket.exists() {
+        if let Err(e) = std::fs::remove_file(&cfg.socket) {
+            eprintln!("memlayer: failed to remove stale socket: {e}");
+            return ExitCode::from(exit::GENERAL);
         }
     }
     start(fmt, false).await

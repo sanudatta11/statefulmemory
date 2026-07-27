@@ -82,6 +82,9 @@ pub enum Command {
     /// v1 — prints manual instructions; full implementation in a follow-up
     /// spec.
     Reindex(ReindexArgs),
+    /// Run the local stdio MCP server, exposing memory tools to MCP-capable
+    /// agents (Claude Code, Windsurf). Speaks MCP on stdout; logs to stderr.
+    Mcp,
     /// Print version and exit.
     Version,
 }
@@ -596,6 +599,7 @@ pub enum DaemonVerb {
     Stop,
     Status,
     Restart,
+    ForceStart,
 }
 
 #[derive(Args, Debug)]
@@ -686,6 +690,12 @@ mod tests {
     fn version_subcommand_parses() {
         let cli = Cli::try_parse_from(["memlayer", "version"]).unwrap();
         assert!(matches!(cli.command, Command::Version));
+    }
+
+    #[test]
+    fn mcp_subcommand_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "mcp"]).unwrap();
+        assert!(matches!(cli.command, Command::Mcp));
     }
 
     #[test]
