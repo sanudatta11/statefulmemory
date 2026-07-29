@@ -121,8 +121,16 @@ async fn main() -> ExitCode {
                 // delay the agent's tool call. Exit 0 immediately.
                 Err(_) => ExitCode::SUCCESS,
             },
+            // SessionStart owns its own daemon repair (open_client won't clear
+            // a stale socket), so detect the project directly and fail-silent
+            // if detection is ambiguous.
+            HookVerb::SessionStart(ss) => match detect_project_silent(cli.project) {
+                Some(project) => cmd_hook::dispatch_session_start(&project, ss.limit).await,
+                None => ExitCode::SUCCESS,
+            },
         },
         Command::Config(args) => memlayer_cli::cmd_config::dispatch(args.verb).await,
+        Command::Mcp => memlayer_cli::cmd_mcp::dispatch(cli.project).await,
         Command::Reindex(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, _fmt)) => {
                 let req = p::ReindexObservationsRequest {
@@ -166,6 +174,20 @@ async fn run_daemon_foreground() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Resolve the project name without touching the daemon. Returns `None` if
+/// the cwd is unreadable or project detection is ambiguous — callers in
+/// fail-silent hook paths treat `None` as "skip".
+fn detect_project_silent(project_flag: Option<String>) -> Option<String> {
+    let cli_override = project_flag.filter(|s| !s.is_empty());
+    let env_override = std::env::var("MEMLAYER_PROJECT")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let cwd = std::env::current_dir().ok()?;
+    project_detect::detect_in(&cwd, env_override, cli_override)
+        .ok()
+        .map(|d| d.normalized)
 }
 
 /// Resolve the project, open a UDS gRPC client (auto-spawning the daemon

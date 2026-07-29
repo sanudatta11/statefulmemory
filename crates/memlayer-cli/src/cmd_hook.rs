@@ -19,7 +19,7 @@ use memlayer_proto as p;
 use tonic::transport::Channel;
 
 use crate::audit::{self, AuditEntry};
-use crate::cli::PreToolArgs;
+use crate::cli::{ObsContextArgs, PreToolArgs};
 
 type Client = p::memlayer_client::MemlayerClient<Channel>;
 
@@ -98,6 +98,77 @@ pub async fn dispatch(client: &mut Client, project_name: &str, args: PreToolArgs
     }
 
     record_and_exit(project_name, tool, &query, observations.len(), started)
+}
+
+/// SessionStart hook: ensure the daemon is reachable (repairing a stale
+/// socket if the previous daemon crashed), print a one-line status to stderr,
+/// then emit the memory briefing to stdout. Always exits 0 — a broken daemon
+/// must never block session start.
+pub async fn dispatch_session_start(project_name: &str, limit: i32) -> ExitCode {
+    let socket = memlayer_core::paths::socket_path();
+
+    // A socket file can exist while the daemon behind it is dead (a crash left
+    // the file behind). Probe with a real RPC — a lazy tonic channel connect
+    // succeeds even against a dead socket.
+    let healthy = socket.exists() && probe_daemon(&socket).await;
+
+    let status_msg = if healthy {
+        "daemon ok"
+    } else {
+        let was_stale = socket.exists();
+        if was_stale {
+            let _ = std::fs::remove_file(&socket);
+        }
+        let cfg = crate::cmd_daemon::default_autospawn_config();
+        if crate::autospawn::ensure_running(cfg).await.is_err() {
+            eprintln!("memlayer: daemon unavailable — starting without memory");
+            return ExitCode::SUCCESS;
+        }
+        if was_stale {
+            "daemon repaired (stale socket cleared)"
+        } else {
+            "daemon started"
+        }
+    };
+    eprintln!("memlayer: {status_msg}");
+
+    let channel = match memlayer_client::channel::connect_uds(&socket) {
+        Ok(c) => c,
+        Err(_) => return ExitCode::SUCCESS,
+    };
+    let mut client = p::memlayer_client::MemlayerClient::new(channel);
+    let args = ObsContextArgs {
+        limit,
+        query: None,
+        mode: "bm25".to_string(),
+        rerank: None,
+    };
+    let _ = crate::cmd_obs::context(
+        &mut client,
+        project_name,
+        crate::formatter::Formatter::Text,
+        args,
+    )
+    .await;
+    ExitCode::SUCCESS
+}
+
+/// Probe daemon liveness with a bounded `DaemonStatus` RPC. Returns false on
+/// connect error, RPC error, or timeout.
+async fn probe_daemon(socket: &Path) -> bool {
+    let channel = match memlayer_client::channel::connect_uds(socket) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut client = p::memlayer_client::MemlayerClient::new(channel);
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            client.daemon_status(p::DaemonStatusRequest {}),
+        )
+        .await,
+        Ok(Ok(_))
+    )
 }
 
 fn record_and_exit(

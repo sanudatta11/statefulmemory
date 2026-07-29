@@ -101,6 +101,16 @@ pub enum HookVerb {
     /// agent runs Grep / Read. Always exits 0 so the agent's tool call
     /// is never blocked.
     PreTool(PreToolArgs),
+    /// SessionStart hook: verify the daemon is up (repairing a stale socket
+    /// if needed), then print the memory briefing. Always exits 0.
+    SessionStart(SessionStartHookArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SessionStartHookArgs {
+    /// Number of recent observations to include in the briefing.
+    #[arg(long, default_value_t = 20)]
+    pub limit: i32,
 }
 
 #[derive(Args, Debug)]
@@ -696,6 +706,40 @@ mod tests {
     fn mcp_subcommand_parses() {
         let cli = Cli::try_parse_from(["memlayer", "mcp"]).unwrap();
         assert!(matches!(cli.command, Command::Mcp));
+    }
+
+    #[test]
+    fn hook_session_start_parses_with_default_limit() {
+        let cli = Cli::try_parse_from(["memlayer", "hook", "session-start"]).unwrap();
+        match cli.command {
+            Command::Hook(h) => match h.verb {
+                HookVerb::SessionStart(a) => assert_eq!(a.limit, 20),
+                other => panic!("expected SessionStart, got {other:?}"),
+            },
+            other => panic!("expected Hook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_session_start_limit_override_parses() {
+        let cli =
+            Cli::try_parse_from(["memlayer", "hook", "session-start", "--limit", "5"]).unwrap();
+        match cli.command {
+            Command::Hook(h) => match h.verb {
+                HookVerb::SessionStart(a) => assert_eq!(a.limit, 5),
+                other => panic!("expected SessionStart, got {other:?}"),
+            },
+            other => panic!("expected Hook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn daemon_force_start_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "daemon", "force-start"]).unwrap();
+        match cli.command {
+            Command::Daemon(DaemonArgs { verb: DaemonVerb::ForceStart }) => {}
+            other => panic!("expected daemon force-start, got {other:?}"),
+        }
     }
 
     #[test]

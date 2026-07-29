@@ -73,7 +73,7 @@ pub async fn dispatch(
 }
 
 #[derive(Debug)]
-enum VerbError {
+pub(crate) enum VerbError {
     Status(Status),
     Usage(String),
     Io(io::Error),
@@ -330,7 +330,7 @@ async fn list(
     Ok(())
 }
 
-async fn context(
+pub(crate) async fn context(
     client: &mut Client,
     project_name: &str,
     fmt: Formatter,
