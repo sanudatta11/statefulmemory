@@ -71,12 +71,16 @@ If the repo is already cloned somewhere else (look for `~/Documents/memlayer`,
   in your initial context. If present, the `SessionStart` hook ran — proceed
   normally and re-run `obs context --query "<topic>"` only when switching
   tasks mid-session.
-- **If NO briefing was injected, the hook didn't fire** (managed enterprise
-  policy may block user hooks via `allowManagedHooksOnly: true`, or the user
-  may not have installed them). Run `memlayer obs context --limit 20` as
-  your **first action** before doing anything else. Same expectation for the
-  rest of this skill: prefer hooks, but the CLI is always the source of
-  truth — if a hook can't run, you run the command.
+- **Memory-first on every task — do NOT wait for a hook.** The `SessionStart`
+  hook is frequently suppressed (managed enterprise policy blocks user hooks
+  via `allowManagedHooksOnly: true`, or a `/clear` drops both this skill and
+  the briefing). So before you explore code, search files, or propose a
+  fix/implementation for ANY substantive task (fix, implement, debug,
+  refactor, "how does X work"), check whether a briefing is already in
+  context. If it is NOT, run `memlayer obs context --query "<task>" --limit 20`
+  as **step 0** of the task — before any Explore/Grep/Read. The CLI is always
+  the source of truth: if a hook can't run, you run the command. Do this once
+  per task, not on every message.
 - **MUST run `memlayer obs search "<keyword>"` before introducing a new
   pattern, dependency, or convention.** If a prior decision exists, follow
   it unless the user asks to revisit.

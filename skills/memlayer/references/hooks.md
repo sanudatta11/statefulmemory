@@ -34,12 +34,14 @@ observations as they happen instead of relying on an end-of-session rollup.
 ## SessionStart — auto-injected briefing (when allowed)
 
 ```bash
-memlayer obs context --limit 20
+memlayer hook session-start --limit 20
 ```
 
-Runs once at the start of every Claude session. The stdout is piped into
-Claude's first turn so prior memory is always visible before the model
-reads any code. The output includes:
+Runs once at the start of every Claude session. It first probes the daemon
+(clearing a stale socket and respawning it if needed), then runs
+`obs context --limit 20` and pipes the stdout into Claude's first turn so
+prior memory is always visible before the model reads any code. The output
+includes:
 
 - `# Last session summary` — most recent rollup from the prior `Stop` hook
 - `# Pending review` — decisions whose `review_after` has elapsed

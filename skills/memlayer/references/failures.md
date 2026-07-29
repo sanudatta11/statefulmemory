@@ -73,11 +73,10 @@ Quick recap:
 The daemon couldn't be reached over the Unix socket.
 
 - Tell the user immediately. Do NOT retry silently.
-- Likely a stale socket. The user should run:
+- Likely a stale socket (the daemon crashed and left `daemon.sock` behind).
+  One command clears the stale socket and restarts the daemon:
   ```bash
-  memlayer daemon status
-  rm -f ~/.memlayer/daemon.sock
-  memlayer daemon status   # auto-respawns
+  memlayer daemon force-start
   ```
 
 ## Project name could not be determined (exit code 5)

@@ -70,10 +70,14 @@ in your initial context.
 If you see the briefing: do NOT run `obs context` first. Re-run
 `memlayer obs context --query "<topic>"` mid-session when switching tasks.
 
-If you do NOT see the briefing: the hook didn't fire (enterprise policy
-may block it via `allowManagedHooksOnly: true`, or `memlayer install`
-hasn't been run yet). Run `memlayer obs context --limit 20` as your
-first action of the session, then proceed.
+Do NOT rely on the briefing appearing — the SessionStart hook is often
+suppressed (managed `allowManagedHooksOnly: true`, or after a `/clear`).
+Treat the memory check as keyed off the TASK, not the session: before you
+explore code, search files, or propose a fix/implementation for any
+substantive task (fix, implement, debug, refactor, "how does X work"), if
+no briefing is already in context, run
+`memlayer obs context --query "<task>" --limit 20` as step 0 — before any
+Grep/Read/exploration. Do this once per task, not on every message.
 
 Before any Grep or Read tool call, memlayer's PreToolUse hooks run
 `memlayer hook pre-tool` automatically. If matching prior observations
@@ -133,16 +137,21 @@ const CLAUDE_MD_RULE: &str = r#"## memlayer memory protocol
 
 When hooks are allowed to run: SessionStart auto-injects a briefing,
 Stop auto-rolls up the session, and PreToolUse[Grep]/PreToolUse[Read]
-surface prior observations before grep/read. **On your first turn,
-check whether the briefing is in your context** ("Last session summary"
-/ "Pending review" sections). If yes — don't call `obs context` again
-on the first turn. If no — the hook is blocked (enterprise policy can
-suppress user hooks via `allowManagedHooksOnly: true`); run
-`memlayer obs context --limit 20` as your first action.
+surface prior observations before grep/read.
+
+**Memory-first, keyed off the task — not the session.** The SessionStart
+hook is frequently suppressed (managed `allowManagedHooksOnly: true`, or a
+`/clear`), so do NOT rely on a briefing appearing on its own. Before you
+explore code, search files, or propose a fix/implementation for ANY
+substantive task (fix, implement, debug, refactor, "how does X work"),
+FIRST check whether a memlayer briefing ("Last session summary" / "Pending
+review") is already in context. If it is, use it. If it is NOT, run
+`memlayer obs context --query "<task>" --limit 20` as step 0 of the task —
+before any Explore/Grep/Read. Do this once per task, not on every message.
 
 | Trigger | Command |
 |---|---|
-| First turn, no briefing visible | `memlayer obs context --limit 20` |
+| Start of any task, no briefing in context | `memlayer obs context --query "<task>" --limit 20` |
 | Mid-session task switch | `memlayer obs context --query "<topic>"` |
 | Before new pattern/dep/convention | `memlayer obs search "<keyword>"` |
 | After decision, fix, or user correction | `memlayer obs save --type <decision\|fix\|feedback\|pattern\|note> --title "..." --content "..." --session "$SESSION_ID"` |
