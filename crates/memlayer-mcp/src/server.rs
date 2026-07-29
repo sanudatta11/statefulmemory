@@ -16,6 +16,7 @@ use crate::tools::{AddArgs, ContextArgs, FactsArgs, HealthArgs, RecentArgs, Sear
 
 /// Local stdio MCP server exposing memlayer memory operations as tools.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct MemoryServer {
     /// Lazily-connected daemon client (shared across cloned handler instances).
     pub(crate) client: Arc<LazyClient>,
