@@ -857,4 +857,75 @@ mod tests {
             other => panic!("expected Obs, got {other:?}"),
         }
     }
+
+    #[test]
+    fn daemon_restart_still_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "daemon", "restart"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon(DaemonArgs { verb: DaemonVerb::Restart })
+        ));
+    }
+
+    #[test]
+    fn daemon_stop_still_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "daemon", "stop"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon(DaemonArgs { verb: DaemonVerb::Stop })
+        ));
+    }
+
+    #[test]
+    fn daemon_status_still_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "daemon", "status"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Daemon(DaemonArgs { verb: DaemonVerb::Status })
+        ));
+    }
+
+    #[test]
+    fn hook_pre_tool_grep_parses() {
+        let cli = Cli::try_parse_from([
+            "memlayer", "hook", "pre-tool", "--tool", "Grep", "--pattern", "foo",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Hook(h) => match h.verb {
+                HookVerb::PreTool(a) => {
+                    assert_eq!(a.tool, "Grep");
+                    assert_eq!(a.pattern.as_deref(), Some("foo"));
+                    assert!(a.path.is_none());
+                }
+                other => panic!("expected PreTool, got {other:?}"),
+            },
+            other => panic!("expected Hook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_pre_tool_read_parses() {
+        let cli = Cli::try_parse_from([
+            "memlayer", "hook", "pre-tool", "--tool", "Read", "--path", "/tmp/x.rs",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Hook(h) => match h.verb {
+                HookVerb::PreTool(a) => {
+                    assert_eq!(a.tool, "Read");
+                    assert_eq!(a.path.as_deref(), Some("/tmp/x.rs"));
+                    assert!(a.pattern.is_none());
+                }
+                other => panic!("expected PreTool, got {other:?}"),
+            },
+            other => panic!("expected Hook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_session_start_rejects_non_integer_limit() {
+        let res = Cli::try_parse_from(["memlayer", "hook", "session-start", "--limit", "abc"]);
+        assert!(res.is_err(), "non-integer limit must be rejected by clap");
+    }
 }

@@ -420,7 +420,7 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
     // hooks — auto-inject memlayer context at session start and write a
     // session summary at session end. Idempotent: skips if any hook with a
     // command starting with `memlayer ` already exists for the event.
-    ensure_hook(&mut root, "SessionStart", "memlayer obs context --limit 20");
+    ensure_hook(&mut root, "SessionStart", "memlayer hook session-start --limit 20");
     ensure_hook(
         &mut root,
         "Stop",
@@ -465,7 +465,7 @@ fn patch_claude_settings_project_hooks(path: &PathBuf) -> std::io::Result<bool> 
 
     let original = root.clone();
 
-    ensure_hook(&mut root, "SessionStart", "memlayer obs context --limit 20");
+    ensure_hook(&mut root, "SessionStart", "memlayer hook session-start --limit 20");
     ensure_hook(
         &mut root,
         "Stop",
@@ -831,7 +831,7 @@ mod tests {
             ss[1]["hooks"][0]["command"]
                 .as_str()
                 .unwrap()
-                .starts_with("memlayer obs context"),
+                .starts_with("memlayer hook session-start"),
             "memlayer SessionStart appended last",
         );
 
@@ -865,7 +865,7 @@ mod tests {
         let already_merged = json!({
             "hooks": {
                 "SessionStart": [
-                    {"hooks": [{"type": "command", "command": "memlayer obs context --limit 20", "timeout": 30}]}
+                    {"hooks": [{"type": "command", "command": "memlayer hook session-start --limit 20", "timeout": 30}]}
                 ],
                 "Stop": [
                     {"hooks": [{"type": "command", "command": "memlayer session summarize \"$CLAUDE_SESSION_ID\" --auto", "timeout": 30}]}
@@ -889,5 +889,60 @@ mod tests {
         );
 
         let _ = fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn ensure_hook_inserts_session_start() {
+        let mut root = json!({});
+        ensure_hook(&mut root, "SessionStart", "memlayer hook session-start --limit 20");
+        let arr = root["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0]["hooks"][0]["command"].as_str().unwrap(),
+            "memlayer hook session-start --limit 20",
+        );
+    }
+
+    #[test]
+    fn ensure_hook_idempotent_session_start() {
+        let mut root = json!({});
+        ensure_hook(&mut root, "SessionStart", "memlayer hook session-start --limit 20");
+        ensure_hook(&mut root, "SessionStart", "memlayer hook session-start --limit 20");
+        let arr = root["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "duplicate session-start hook must not be inserted");
+    }
+
+    #[test]
+    fn ensure_hook_skips_when_old_obs_context_present() {
+        // Users who installed before the session-start rename still have
+        // `memlayer obs context` — ensure_hook must not add a second block.
+        let mut root = json!({
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "memlayer obs context --limit 20", "timeout": 30}]}
+                ]
+            }
+        });
+        ensure_hook(&mut root, "SessionStart", "memlayer hook session-start --limit 20");
+        let arr = root["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "old obs context entry counts as already-present");
+    }
+
+    #[test]
+    fn ensure_hook_preserves_non_memlayer_stop_hooks() {
+        let mut root = json!({
+            "hooks": {
+                "Stop": [
+                    {"hooks": [{"type": "command", "command": "some-other-tool cleanup"}]}
+                ]
+            }
+        });
+        ensure_hook(&mut root, "Stop", "memlayer session summarize \"$CLAUDE_SESSION_ID\" --auto");
+        let arr = root["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "non-memlayer Stop hook must be preserved");
+        let has_other = arr.iter().any(|b| {
+            b["hooks"][0]["command"].as_str() == Some("some-other-tool cleanup")
+        });
+        assert!(has_other, "original stop hook must still be present");
     }
 }
