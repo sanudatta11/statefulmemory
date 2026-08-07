@@ -3,51 +3,48 @@
 What to do when something goes wrong with the CLI. **Never** fall back to
 the agent's built-in memory.
 
-## Hooks blocked / not running
+## No briefing on the first turn
 
 Symptom: on your first turn there is no memlayer briefing in your context
 — no `# Last session summary`, no `# Pending review`, no recent
-observations list. Causes:
+observations list.
 
-- **Managed enterprise policy** (most common in Capital One / corporate
-  installs): `/Library/Application Support/ClaudeCode/managed-settings.json`
-  sets `allowManagedHooksOnly: true` and excludes `SessionStart` / `Stop`.
-  User-level and project-level hooks for those events are silently ignored.
-  This is not fixable without an IT admin change.
-- **Stale session.** Settings were read at session launch; `memlayer
-  install` was run later. Restart Claude Code.
-- **Project shadowing.** A `<cwd>/.claude/settings.json` defines hooks for
-  the same events. `memlayer install` v0.1.0+ merges into it automatically.
+This is expected. This skill does not install or depend on hooks, so
+unless the user wired up a `SessionStart` hook themselves, there will be
+no auto-injected briefing. It may also be absent because a `/clear`
+dropped a prior one, or because managed enterprise policy
+(`allowManagedHooksOnly: true`) blocks any user hooks.
 
-**Workaround (always available):** run the underlying CLI commands
-yourself.
+**Workaround (always available, and the default for this skill):** run the
+CLI commands yourself. This skill never edits `settings.json` or adds
+hooks to make this "automatic" — driving it by hand is the intended path.
 
 ```bash
-# First action of the session — replaces what SessionStart would have done
+# First action of the session — recall prior memory
 memlayer obs context --limit 20
 
-# End of session — replaces what Stop would have done
+# End of session — save a rollup
 memlayer session summarize "$CLAUDE_SESSION_ID" --auto
 ```
 
-For PreToolUse Grep/Read nudges, run `obs search "<keyword>"` manually
-before introducing new patterns / dependencies.
+Before introducing new patterns / dependencies, run `obs search
+"<keyword>"` manually.
 
 ## CLI not installed (`command not found: memlayer`)
 
 This is the most common state when a user only installed the **skill** files
 (e.g. dropped `SKILL.md` into `~/.claude/skills/`) without cloning the repo.
 See the "Bootstrap" section of `SKILL.md` — that is the canonical handler.
-Quick recap:
+Building the binary only puts `memlayer` on PATH; it does not touch your
+Claude configuration. Quick recap:
 
-1. **Try to install yourself** (works in unsandboxed dev environments):
+1. **Try to build yourself** (works in unsandboxed dev environments):
    ```bash
    git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer \
        && cd ~/Documents/memlayer \
        && cargo build --release -p memlayer-cli \
        && mkdir -p ~/.local/bin \
-       && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer \
-       && ~/.local/bin/memlayer install
+       && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer
    ```
 
 2. **If the sandbox blocks `git clone` / `cargo` / network** (managed
@@ -56,7 +53,7 @@ Quick recap:
    pasting the command into the chat prefixed with `!` so Claude Code
    executes it in this session:
    ```bash
-   !git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && cd ~/Documents/memlayer && cargo build --release -p memlayer-cli && mkdir -p ~/.local/bin && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && export PATH="$HOME/.local/bin:$PATH" && ~/.local/bin/memlayer install
+   !git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && cd ~/Documents/memlayer && cargo build --release -p memlayer-cli && mkdir -p ~/.local/bin && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && export PATH="$HOME/.local/bin:$PATH"
    ```
 
 3. **If the repo is already on disk somewhere** (`~/Documents/memlayer`,
@@ -125,5 +122,6 @@ memlayer obs context --query "..." --mode hybrid --rerank haiku
 
 If the agent runs in a restricted sandbox, the Unix socket may be denied
 (`Operation not permitted`). The user must allow `~/.memlayer/daemon.sock`
-in their sandbox config — `memlayer install` already patches Claude
-Code's `settings.json` to allow it.
+in their own sandbox config. This skill does not modify Claude settings to
+grant that — surface the error to the user and let them adjust their
+sandbox configuration.
