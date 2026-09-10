@@ -59,3 +59,7 @@ Cargo.lock.bak
 .catalyst/cache/
 .catalyst/sessions/
 
+# Local skills.sh / npx skills installs (not product assets)
+.agents/
+skills-lock.json
+
