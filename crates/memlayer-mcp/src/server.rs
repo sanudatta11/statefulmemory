@@ -62,14 +62,124 @@ fn clamp_limit(limit: Option<i32>, default: i32) -> i32 {
 /// Starts even if the daemon is unreachable — connection is deferred to the
 /// first tool call, and `memory_health` reports a dead daemon rather than
 /// failing to start. Diagnostics go to stderr; stdout carries MCP frames.
+///
+/// Antigravity CLI opens with `server/discover` (often without 2026-07-28
+/// `_meta`). rmcp 3 answers `-32602` then aborts `serve()`, so the client's
+/// follow-up `initialize` hits EOF. We bridge stdio and answer meta-less
+/// discover locally so the connection stays open for legacy initialize.
 pub async fn serve(
     socket_path: PathBuf,
     project: String,
     client_info: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = MemoryServer::new(socket_path, project, client_info);
-    let running = server.serve(rmcp::transport::io::stdio()).await?;
-    running.waiting().await?;
+
+    let (to_server, server_read) = tokio::io::duplex(64 * 1024);
+    let (server_write, from_server) = tokio::io::duplex(64 * 1024);
+
+    let bridge = tokio::spawn(async move {
+        if let Err(e) = bridge_stdio_for_antigravity(to_server, from_server).await {
+            // stdin/stdout closed mid-flight is normal shutdown; log others.
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                tracing::debug!("mcp stdio bridge ended: {e}");
+            }
+        }
+    });
+
+    let result = async {
+        let running = server.serve((server_read, server_write)).await?;
+        running.waiting().await?;
+        Ok(())
+    }
+    .await;
+
+    bridge.abort();
+    result
+}
+
+/// Required `_meta` keys for a modern `server/discover` (MCP 2026-07-28).
+const DISCOVER_META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const DISCOVER_META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+
+/// True when this line is `server/discover` missing required `_meta` — answer
+/// locally instead of forwarding into rmcp's fatal pre-init path.
+fn is_meta_less_discover(line: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+        return false;
+    };
+    if v.get("method").and_then(|m| m.as_str()) != Some("server/discover") {
+        return false;
+    }
+    let Some(meta) = v.pointer("/params/_meta").and_then(|m| m.as_object()) else {
+        return true;
+    };
+    let version_ok = meta.get(DISCOVER_META_PROTOCOL_VERSION).is_some_and(|v| {
+        v.as_str().is_some_and(|s| !s.is_empty())
+            || v.get("name").and_then(|n| n.as_str()).is_some_and(|s| !s.is_empty())
+    });
+    let caps_ok = meta
+        .get(DISCOVER_META_CLIENT_CAPABILITIES)
+        .is_some_and(|v| v.is_object());
+    !(version_ok && caps_ok)
+}
+
+fn discover_missing_meta_error(id: serde_json::Value) -> String {
+    let resp = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32602,
+            "message": "request _meta is missing or has malformed required fields: io.modelcontextprotocol/protocolVersion, io.modelcontextprotocol/clientCapabilities"
+        }
+    });
+    format!("{resp}\n")
+}
+
+fn jsonrpc_id(line: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+async fn bridge_stdio_for_antigravity(
+    mut to_server: tokio::io::DuplexStream,
+    mut from_server: tokio::io::DuplexStream,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    let mut line_buf = String::new();
+    let mut server_buf = vec![0u8; 64 * 1024];
+
+    loop {
+        tokio::select! {
+            read = stdin.read_line(&mut line_buf) => {
+                let n = read?;
+                if n == 0 {
+                    break;
+                }
+                let line = std::mem::take(&mut line_buf);
+                if is_meta_less_discover(&line) {
+                    let resp = discover_missing_meta_error(jsonrpc_id(&line));
+                    stdout.write_all(resp.as_bytes()).await?;
+                    stdout.flush().await?;
+                    continue;
+                }
+                to_server.write_all(line.as_bytes()).await?;
+                // DuplexStream has no flush; write is enough for in-memory.
+            }
+            read = from_server.read(&mut server_buf) => {
+                let n = read?;
+                if n == 0 {
+                    break;
+                }
+                stdout.write_all(&server_buf[..n]).await?;
+                stdout.flush().await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -402,5 +512,110 @@ mod tests {
         assert_eq!(clamp_limit(None, 10), 10);
         assert_eq!(clamp_limit(Some(0), 10), 1);
         assert_eq!(clamp_limit(Some(100), 10), 50);
+    }
+
+    #[test]
+    fn meta_less_discover_detection() {
+        assert!(is_meta_less_discover(
+            r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}"#
+        ));
+        assert!(is_meta_less_discover(
+            r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{}}}"#
+        ));
+        assert!(!is_meta_less_discover(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#
+        ));
+        let with_meta = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+        assert!(!is_meta_less_discover(with_meta));
+    }
+
+    /// Antigravity: meta-less discover must not kill the session — answer
+    /// locally, then accept legacy `initialize` on the same connection.
+    #[tokio::test]
+    async fn meta_less_discover_then_initialize_survives() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let (mut client_wr, bridge_rd) = tokio::io::duplex(64 * 1024);
+        let (mut bridge_wr, client_rd) = tokio::io::duplex(64 * 1024);
+        let (mut to_server, server_rd) = tokio::io::duplex(64 * 1024);
+        let (server_wr, mut from_server) = tokio::io::duplex(64 * 1024);
+
+        // Bridge: client <-> (filter) <-> server duplexes, mirroring stdio bridge.
+        let bridge = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut line_buf = String::new();
+            let mut server_buf = vec![0u8; 64 * 1024];
+            let mut bridge_rd = BufReader::new(bridge_rd);
+            loop {
+                tokio::select! {
+                    read = bridge_rd.read_line(&mut line_buf) => {
+                        let n = read.expect("client read");
+                        if n == 0 { break; }
+                        let line = std::mem::take(&mut line_buf);
+                        if is_meta_less_discover(&line) {
+                            let resp = discover_missing_meta_error(jsonrpc_id(&line));
+                            bridge_wr.write_all(resp.as_bytes()).await.unwrap();
+                            continue;
+                        }
+                        to_server.write_all(line.as_bytes()).await.unwrap();
+                    }
+                    read = from_server.read(&mut server_buf) => {
+                        let n = read.expect("server read");
+                        if n == 0 { break; }
+                        bridge_wr.write_all(&server_buf[..n]).await.unwrap();
+                    }
+                }
+            }
+        });
+
+        let server = server();
+        let serve = tokio::spawn(async move {
+            use rmcp::ServiceExt;
+            let running = server.serve((server_rd, server_wr)).await.expect("serve");
+            let _ = running.waiting().await;
+        });
+
+        // 1) Antigravity probe — must get JSON-RPC error, not EOF.
+        client_wr
+            .write_all(
+                br#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}
+"#,
+            )
+            .await
+            .unwrap();
+
+        let mut lines = BufReader::new(client_rd).lines();
+        let line1 = tokio::time::timeout(std::time::Duration::from_secs(3), lines.next_line())
+            .await
+            .expect("timeout")
+            .unwrap()
+            .expect("reply");
+        let v1: serde_json::Value = serde_json::from_str(&line1).unwrap();
+        assert_eq!(v1["error"]["code"], -32602);
+
+        // 2) Legacy initialize on the same connection — must succeed.
+        client_wr
+            .write_all(
+                br#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"antigravity-cli","version":"1"}}}
+"#,
+            )
+            .await
+            .unwrap();
+
+        let line2 = tokio::time::timeout(std::time::Duration::from_secs(3), lines.next_line())
+            .await
+            .expect("timeout")
+            .unwrap()
+            .expect("initialize reply");
+        let v2: serde_json::Value = serde_json::from_str(&line2).unwrap();
+        assert!(
+            v2.get("result").is_some(),
+            "expected initialize result, got {line2}"
+        );
+        assert!(v2["result"]["serverInfo"]["name"] == "memlayer-mcp" || v2["result"].get("capabilities").is_some());
+
+        drop(client_wr);
+        let _ = serve.await;
+        bridge.abort();
     }
 }

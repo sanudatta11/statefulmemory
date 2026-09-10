@@ -39,8 +39,8 @@ tonic-reflection = "0.12"
 tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 
-# MCP (official Rust SDK)
-rmcp = { version = "2.2.0", features = ["transport-io"] }
+# MCP (official Rust SDK) — 3.x supports Antigravity's server/discover handshake
+rmcp = { version = "3.3.0", features = ["transport-io"] }
 
 # Storage
 rusqlite = { version = "0.32", features = ["bundled-full", "chrono"] }
