@@ -21,6 +21,7 @@ memlayer-core = { path = "../memlayer-core" }
 memlayer-proto = { path = "../memlayer-proto" }
 memlayer-client = { path = "../memlayer-client" }
 memlayer-daemon = { path = "../memlayer-daemon" }
+memlayer-mcp = { path = "../memlayer-mcp" }
 
 clap.workspace = true
 tokio.workspace = true

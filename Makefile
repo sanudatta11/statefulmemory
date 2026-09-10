@@ -1,7 +1,7 @@
 # memlayer — common development and user commands
 # Run `make` or `make help` to see available targets.
 
-.PHONY: help build release install test test-eval lint clean \
+.PHONY: help prereqs build release install test test-eval lint clean \
         daemon-start daemon-stop daemon-status logs skill-install \
         extract-locomo run-locomo
 
@@ -12,6 +12,9 @@ INSTALL_DIR := $(HOME)/.local/bin
 
 help:
 	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Prerequisites"
+	@echo "  prereqs          Install Rust toolchain and required system dependencies"
 	@echo ""
 	@echo "Install"
 	@echo "  install          Build release binary and symlink to $(INSTALL_DIR)/memlayer"
@@ -38,6 +41,32 @@ help:
 	@echo "Misc"
 	@echo "  lint             Run clippy on the workspace"
 	@echo "  clean            cargo clean"
+
+# ── Prerequisites ─────────────────────────────────────────────────────────────
+
+prereqs:
+	@echo "Checking and installing prerequisites for memlayer..."
+	@if command -v apt-get >/dev/null 2>&1; then \
+		echo "Detected apt package manager. Installing system dependencies..."; \
+		sudo apt-get update && sudo apt-get install -y build-essential curl git pkg-config libssl-dev protobuf-compiler; \
+	elif command -v brew >/dev/null 2>&1; then \
+		echo "Detected Homebrew. Installing system dependencies..."; \
+		brew install protobuf pkg-config openssl git curl; \
+	else \
+		echo "Package manager not automatically detected. Ensure build-essential, pkg-config, protobuf-compiler, curl, git are installed."; \
+	fi
+	@if ! command -v rustup >/dev/null 2>&1 && ! command -v cargo >/dev/null 2>&1; then \
+		echo "Rust not found. Installing Rust via rustup..."; \
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable; \
+		. "$$HOME/.cargo/env"; \
+	else \
+		echo "Rust is already installed: $$(cargo --version)"; \
+	fi
+	@if command -v rustup >/dev/null 2>&1; then \
+		echo "Ensuring required Rust toolchain components (rustfmt, clippy)..."; \
+		rustup component add rustfmt clippy; \
+	fi
+	@echo "Prerequisites check complete!"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 

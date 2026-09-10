@@ -1922,6 +1922,7 @@ dependencies = [
  "memlayer-client",
  "memlayer-core",
  "memlayer-daemon",
+ "memlayer-mcp",
  "memlayer-proto",
  "nix",
  "rcgen",
