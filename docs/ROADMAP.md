@@ -19,7 +19,7 @@ cross-project global mirror DB), the platform looks like this:
 | Supersession | Synchronous BM25 | V3 — top BM25 hit in same `type+scope` is soft-deleted on save. |
 | Audit log | Production | `~/.memlayer/queries.log`, JSONL, fail-silent, opt-in full mode. |
 | Agent integration | 4 hooks + skill | SessionStart, Stop, PreToolUse[Grep], PreToolUse[Read]. |
-| MCP server | **Not built** | Roadmap item; spec not written. |
+| MCP server | **Shipped** | `memlayer mcp` + six `memory_*` tools; `memlayer install` registers Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code, Copilot CLI, Gemini CLI, Codex, Amazon Q, `.agents`. |
 | Hybrid retrieval | **Eval-only** | `memlayer-embed`, `memlayer-extract`, `memlayer-eval` all scaffolded. Daemon does not use them. |
 | LLM judge | **Deferred** | Engram-style relation classifier; no code yet. |
 | Code AST / graph | **None** | Zero AST extraction, zero graph tables, zero tree-sitter. |
@@ -179,28 +179,24 @@ See [RETRIEVAL_ROADMAP.md](RETRIEVAL_ROADMAP.md) §6.1 for full design.
 
 ### Spec 2 — MCP server  *(largest reach jump)*
 
-**Status today:** roadmap item, no spec.
+**Status today:** shipped (stdio server + install-time multi-agent registration).
 
-**Scope:**
+**Scope (delivered):**
 
-1. New crate `memlayer-mcp` exposing stdio JSON-RPC 2.0.
-2. Tools: `memory/search`, `memory/save`, `memory/context`,
-   `memory/recent`, `memory/get`, `memory/delete`.
-3. Resources: `memlayer://briefing`, `memlayer://recent`,
-   `memlayer://stats`.
-4. Optional Streamable HTTP via axum + tower for shared team servers.
-5. Bearer-token auth on TCP, none on stdio (filesystem-trusted).
-6. `memlayer install --mcp` adds an `mcp` server entry to
-   `~/.claude/mcp.json` and Cursor's `mcp_servers.json`.
+1. Crate `memlayer-mcp` exposing stdio MCP via `rmcp`.
+2. Tools: `memory_search`, `memory_add`, `memory_context`, `memory_recent`,
+   `memory_facts`, `memory_health`.
+3. `memlayer mcp` CLI subcommand (best-effort daemon autospawn).
+4. `memlayer install` registers the stdio server with Claude Code, Cursor,
+   Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code / Copilot,
+   Copilot CLI, Gemini CLI, Codex, Amazon Q, and the shared `.agents`
+   convention (no separate `--mcp` flag).
 
-**Why second:** unblocks MCP-native agents (Cursor, Claude Code) to use
-memlayer as first-class tools instead of shell-out hooks. The hook
-approach we just shipped works, but MCP is the cleaner future. Doesn't
-conflict with the hooks — hooks remain for non-MCP fallback.
+**Deferred / follow-ups:** Streamable HTTP for shared team servers; bearer
+auth on TCP; resources (`memlayer://briefing`, …); live integration tests.
 
-**Estimated lift:** doesn't change LoCoMo, but ~3× adoption ceiling
-because Cursor / Windsurf MCP support is the standard integration path
-now.
+**Why it matters:** unblocks MCP-native agents to use memlayer as first-class
+tools instead of shell-out hooks. Hooks remain for non-MCP fallback.
 
 ### Spec 3 — Code anchors + graphify bridge  *(answers the AST question)*
 

@@ -91,10 +91,10 @@ async fn main() -> ExitCode {
             }
             Err(code) => code,
         },
-        Command::Install => {
+        Command::Install(args) => {
             let stdout_is_tty = std::io::stdout().is_terminal();
             let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
-            cmd_skill::dispatch(fmt).await
+            cmd_skill::dispatch(fmt, args).await
         }
         Command::Uninstall => {
             let stdout_is_tty = std::io::stdout().is_terminal();

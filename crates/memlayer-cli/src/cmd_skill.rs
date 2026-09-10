@@ -1,23 +1,28 @@
-// Generated with AI Coding Rules Hub
-//! `memlayer skill install` — copy the bundled SKILL.md into all detected
-//! agent config directories and write agent-specific rule files.
+//! `memlayer install` — copy the bundled SKILL.md into detected agent
+//! config directories, write agent-specific rule files, and register the
+//! local stdio MCP server (`memlayer mcp`) with those agents.
 //!
-//! Supports:
-//!   Claude Code  — ~/.claude/skills/memlayer/SKILL.md  (skill)
-//!   Claude Code  — ~/CLAUDE.md  (global instructions, append block)
-//!   Claude Code  — ~/.claude/settings.json  (permissions + Unix socket)
-//!   Windsurf     — ~/.codeium/windsurf/rules/memlayer-memory.md  (global rule)
-//!   Cursor       — ~/.cursor/rules/memlayer.mdc  (global rule)
-//!   GitHub Copilot — ~/.github/copilot-instructions.md  (append block)
+//! Auto-detects installed agents (skills.sh-style). Override with
+//! `--all` or `--agent <id>`.
+//!
+//! Supports (skills / rules):
+//!   Claude Code, Windsurf, Cursor, GitHub Copilot, shared `.agents/skills`
+//!
+//! Supports (MCP registration via [`crate::mcp_install`]):
+//!   Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode,
+//!   VS Code / Copilot agent, Copilot CLI, Gemini CLI, Codex, Amazon Q,
+//!   shared `.agents/mcp.json`
 //!
 //! Safe to re-run: existing files are overwritten, append targets are
 //! idempotent (the memlayer block is replaced, not duplicated).
-//! Settings patches are additive — existing keys are preserved.
+//! Settings / MCP patches are additive — existing keys are preserved.
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::agents::{self, AgentId};
+use crate::cli::InstallArgs;
 use crate::formatter::Formatter;
 
 /// Bundled SKILL.md content compiled into the binary so `skill install`
@@ -173,16 +178,56 @@ const CLAUDE_BASH_RULE: &str = "Bash(memlayer *)";
 /// The Unix socket path added to Claude Code sandbox settings.
 const MEMLAYER_SOCK: &str = "~/.memlayer/daemon.sock";
 
-pub async fn dispatch(_fmt: Formatter) -> ExitCode {
+pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => {
-            eprintln!("memlayer skill install: could not determine home directory");
+            eprintln!("memlayer install: could not determine home directory");
             return ExitCode::from(1);
         }
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
 
+    let selection = match agents::resolve_selection(&home, &cwd, args.all, &args.agents) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("memlayer install: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    if !selection.detected.is_empty() {
+        println!(
+            "Detected: {}",
+            selection
+                .detected
+                .iter()
+                .map(|a| a.display_name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!("Detected: (none)");
+    }
+
+    if let Some(hint) = selection.empty_hint {
+        println!();
+        println!("{hint}");
+        return ExitCode::SUCCESS;
+    }
+
+    println!(
+        "Installing for: {}",
+        selection
+            .selected
+            .iter()
+            .map(|a| a.display_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!();
+
+    let selected = &selection.selected;
     let mut installed: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
 
@@ -196,105 +241,135 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
         Err(e)    => eprintln!("  warn: /usr/local/bin symlink failed (may need sudo): {e}"),
     }
 
-    // ── Claude Code global skill ────────────────────────────────────────────
-    let claude_global = home.join(".claude").join("skills").join("memlayer");
-    match install_file(&claude_global.join("SKILL.md"), SKILL_MD) {
-        Ok(true)  => installed.push("Claude Code (global)    ~/.claude/skills/memlayer/SKILL.md".into()),
-        Ok(false) => skipped.push("Claude Code (global)    (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Claude Code global install failed: {e}"),
-    }
-    match install_skill_references(&claude_global) {
-        Ok(true)  => installed.push("Claude Code (refs)      ~/.claude/skills/memlayer/references/*.md".into()),
-        Ok(false) => skipped.push("Claude Code (refs)      (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Claude Code references install failed: {e}"),
-    }
+    if selected.contains(&AgentId::ClaudeCode) {
+        // ── Claude Code global skill ────────────────────────────────────────
+        let claude_global = home.join(".claude").join("skills").join("memlayer");
+        match install_file(&claude_global.join("SKILL.md"), SKILL_MD) {
+            Ok(true)  => installed.push("Claude Code (global)    ~/.claude/skills/memlayer/SKILL.md".into()),
+            Ok(false) => skipped.push("Claude Code (global)    (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Claude Code global install failed: {e}"),
+        }
+        match install_skill_references(&claude_global) {
+            Ok(true)  => installed.push("Claude Code (refs)      ~/.claude/skills/memlayer/references/*.md".into()),
+            Ok(false) => skipped.push("Claude Code (refs)      (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Claude Code references install failed: {e}"),
+        }
 
-    // ── Claude Code local (CWD) ─────────────────────────────────────────────
-    let claude_local = cwd.join(".claude").join("skills").join("memlayer");
-    match install_file(&claude_local.join("SKILL.md"), SKILL_MD) {
-        Ok(true)  => installed.push(format!("Claude Code (local)     {}/.claude/skills/memlayer/SKILL.md", cwd.display())),
-        Ok(false) => skipped.push("Claude Code (local)     (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Claude Code local install failed: {e}"),
-    }
-    match install_skill_references(&claude_local) {
-        Ok(true)  => installed.push(format!("Claude Code (refs)      {}/.claude/skills/memlayer/references/*.md", cwd.display())),
-        Ok(false) => skipped.push("Claude Code (refs local)(unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Claude Code local references install failed: {e}"),
-    }
+        // ── Claude Code local (CWD) ─────────────────────────────────────────
+        let claude_local = cwd.join(".claude").join("skills").join("memlayer");
+        match install_file(&claude_local.join("SKILL.md"), SKILL_MD) {
+            Ok(true)  => installed.push(format!("Claude Code (local)     {}/.claude/skills/memlayer/SKILL.md", cwd.display())),
+            Ok(false) => skipped.push("Claude Code (local)     (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Claude Code local install failed: {e}"),
+        }
+        match install_skill_references(&claude_local) {
+            Ok(true)  => installed.push(format!("Claude Code (refs)      {}/.claude/skills/memlayer/references/*.md", cwd.display())),
+            Ok(false) => skipped.push("Claude Code (refs local)(unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Claude Code local references install failed: {e}"),
+        }
 
-    // ── Claude Code settings.json (permissions + socket) ───────────────────
-    // Adds Bash(memlayer *) to permissions.allow and ~/.memlayer/daemon.sock
-    // to sandbox.network.allowUnixSockets so the agent can call memlayer
-    // without permission prompts and without the Unix socket being blocked.
-    let claude_settings = home.join(".claude").join("settings.json");
-    match patch_claude_settings(&claude_settings) {
-        Ok(true)  => installed.push("Claude Code (settings)  ~/.claude/settings.json".into()),
-        Ok(false) => skipped.push("Claude Code (settings)  (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: ~/.claude/settings.json patch failed: {e}"),
-    }
+        // ── Claude Code settings.json (permissions + socket) ───────────────
+        let claude_settings = home.join(".claude").join("settings.json");
+        match patch_claude_settings(&claude_settings) {
+            Ok(true)  => installed.push("Claude Code (settings)  ~/.claude/settings.json".into()),
+            Ok(false) => skipped.push("Claude Code (settings)  (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: ~/.claude/settings.json patch failed: {e}"),
+        }
 
-    // ── Claude Code project-level settings.json ─────────────────────────────
-    // If the cwd is a Claude Code project with its own .claude/settings.json
-    // (e.g., one managed by Catalyst, a team-shared hook config, etc.), Claude
-    // Code's hook merge rules let the project-level file *replace* global hook
-    // entries for the same event — silently shadowing memlayer's. Detect that
-    // file and merge memlayer hooks into it (appending to existing arrays so
-    // third-party hooks keep working). Backup written to settings.json.bak.
-    let project_settings = cwd.join(".claude").join("settings.json");
-    if project_settings.exists() {
-        match patch_claude_settings_project_hooks(&project_settings) {
-            Ok(true)  => installed.push(format!("Claude Code (project)   {}", project_settings.display())),
-            Ok(false) => skipped.push("Claude Code (project)   (unchanged)".into()),
-            Err(e)    => eprintln!("  warn: {} patch failed: {e}", project_settings.display()),
+        // ── Claude Code project-level settings.json ─────────────────────────
+        let project_settings = cwd.join(".claude").join("settings.json");
+        if project_settings.exists() {
+            match patch_claude_settings_project_hooks(&project_settings) {
+                Ok(true)  => installed.push(format!("Claude Code (project)   {}", project_settings.display())),
+                Ok(false) => skipped.push("Claude Code (project)   (unchanged)".into()),
+                Err(e)    => eprintln!("  warn: {} patch failed: {e}", project_settings.display()),
+            }
+        }
+
+        // ── Claude Code global instructions (~/CLAUDE.md) ───────────────────
+        let claude_md = home.join("CLAUDE.md");
+        match install_block(&claude_md, CLAUDE_MD_RULE) {
+            Ok(true)  => installed.push(format!("Claude Code (CLAUDE.md) {}", claude_md.display())),
+            Ok(false) => skipped.push("Claude Code (CLAUDE.md) (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: ~/CLAUDE.md install failed: {e}"),
         }
     }
 
-    // ── Claude Code global instructions (~/CLAUDE.md) ───────────────────────
-    let claude_md = home.join("CLAUDE.md");
-    match install_block(&claude_md, CLAUDE_MD_RULE) {
-        Ok(true)  => installed.push(format!("Claude Code (CLAUDE.md) {}", claude_md.display())),
-        Ok(false) => skipped.push("Claude Code (CLAUDE.md) (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: ~/CLAUDE.md install failed: {e}"),
+    if selected.contains(&AgentId::Windsurf) {
+        let windsurf_global = home.join(".codeium").join("windsurf").join("rules").join("memlayer-memory.md");
+        match install_file(&windsurf_global, AGENT_RULE) {
+            Ok(true)  => installed.push(format!("Windsurf (global)       {}", windsurf_global.display())),
+            Ok(false) => skipped.push("Windsurf (global)       (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Windsurf global install failed: {e}"),
+        }
+
+        let windsurf_local = cwd.join(".windsurf").join("rules").join("memlayer-memory.md");
+        match install_file(&windsurf_local, AGENT_RULE) {
+            Ok(true)  => installed.push(format!("Windsurf (local)        {}", windsurf_local.display())),
+            Ok(false) => skipped.push("Windsurf (local)        (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Windsurf local install failed: {e}"),
+        }
     }
 
-    // ── Windsurf global ─────────────────────────────────────────────────────
-    let windsurf_global = home.join(".codeium").join("windsurf").join("rules").join("memlayer-memory.md");
-    match install_file(&windsurf_global, AGENT_RULE) {
-        Ok(true)  => installed.push(format!("Windsurf (global)       {}", windsurf_global.display())),
-        Ok(false) => skipped.push("Windsurf (global)       (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Windsurf global install failed: {e}"),
+    if selected.contains(&AgentId::Cursor) {
+        let cursor_path = home.join(".cursor").join("rules").join("memlayer.mdc");
+        match install_file(&cursor_path, &format!("---\ndescription: memlayer memory protocol\nalwaysApply: true\n---\n\n{AGENT_RULE}")) {
+            Ok(true)  => installed.push(format!("Cursor (global)         {}", cursor_path.display())),
+            Ok(false) => skipped.push("Cursor (global)         (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Cursor install failed: {e}"),
+        }
     }
 
-    // ── Windsurf local (CWD) ────────────────────────────────────────────────
-    let windsurf_local = cwd.join(".windsurf").join("rules").join("memlayer-memory.md");
-    match install_file(&windsurf_local, AGENT_RULE) {
-        Ok(true)  => installed.push(format!("Windsurf (local)        {}", windsurf_local.display())),
-        Ok(false) => skipped.push("Windsurf (local)        (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Windsurf local install failed: {e}"),
+    // Shared `.agents/skills` for universal agents (skills.sh canonical path).
+    if selected.contains(&AgentId::Agents) {
+        for (label, base) in [
+            ("Agents (skills user)", home.join(".agents").join("skills").join("memlayer")),
+            ("Agents (skills project)", cwd.join(".agents").join("skills").join("memlayer")),
+        ] {
+            match install_file(&base.join("SKILL.md"), SKILL_MD) {
+                Ok(true)  => installed.push(format!("{label:<24} {}", base.join("SKILL.md").display())),
+                Ok(false) => skipped.push(format!("{label:<24} (unchanged)")),
+                Err(e)    => eprintln!("  warn: {label} install failed: {e}"),
+            }
+            match install_skill_references(&base) {
+                Ok(true)  => installed.push(format!("{label} refs      {}/references/*.md", base.display())),
+                Ok(false) => skipped.push(format!("{label} refs      (unchanged)")),
+                Err(e)    => eprintln!("  warn: {label} references install failed: {e}"),
+            }
+        }
     }
 
-    // ── Cursor global ───────────────────────────────────────────────────────
-    let cursor_path = home.join(".cursor").join("rules").join("memlayer.mdc");
-    match install_file(&cursor_path, &format!("---\ndescription: memlayer memory protocol\nalwaysApply: true\n---\n\n{AGENT_RULE}")) {
-        Ok(true)  => installed.push(format!("Cursor (global)         {}", cursor_path.display())),
-        Ok(false) => skipped.push("Cursor (global)         (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Cursor install failed: {e}"),
+    // ── MCP registration (detected / selected agents only) ─────────────────
+    for result in crate::mcp_install::install_for(&home, &cwd, selected) {
+        match result {
+            Ok(action) if action.changed => {
+                installed.push(format!(
+                    "{:<24} {}",
+                    action.label,
+                    action.path.display()
+                ));
+            }
+            Ok(action) => {
+                skipped.push(format!("{:<24} (unchanged)", action.label));
+            }
+            Err((label, path, err)) => {
+                eprintln!("  warn: {label} MCP patch failed ({}): {err}", path.display());
+            }
+        }
     }
 
-    // ── GitHub Copilot ──────────────────────────────────────────────────────
-    let copilot_path = home.join(".github").join("copilot-instructions.md");
-    match install_block(&copilot_path, AGENT_RULE) {
-        Ok(true)  => installed.push(format!("Copilot (global)        {}", copilot_path.display())),
-        Ok(false) => skipped.push("Copilot (global)        (unchanged)".into()),
-        Err(e)    => eprintln!("  warn: Copilot install failed: {e}"),
+    if selected.contains(&AgentId::Copilot) || selected.contains(&AgentId::CopilotCli) {
+        let copilot_path = home.join(".github").join("copilot-instructions.md");
+        match install_block(&copilot_path, AGENT_RULE) {
+            Ok(true)  => installed.push(format!("Copilot (global)        {}", copilot_path.display())),
+            Ok(false) => skipped.push("Copilot (global)        (unchanged)".into()),
+            Err(e)    => eprintln!("  warn: Copilot install failed: {e}"),
+        }
     }
 
     // ── Summary ─────────────────────────────────────────────────────────────
     if installed.is_empty() && skipped.is_empty() {
-        println!("No agent targets detected. Nothing installed.");
-        println!();
-        println!("Tip: install directories are created automatically — re-run");
-        println!("after installing an agent to pick it up.");
+        println!("Nothing to install for the selected agents.");
         return ExitCode::SUCCESS;
     }
 
@@ -314,14 +389,12 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
     println!();
     println!("Restart your agent for the changes to take effect.");
     println!("Verify: ask the agent \"do you have the memlayer memory protocol?\"");
+    println!("        MCP: memory_search / memory_add / memory_context / memory_recent / …");
+    println!("        Re-run with --all or --agent <id> to target more agents.");
     println!("        or run `tail -f ~/.memlayer/queries.log` after the new session starts");
     println!("        — you should see an `obs.context` line within a second.");
 
     // ── Daemon restart ──────────────────────────────────────────────────────
-    // After an install (often following a binary upgrade), an old daemon may
-    // still be running with the previous binary. Stop it here so the next
-    // CLI call auto-spawns the freshly-installed binary, picking up new
-    // migrations and behavior changes.
     let socket = memlayer_core::paths::socket_path();
     if socket.exists() {
         match std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "memlayer".into()))
@@ -332,10 +405,7 @@ pub async fn dispatch(_fmt: Formatter) -> ExitCode {
                 println!();
                 println!("Stopped running daemon — next memlayer call will spawn the new binary.");
             }
-            Ok(_) | Err(_) => {
-                // Daemon wasn't running, or stop failed — both are non-fatal
-                // since the auto-spawn path will reconcile on the next call.
-            }
+            Ok(_) | Err(_) => {}
         }
     }
 

@@ -39,6 +39,9 @@ tonic-reflection = "0.12"
 tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 
+# MCP (official Rust SDK)
+rmcp = { version = "2.2.0", features = ["transport-io"] }
+
 # Storage
 rusqlite = { version = "0.32", features = ["bundled-full", "chrono"] }
 refinery = { version = "0.8", features = ["rusqlite"] }

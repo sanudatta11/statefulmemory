@@ -21,9 +21,4 @@ serde_json.workspace = true
 
 tracing.workspace = true
 thiserror.workspace = true
-rmcp = { version = "2.2.0", features = ["transport-io"] }
-
-# NOTE: `rmcp` (the official Rust MCP SDK) is added via `cargo add rmcp`
-# during the pre-fetch step so its exact version + features resolve against
-# the registry. It provides the stdio transport and tool-registration API
-# used by src/server.rs.
+rmcp.workspace = true

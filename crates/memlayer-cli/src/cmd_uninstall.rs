@@ -1,6 +1,6 @@
 // Generated with AI Coding Rules Hub
-//! `memlayer uninstall` — remove all skill files installed by `memlayer install`
-//! and undo patches to ~/.claude/settings.json.
+//! `memlayer uninstall` — remove all skill files installed by `memlayer install`,
+//! undo patches to ~/.claude/settings.json, and unregister MCP server entries.
 //!
 //! `memlayer clean` — stop the daemon and wipe ~/.memlayer/ (all observations).
 //!
@@ -37,11 +37,16 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
         home.join(".github").join("copilot-instructions.md"),
     ];
     let settings_path = home.join(".claude").join("settings.json");
+    let existing_mcp = crate::mcp_install::existing_registrations(&home, &cwd);
 
     let existing_files: Vec<&PathBuf> = file_targets.iter().filter(|p| p.exists()).collect();
     let existing_blocks: Vec<&PathBuf> = block_targets.iter().filter(|p| p.exists()).collect();
 
-    if existing_files.is_empty() && existing_blocks.is_empty() && !settings_path.exists() {
+    if existing_files.is_empty()
+        && existing_blocks.is_empty()
+        && existing_mcp.is_empty()
+        && !settings_path.exists()
+    {
         println!("Nothing to uninstall — no memlayer files found.");
         return ExitCode::SUCCESS;
     }
@@ -52,6 +57,9 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
     }
     for p in &existing_blocks {
         println!("  remove block from  {}", p.display());
+    }
+    for (label, path) in &existing_mcp {
+        println!("  unregister MCP ({label})  {}", path.display());
     }
     if settings_path.exists() {
         println!("  undo patches in  {}", settings_path.display());
@@ -78,6 +86,19 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
             Ok(true)  => removed.push(format!("unblocked  {}", path.display())),
             Ok(false) => {} // block wasn't there
             Err(e)    => failed.push(format!("failed   {} ({e})", path.display())),
+        }
+    }
+
+    for result in crate::mcp_install::uninstall_all(&home, &cwd) {
+        match result {
+            Ok(action) => removed.push(format!(
+                "unregistered MCP ({})  {}",
+                action.label,
+                action.path.display()
+            )),
+            Err((label, path, err)) => {
+                failed.push(format!("failed   {label} {} ({err})", path.display()))
+            }
         }
     }
 

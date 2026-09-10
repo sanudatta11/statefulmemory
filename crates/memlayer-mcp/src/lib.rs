@@ -11,10 +11,11 @@
 //! - `tools`  — typed arg structs for the six tools
 //! - `client` — lazily-connected, retrying daemon client
 //! - `server` — rmcp stdio server + tool registry + `serve()` entry point
-//! - `render` — `Observation` -> structured MCP content (mcp-t6)
+//! - `render` — `Observation` / `Fact` → structured MCP JSON content
 
 pub mod client;
 pub mod error;
+pub mod render;
 pub mod scope;
 pub mod server;
 pub mod tools;

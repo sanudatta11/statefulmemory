@@ -10,6 +10,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod agents;
 pub mod audit;
 pub mod autospawn;
 pub mod cli;
@@ -29,6 +30,7 @@ pub mod cmd_team;
 pub mod cmd_version;
 pub mod exit;
 pub mod formatter;
+pub mod mcp_install;
 pub mod project_detect;
 pub mod render;
 

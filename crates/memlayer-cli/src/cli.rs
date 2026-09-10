@@ -66,9 +66,11 @@ pub enum Command {
     Team(TeamArgs),
     /// Tail the daemon log.
     Logs(LogsArgs),
-    /// Install the memlayer skill into all detected agent config directories.
-    Install,
-    /// Remove all memlayer skill files and undo settings patches.
+    /// Install skills, agent rules, hooks, and MCP registration
+    /// (`memlayer mcp`) for detected coding agents (skills.sh-style).
+    /// Use `--all` or `--agent` to override auto-detection.
+    Install(InstallArgs),
+    /// Remove memlayer skill files, settings patches, and MCP registration.
     Uninstall,
     /// Wipe all stored observations and stop the daemon.
     Clean,
@@ -87,6 +89,19 @@ pub enum Command {
     Mcp,
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct InstallArgs {
+    /// Install for every known agent (skip auto-detection).
+    #[arg(long)]
+    pub all: bool,
+
+    /// Target specific agents (repeatable). Example: `--agent cursor --agent claude-code`.
+    /// Accepted ids: claude-code, cursor, windsurf, antigravity, opencode,
+    /// kimi-code, zcode, agents, vscode, copilot-cli, copilot, gemini, codex, amazon-q.
+    #[arg(long = "agent", short = 'a', value_name = "AGENT")]
+    pub agents: Vec<String>,
 }
 
 #[derive(Args, Debug)]

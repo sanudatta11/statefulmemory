@@ -1,16 +1,17 @@
-//! Lazily-connected, cached daemon client.
+//! Lazily-connected, cached daemon client with one-shot Unavailable retry.
 //!
 //! The MCP server may start before the daemon is reachable (so
 //! `memory_health` can report a dead daemon). We therefore defer the gRPC
 //! connection until the first tool call that needs it, then cache the
-//! channel. `connect_uds` returns a lazy tonic `Channel`, so a successful
-//! `get()` does not guarantee the daemon is live — transient failures on the
-//! actual RPC are retried once via `memlayer_client::with_retry`.
+//! channel. Transient `UNAVAILABLE` (daemon restart) is retried once via
+//! [`memlayer_client::with_retry`], then the cache is invalidated and a
+//! fresh dial is attempted.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use memlayer_client::channel::connect_uds;
-use memlayer_client::ClientError;
+use memlayer_client::{with_retry, ClientError};
 use memlayer_proto::memlayer_client::MemlayerClient;
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -35,10 +36,12 @@ impl LazyClient {
         &self.socket_path
     }
 
+    /// Drop any cached client so the next [`Self::get`] re-dials.
+    pub async fn invalidate(&self) {
+        *self.cached.lock().await = None;
+    }
+
     /// Return a connected client, building and caching it on first call.
-    ///
-    /// Maps connection failures to keyed [`McpError`]s so callers (and
-    /// `memory_health`) can classify the problem.
     pub async fn get(&self) -> Result<MemlayerClient<Channel>, McpError> {
         let mut guard = self.cached.lock().await;
         if let Some(client) = guard.as_ref() {
@@ -54,6 +57,27 @@ impl LazyClient {
         *guard = Some(client.clone());
         Ok(client)
     }
+
+    /// Run an RPC against a cloned client, retrying once on `UNAVAILABLE`.
+    ///
+    /// If retries still fail with `UNAVAILABLE`, invalidate the cache and
+    /// attempt one fresh dial + call so a daemon restart mid-session recovers.
+    pub async fn call<F, Fut, T>(&self, mut op: F) -> Result<T, McpError>
+    where
+        F: FnMut(MemlayerClient<Channel>) -> Fut,
+        Fut: Future<Output = Result<T, tonic::Status>>,
+    {
+        let client = self.get().await?;
+        match with_retry(|| op(client.clone())).await {
+            Ok(v) => Ok(v),
+            Err(status) if status.code() == tonic::Code::Unavailable => {
+                self.invalidate().await;
+                let client = self.get().await?;
+                op(client).await.map_err(McpError::from)
+            }
+            Err(status) => Err(McpError::from(status)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -62,13 +86,11 @@ mod tests {
 
     #[tokio::test]
     async fn lazy_client_defers_connection() {
-        // Constructing against a nonexistent socket must not fail...
         let lc = LazyClient::new(PathBuf::from("/nonexistent/memlayer-test.sock"));
         assert_eq!(
             lc.socket_path(),
             Path::new("/nonexistent/memlayer-test.sock")
         );
-        // ...the missing socket only surfaces when we actually try to connect.
         let err = lc.get().await.expect_err("missing socket should error");
         assert!(matches!(err, McpError::SocketMissing { .. }), "{err:?}");
     }

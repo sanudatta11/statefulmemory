@@ -1,12 +1,15 @@
 # memlayer — common development and user commands
 # Run `make` or `make help` to see available targets.
 
-.PHONY: help prereqs build release install test test-eval lint clean \
+.PHONY: help prereqs check-inputs build release install test test-eval lint clean \
         daemon-start daemon-stop daemon-status logs skill-install \
         extract-locomo run-locomo
 
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
 BINARY     := target/release/memlayer
 INSTALL_DIR := $(HOME)/.local/bin
+CARGO       := cargo
 
 # ── Default ──────────────────────────────────────────────────────────────────
 
@@ -15,9 +18,10 @@ help:
 	@echo ""
 	@echo "Prerequisites"
 	@echo "  prereqs          Install Rust toolchain and required system dependencies"
+	@echo "  check-inputs     Verify cargo, protoc, and embedded skill assets exist"
 	@echo ""
 	@echo "Install"
-	@echo "  install          Build release binary and symlink to $(INSTALL_DIR)/memlayer"
+	@echo "  install          Build release binary and copy to $(INSTALL_DIR)/memlayer"
 	@echo "  skill-install    Install agent skill globally + locally (Claude Code, Windsurf, Cursor, Copilot)"
 	@echo ""
 	@echo "Build"
@@ -66,24 +70,34 @@ prereqs:
 		echo "Ensuring required Rust toolchain components (rustfmt, clippy)..."; \
 		rustup component add rustfmt clippy; \
 	fi
+	@command -v protoc >/dev/null || (echo "error: protoc still missing after prereqs"; exit 1)
+	@echo "protoc: $$(protoc --version)"
 	@echo "Prerequisites check complete!"
+
+# Fail fast with actionable errors before a long release compile.
+check-inputs:
+	@command -v cargo >/dev/null || (echo "error: cargo not found. Run 'make prereqs'."; exit 1)
+	@command -v protoc >/dev/null || (echo "error: protoc not found. Run 'make prereqs' (needs protobuf-compiler)."; exit 1)
+	@test -f skills/memlayer/SKILL.md || (echo "error: skills/memlayer/SKILL.md missing (required — embedded into the CLI)."; exit 1)
+	@test -f proto/memlayer.proto || (echo "error: proto/memlayer.proto missing."; exit 1)
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-build:
+build: check-inputs
 	cargo build -p memlayer-cli
 
-release:
+release: check-inputs
 	cargo build --release -p memlayer-cli
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
+# Copy (not symlink) so the install survives moving/deleting the source tree.
 install: release
 	mkdir -p $(INSTALL_DIR)
-	ln -sf $(PWD)/$(BINARY) $(INSTALL_DIR)/memlayer
+	install -m 755 $(BINARY) $(INSTALL_DIR)/memlayer
 	@echo "Installed: $(INSTALL_DIR)/memlayer"
+	@$(INSTALL_DIR)/memlayer --version
 	@echo "Make sure $(INSTALL_DIR) is on your PATH."
-
 skill-install: install
 	$(BINARY) install
 

@@ -46,8 +46,9 @@ pub async fn dispatch(project_flag: Option<String>) -> ExitCode {
         }
     }
 
-    // Fallback client identity; the negotiated MCP clientInfo (the actual
-    // calling agent) is captured per-call from the request context.
+    // Fallback client identity used when MCP initialize has not supplied
+    // clientInfo yet. memory_add prefers the negotiated Peer clientInfo
+    // (name@version) as created_by when available.
     let client_info = format!("memlayer-mcp/{}", env!("CARGO_PKG_VERSION"));
 
     match memlayer_mcp::serve(socket, detection.normalized, client_info).await {
