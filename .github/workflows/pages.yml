@@ -19,7 +19,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages-${{ github.workflow }}-${{ github.ref }}
+  # One in-flight production deploy; PRs share a separate group.
+  group: pages-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
   cancel-in-progress: true
 
 jobs:
@@ -39,6 +40,11 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: website/package-lock.json
+
+      - name: Setup Pages
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        id: pages
+        uses: actions/configure-pages@v5
 
       - name: Install
         run: npm ci
