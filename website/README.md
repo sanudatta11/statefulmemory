@@ -20,23 +20,27 @@ npm run preview
 
 ## Go-live checklist (domain + Search Console)
 
-Do these once after the first successful `Pages` workflow on `main`:
+Do these once before (or right after) the first successful `Pages` deploy on `main`:
 
-1. **GitHub Pages**
-   - Repo → Settings → Pages
-   - Source: **GitHub Actions**
+1. **Enable GitHub Pages (required)**
+   - Repo → **Settings → Pages**
+   - Build and deployment → Source: **GitHub Actions**
+   - Without this, `actions/deploy-pages` fails with `HttpError: Not Found`
+2. **Custom domain**
    - Custom domain: `memlayer.org`
    - Enable **Enforce HTTPS**
-2. **DNS at your registrar** (GitHub’s current apex targets — confirm in Pages settings if they change)
-   - Apex `memlayer.org`: A records to GitHub Pages IPs (shown in repo Pages settings)
+3. **DNS at your registrar** (confirm IPs in Pages settings if they change)
+   - Apex `memlayer.org`: A records to GitHub Pages IPs
    - `www.memlayer.org`: CNAME → `sanudatta11.github.io`
    - Prefer apex as canonical; redirect www → apex when Pages offers it
-3. **Google Search Console**
+4. **Google Search Console**
    - Add a **Domain** property for `memlayer.org` (or URL-prefix `https://memlayer.org/`)
    - Verify ownership with a **DNS TXT** record at the registrar
    - Submit sitemap: `https://memlayer.org/sitemap-index.xml`
-4. Confirm crawlability
+5. Confirm crawlability
    - `https://memlayer.org/robots.txt` lists the sitemap
    - `https://memlayer.org/sitemap-index.xml` returns 200 after deploy
 
 `public/CNAME` already contains `memlayer.org` for the Pages custom domain.
+
+After enabling Pages, re-run the failed **Pages** workflow on `main` (Actions → Pages → Re-run), or push an empty commit / `workflow_dispatch`.
