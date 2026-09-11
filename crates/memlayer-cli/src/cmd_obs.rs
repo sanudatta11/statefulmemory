@@ -19,8 +19,8 @@ use tonic::Status;
 use crate::audit::{self, AuditEntry, HitMeta};
 use crate::cli::{
     ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsFactsArgs, ObsGetArgs, ObsHistoryArgs,
-    ObsListArgs, ObsRecentArgs, ObsReextractArgs, ObsRelationsArgs, ObsSaveArgs, ObsSearchArgs,
-    ObsSuggestTopicKeyArgs, ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
+    ObsListArgs, ObsRecentArgs, ObsReextractArgs, ObsReindexArgs, ObsRelationsArgs, ObsSaveArgs,
+    ObsSearchArgs, ObsSuggestTopicKeyArgs, ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
 };
 use crate::exit;
 use crate::formatter::{Formatter, Render};
@@ -55,6 +55,7 @@ pub async fn dispatch(
         ObsVerb::Reextract(a) => reextract(client, project_name, a).await,
         ObsVerb::History(a) => history(client, project_name, fmt, a).await,
         ObsVerb::Relations(a) => relations(client, project_name, fmt, a).await,
+        ObsVerb::Reindex(a) => reindex(client, project_name, a).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -703,6 +704,24 @@ async fn relations(
     };
     let resp = client.get_observation_relations(req).await?.into_inner();
     write_render(&resp, fmt)?;
+    Ok(())
+}
+
+/// `obs reindex [--force]` — queue re-embedding for observations.
+async fn reindex(
+    client: &mut Client,
+    project_name: &str,
+    a: ObsReindexArgs,
+) -> Result<(), VerbError> {
+    let req = p::ReindexObservationsRequest {
+        project_name: project_name.to_string(),
+        force: a.force,
+    };
+    let resp = client.reindex_observations(req).await?.into_inner();
+    eprintln!(
+        "Queued {} observations for re-indexing, skipped {}, cleared {}.",
+        resp.queued, resp.skipped, resp.cleared,
+    );
     Ok(())
 }
 

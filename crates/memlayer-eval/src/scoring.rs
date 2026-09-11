@@ -288,7 +288,7 @@ pub fn apply_quality_modifiers(
     //    case-insensitive after trim. Any cluster with >1 distinct object
     //    is a contradiction.
     let mut clusters: HashMap<(String, String), Vec<i64>> = HashMap::new();
-    for (&id, _) in score_map.iter() {
+    for &id in score_map.keys() {
         if let Some(meta) = meta_by_id.get(&id) {
             let key = (
                 meta.subject.trim().to_lowercase(),
@@ -297,7 +297,7 @@ pub fn apply_quality_modifiers(
             clusters.entry(key).or_default().push(id);
         }
     }
-    for (_key, ids) in clusters.iter() {
+    for ids in clusters.values() {
         if ids.len() < 2 {
             continue;
         }

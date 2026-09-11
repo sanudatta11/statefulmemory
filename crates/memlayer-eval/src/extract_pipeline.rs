@@ -523,11 +523,10 @@ impl ExtractPipeline {
         // are stitched back into original input order so subsequent
         // entity_links / session_summary code keeps working unchanged.
         // The single-shard path is byte-identical to before.
-        let fact_ids: Vec<i64> = if self.shards > 1 && self.shard_dir.is_some() {
+        let fact_ids: Vec<i64> = if let (true, Some(shard_dir)) = (self.shards > 1, self.shard_dir.as_ref()) {
             use crate::sharding::ShardRouter;
             use std::collections::HashMap;
             let router = ShardRouter::new(self.shards);
-            let shard_dir = self.shard_dir.as_ref().unwrap();
             // Group input indices by shard.
             let mut by_shard: HashMap<usize, Vec<usize>> = HashMap::new();
             for (i, fwe) in batch.iter().enumerate() {

@@ -75,10 +75,7 @@ pub fn compute_entity_walk_boost(
         .take(MAX_QUERY_ENTITIES)
         .map(String::as_str)
         .collect();
-    let placeholders = std::iter::repeat("?")
-        .take(cap_q.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = vec!["?"; cap_q.len()].join(",");
     let mut params: Vec<SqlValue> = Vec::with_capacity(cap_q.len() + 1);
     params.push(SqlValue::Text(project.to_string()));
     for q in &cap_q {
@@ -103,10 +100,7 @@ pub fn compute_entity_walk_boost(
     // table size; in practice <100 facts per entity.
     let mut hop1_facts: HashSet<i64> = HashSet::new();
     {
-        let placeholders = std::iter::repeat("?")
-            .take(q_entity_ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = vec!["?"; q_entity_ids.len()].join(",");
         let sql = format!(
             "SELECT DISTINCT fact_id FROM entity_links WHERE entity_id IN ({placeholders})"
         );
@@ -132,10 +126,7 @@ pub fn compute_entity_walk_boost(
     // the bridges to second-order facts.
     let mut co_entity_ids: HashSet<i64> = HashSet::new();
     {
-        let h1_placeholders = std::iter::repeat("?")
-            .take(hop1_facts.len())
-            .collect::<Vec<_>>()
-            .join(",");
+        let h1_placeholders = vec!["?"; hop1_facts.len()].join(",");
         let q_set: HashSet<i64> = q_entity_ids.iter().copied().collect();
         let sql = format!(
             "SELECT DISTINCT entity_id FROM entity_links WHERE fact_id IN ({h1_placeholders})"

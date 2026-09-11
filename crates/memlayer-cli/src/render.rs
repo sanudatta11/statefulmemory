@@ -918,12 +918,14 @@ impl Render for p::GetObservationHistoryResponse {
             writeln!(w, "(no history found)")?;
             return Ok(());
         }
+        writeln!(w, "Observation History Lineage (oldest → newest):")?;
+        let len = self.entries.len();
         for (i, entry) in self.entries.iter().enumerate() {
-            let indent = "  ".repeat(i);
             let obs = match &entry.observation {
                 Some(o) => o,
                 None => continue,
             };
+            let branch = if i == len - 1 { "└── " } else { "├── " };
             let status = if obs.deleted_at.is_some() {
                 format!("[superseded {}]", obs.deleted_at.as_deref().unwrap_or(""))
             } else {
@@ -932,10 +934,11 @@ impl Render for p::GetObservationHistoryResponse {
             writeln!(
                 w,
                 "{}#{} ({}) {:?} {}",
-                indent, obs.id, obs.r#type, obs.title, status,
+                branch, obs.id, obs.r#type, obs.title, status,
             )?;
             if let Some(sup_id) = entry.superseded_by_id {
-                writeln!(w, "{}  ↑ superseded by #{}", indent, sup_id)?;
+                let pad = if i == len - 1 { "    " } else { "│   " };
+                writeln!(w, "{}↑ superseded by #{}", pad, sup_id)?;
             }
         }
         Ok(())

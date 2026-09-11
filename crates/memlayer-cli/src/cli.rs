@@ -218,6 +218,15 @@ pub enum ObsVerb {
     History(ObsHistoryArgs),
     /// Print graph relation edges for an observation (conflicts_with, supersedes, etc.).
     Relations(ObsRelationsArgs),
+    /// Re-embed observations into vector storage / int8 quantized representation.
+    Reindex(ObsReindexArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ObsReindexArgs {
+    /// Re-embed even if vector embedding already exists.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
