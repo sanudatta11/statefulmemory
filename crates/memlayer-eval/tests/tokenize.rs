@@ -46,8 +46,11 @@ async fn ingest(data_dir: &std::path::Path, memories: &[EvalMemory]) {
 /// TS-1: multi-word natural-language query must (a) retrieve the phrase
 /// memory AND the OR-only memory (recall via Tier-3) and (b) rank the phrase
 /// memory ABOVE the OR-only memory (Tier-1 phrase boost via BM25).
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tokio::test]
 async fn phrase_fallback_returns_hits_on_multi_word_query() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("phrase-fallback");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![
@@ -125,6 +128,7 @@ async fn phrase_fallback_returns_hits_on_multi_word_query() {
 /// Single-token query should behave identically to before — Tier-3 only.
 #[tokio::test]
 async fn single_token_query_works_unchanged() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("single-token");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![
@@ -157,6 +161,7 @@ async fn single_token_query_works_unchanged() {
 /// Stopword-only / question-words-only query must not panic or error.
 #[tokio::test]
 async fn stopword_only_query_does_not_panic() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("stopword-only");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![mk_mem(
