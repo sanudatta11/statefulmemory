@@ -99,7 +99,7 @@ h6,
 	outline-offset: 3px;
 }
 
-/* Quiet splash atmosphere — no motion */
+/* Quiet splash atmosphere */
 [data-has-hero] .page {
 	isolation: isolate;
 }
@@ -107,6 +107,23 @@ h6,
 [data-has-hero] .main-frame {
 	position: relative;
 	overflow: clip;
+}
+
+/* Hide homepage body until the banner parts */
+html[data-ml-intro='holding'] [data-has-hero] .sl-markdown-content {
+	opacity: 0;
+	transform: translateY(0.75rem);
+	pointer-events: none;
+}
+
+html[data-ml-intro='parting'] [data-has-hero] .sl-markdown-content,
+html[data-ml-intro='revealed'] [data-has-hero] .sl-markdown-content,
+html:not([data-ml-intro]) [data-has-hero] .sl-markdown-content {
+	opacity: 1;
+	transform: none;
+	transition:
+		opacity 0.55s ease 0.2s,
+		transform 0.55s ease 0.2s;
 }
 
 [data-has-hero] .main-frame::before {
@@ -154,12 +171,82 @@ h6,
 	mask-image: linear-gradient(180deg, transparent 0%, #000 15%, #000 65%, transparent 100%);
 }
 
-/* Hero */
+/* Hero — brief full-bleed banner, then vertical split / fly-away */
 .ml-hero {
 	display: grid;
 	gap: clamp(1.5rem, 3vw, 2.25rem);
 	padding-block: clamp(2.5rem, 8vmin, 5.5rem) clamp(2rem, 4vmin, 3.5rem);
+	max-width: none;
+	width: 100%;
+	position: relative;
+}
+
+.ml-hero__curtain {
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	display: flex;
+	pointer-events: none;
+	/* Transparent — only the shards cover the page so home can show through the split. */
+	background: transparent;
+}
+
+.ml-hero__shard {
+	position: relative;
+	width: 50%;
+	height: 100%;
+	overflow: hidden;
+	background: hsl(168, 14%, 5%);
+	will-change: transform, opacity;
+	transition:
+		transform 0.85s cubic-bezier(0.55, 0.05, 0.8, 0.15),
+		opacity 0.7s ease;
+}
+
+.ml-hero__shard img {
+	display: block;
+	width: 200%;
+	height: 100%;
+	max-width: none;
+	object-fit: cover;
+	object-position: center;
+}
+
+.ml-hero__shard--right img {
+	margin-left: -100%;
+}
+
+.ml-hero[data-state='parting'] .ml-hero__shard--left,
+.ml-hero[data-state='revealed'] .ml-hero__shard--left {
+	transform: translate3d(-112%, 0, 0) rotate(-2.5deg);
+	opacity: 0;
+}
+
+.ml-hero[data-state='parting'] .ml-hero__shard--right,
+.ml-hero[data-state='revealed'] .ml-hero__shard--right {
+	transform: translate3d(112%, 0, 0) rotate(2.5deg);
+	opacity: 0;
+}
+
+.ml-hero__copy {
+	display: grid;
+	gap: clamp(1.25rem, 2.5vw, 1.75rem);
 	max-width: 48rem;
+	padding-inline: var(--sl-content-pad-x, 1rem);
+	margin-inline: auto;
+	width: 100%;
+	box-sizing: border-box;
+	opacity: 0;
+	transform: translateY(1rem);
+	transition:
+		opacity 0.55s ease 0.12s,
+		transform 0.55s ease 0.12s;
+}
+
+.ml-hero[data-state='parting'] .ml-hero__copy,
+.ml-hero[data-state='revealed'] .ml-hero__copy {
+	opacity: 1;
+	transform: none;
 }
 
 .ml-hero__wordmark {
@@ -179,6 +266,20 @@ h6,
 	color: var(--sl-color-gray-2);
 	max-width: 38ch;
 	margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.ml-hero__curtain {
+		display: none;
+	}
+
+	.ml-hero__copy,
+	html[data-ml-intro] [data-has-hero] .sl-markdown-content {
+		opacity: 1 !important;
+		transform: none !important;
+		transition: none !important;
+		pointer-events: auto !important;
+	}
 }
 
 .ml-hero__actions {

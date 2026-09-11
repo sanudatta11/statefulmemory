@@ -6,32 +6,124 @@ const { data } = Astro.locals.starlightRoute.entry;
 const { title = data.title, tagline, actions = [] } = data.hero || {};
 ---
 
-<section class="ml-hero" aria-labelledby={PAGE_TITLE_ID}>
-	<h1 id={PAGE_TITLE_ID} class="ml-hero__wordmark" data-page-title set:html={title} />
-	{tagline && <p class="ml-hero__tagline" set:html={tagline} />}
-	{
-		actions.length > 0 && (
-			<div class="ml-hero__actions">
-				{actions.map(
-					({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
-						<LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
-							{text}
-							{icon?.html && <Fragment set:html={icon.html} />}
-						</LinkButton>
-					)
-				)}
-			</div>
-		)
-	}
-	<div class="ml-hero__core">
-		<span class="ml-hero__core-label">local · on disk</span>
-		<pre><code>git clone https://github.com/sanudatta11/memlayer && cd memlayer
+{/* Pin holding state before paint so copy doesn't flash.
+    Use data-ml-intro on <html> — not data-ml-hero — so querySelector
+    for the section root cannot match the documentElement. */}
+<script is:inline>
+	document.documentElement.dataset.mlIntro = 'holding';
+</script>
+
+<section class="ml-hero" aria-labelledby={PAGE_TITLE_ID} data-ml-hero-root data-state="holding">
+	<div class="ml-hero__curtain" aria-hidden="true" data-ml-curtain>
+		<div class="ml-hero__shard ml-hero__shard--left">
+			<img
+				src="/banner.jpg"
+				alt=""
+				width="1920"
+				height="1081"
+				decoding="async"
+				fetchpriority="high"
+			/>
+		</div>
+		<div class="ml-hero__shard ml-hero__shard--right">
+			<img
+				src="/banner.jpg"
+				alt=""
+				width="1920"
+				height="1081"
+				decoding="async"
+				fetchpriority="high"
+			/>
+		</div>
+	</div>
+
+	<div class="ml-hero__copy" data-ml-copy>
+		<h1 id={PAGE_TITLE_ID} class="ml-hero__wordmark" data-page-title>{title}</h1>
+		{tagline && <p class="ml-hero__tagline" set:html={tagline} />}
+		{
+			actions.length > 0 && (
+				<div class="ml-hero__actions">
+					{actions.map(
+						({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+							<LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+								{text}
+								{icon?.html && <Fragment set:html={icon.html} />}
+							</LinkButton>
+						)
+					)}
+				</div>
+			)
+		}
+		<div class="ml-hero__core">
+			<span class="ml-hero__core-label">local · on disk</span>
+			<pre><code>git clone https://github.com/sanudatta11/memlayer && cd memlayer
 make prereqs && make install
 export PATH="$HOME/.local/bin:$PATH"
 memlayer --version</code></pre>
-		<p class="ml-hero__note">
-			Per-project SQLite under <code>~/.memlayer/</code>. A thin CLI talks to a local daemon;
-			agents reach it through MCP or shell hooks.
-		</p>
+			<p class="ml-hero__note">
+				Per-project SQLite under <code>~/.memlayer/</code>. A thin CLI talks to a local daemon;
+				agents reach it through MCP or shell hooks.
+			</p>
+		</div>
 	</div>
 </section>
+
+<script>
+	function finishCurtain(curtain: Element | null) {
+		if (!(curtain instanceof HTMLElement)) return;
+		// Wait for shard fly-away (~0.85s) before removing the curtain node.
+		window.setTimeout(() => curtain.remove(), 900);
+	}
+
+	function runHeroIntro() {
+		const hero = document.querySelector('[data-ml-hero-root]');
+		if (!(hero instanceof HTMLElement)) return;
+
+		const curtain = hero.querySelector('[data-ml-curtain]');
+		const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		// Allow ?intro=force to demo the split even when OS asks for reduced motion.
+		const params = new URLSearchParams(window.location.search);
+		const forceIntro = params.get('intro') === 'force';
+
+		const reveal = () => {
+			hero.dataset.state = 'revealed';
+			document.documentElement.dataset.mlIntro = 'revealed';
+			finishCurtain(curtain);
+		};
+
+		if (reduce && !forceIntro) {
+			reveal();
+			return;
+		}
+
+		const startParting = () => {
+			hero.dataset.state = 'parting';
+			document.documentElement.dataset.mlIntro = 'parting';
+			window.setTimeout(reveal, 900);
+		};
+
+		const imgs = curtain instanceof HTMLElement ? [...curtain.querySelectorAll('img')] : [];
+		const ready = Promise.all(
+			imgs.map(
+				(img) =>
+					img.complete
+						? Promise.resolve()
+						: new Promise((res) => {
+								img.addEventListener('load', () => res(undefined), { once: true });
+								img.addEventListener('error', () => res(undefined), { once: true });
+							})
+			)
+		);
+
+		ready.then(() => {
+			// Hold long enough to read the wordmark, then split.
+			window.setTimeout(startParting, 800);
+		});
+	}
+
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', runHeroIntro, { once: true });
+	} else {
+		runHeroIntro();
+	}
+</script>

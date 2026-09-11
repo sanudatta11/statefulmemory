@@ -1,5 +1,9 @@
 # memlayer
 
+<p align="center">
+  <img src="website/public/banner.jpg" alt="memlayer" width="100%" />
+</p>
+
 Persistent memory for AI coding agents — local, per-project, no cloud.
 
 **Docs:** [https://memlayer.org](https://memlayer.org)
