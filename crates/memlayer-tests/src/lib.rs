@@ -46,7 +46,10 @@ pub fn spawn_daemon() -> DaemonHandle {
 
 pub fn locate_binary() -> PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_memlayer") {
-        return PathBuf::from(p);
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return path;
+        }
     }
 
     if let Ok(exe) = std::env::current_exe() {
@@ -72,6 +75,22 @@ pub fn locate_binary() -> PathBuf {
             return cand;
         }
     }
+
+    // Auto-build `memlayer-cli` on demand if binary does not exist yet.
+    let status = Command::new("cargo")
+        .args(["build", "-p", "memlayer-cli"])
+        .status();
+    if let Ok(st) = status {
+        if st.success() {
+            for profile in ["debug", "release"] {
+                let cand = target.join(profile).join("memlayer");
+                if cand.exists() {
+                    return cand;
+                }
+            }
+        }
+    }
+
     panic!(
         "could not locate `memlayer` binary; tried CARGO_BIN_EXE_memlayer, \
          walking up from current_exe(), and {target_debug}/memlayer / \
