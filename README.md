@@ -89,7 +89,9 @@ memlayer obs recent --limit 10
 memlayer obs search "auth"                     # BM25
 memlayer obs search "auth" --mode hybrid       # + dense (BGE-small + RRF)
 memlayer obs context --query "deploy" --limit 20
-memlayer obs history <id>                      # supersession chain
+memlayer obs history <id>                      # supersession chain tree
+memlayer obs relations <id>                    # graph relation edges (conflicts_with, supersedes, etc.)
+memlayer obs reindex [--force]                 # queue re-embedding and quantization
 memlayer tui                                   # interactive observation browser
 memlayer doctor [--repair]                     # database integrity audit & auto-repair
 memlayer eval --smoke --save-scorecard card.json # retrieval benchmark evaluation
@@ -106,7 +108,7 @@ TTY → text; pipes → JSON. Override with `--output {text,json,yaml}`.
 memlayer config set extract.enabled true     # LLM fact triples on save
 memlayer config set conflict.enabled true    # LLM supersession judge
 memlayer config set embed.quantize true      # int8 vectors (~75% smaller)
-memlayer reindex                             # backfill embeddings
+memlayer obs reindex                         # backfill embeddings
 ```
 
 Config: `~/.memlayer/config.toml` and per-project overlays. Full knobs and
