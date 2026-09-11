@@ -1,20 +1,70 @@
 ---
-title: Persistent memory for AI coding agents
-description: Persistent memory for AI coding agents — local, per-project, no cloud.
-template: splash
-hero:
-  title: memlayer
-  tagline: Persistent memory for AI coding agents — local, per-project, no cloud.
-  actions:
-    - text: Get started
-      link: /docs/getting-started/
-      icon: right-arrow
-    - text: GitHub
-      link: https://github.com/sanudatta11/memlayer
-      icon: external
-      variant: minimal
+title: Overview
+description: Persistent memory for AI coding agents — local, per-project, no cloud. Docs for install, MCP agents, commands, and config.
+head:
+  - tag: meta
+    attrs:
+      name: keywords
+      content: memlayer, AI coding agents, persistent memory, MCP, Claude Code, Cursor, local SQLite
 ---
 
-Observations settle as strata you own. Works with Claude Code, Cursor, Windsurf,
-Antigravity, OpenCode, Kimi Code, ZCode, VS Code / Copilot, Codex, Gemini CLI,
-and any agent that can shell out or speak MCP.
+# memlayer
+
+Persistent memory for AI coding agents — **local**, per-project, no cloud.
+
+Observations live in SQLite under `~/.memlayer/`. A thin CLI talks to a local
+daemon; agents reach it through MCP or shell hooks.
+
+Works with Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code,
+ZCode, VS Code / Copilot, Codex, Gemini CLI, and any agent that can shell out
+or speak MCP.
+
+```bash
+git clone https://github.com/sanudatta11/memlayer && cd memlayer
+make prereqs && make install
+export PATH="$HOME/.local/bin:$PATH"
+memlayer --version
+```
+
+Next: [Getting started](/docs/getting-started/) · [Install](/docs/install/) · [GitHub](https://github.com/sanudatta11/memlayer)
+
+## Guides
+
+<ul class="ml-guide-list">
+  <li>
+    <a href="/docs/getting-started/">
+      <strong>Getting started</strong>
+      <span>Install, save an observation, and pull context in one session.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/install/">
+      <strong>Install</strong>
+      <span>Build from source, PATH setup, and verifying the daemon.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/agents/">
+      <strong>Wire into your agent</strong>
+      <span>MCP tools, hooks, and agent-specific install targets.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/commands/">
+      <strong>Everyday commands</strong>
+      <span>Save, search, context, history, and session helpers.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/config/">
+      <strong>Config</strong>
+      <span>Global and per-project TOML, env overrides, workers.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/troubleshooting/">
+      <strong>Troubleshooting</strong>
+      <span>Doctor checks, common failures, and how to report issues.</span>
+    </a>
+  </li>
+</ul>
