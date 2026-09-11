@@ -13,17 +13,17 @@ cross-project global mirror DB), the platform looks like this:
 
 | Layer | State | Notes |
 |---|---|---|
-| Per-project storage | Production | SQLite + FTS5, V3 schema with `superseded_by_id`. |
+| Per-project storage | Production | SQLite + FTS5, V7 schema with `code_anchor` and `superseded_by_id`. |
 | Cross-project mirror | Production | `~/.memlayer/global.sqlite` mirrors saves; powers `--all-projects`. |
-| Retrieval | BM25 only | FTS5 against the project DB. No embeddings live in production. |
+| Retrieval | BM25 + Hybrid | BM25 default + BGE-small dense vector ANN top-30 fusion (RRF). |
 | Supersession | Synchronous BM25 | V3 — top BM25 hit in same `type+scope` is soft-deleted on save. |
 | Audit log | Production | `~/.memlayer/queries.log`, JSONL, fail-silent, opt-in full mode. |
 | Agent integration | 4 hooks + skill | SessionStart, Stop, PreToolUse[Grep], PreToolUse[Read]. |
 | MCP server | **Shipped** | `memlayer mcp` + six `memory_*` tools; `memlayer install` registers Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code, Copilot CLI, Gemini CLI, Codex, Amazon Q, `.agents`. |
-| Hybrid retrieval | **Eval-only** | `memlayer-embed`, `memlayer-extract`, `memlayer-eval` all scaffolded. Daemon does not use them. |
-| LLM judge | **Deferred** | Engram-style relation classifier; no code yet. |
-| Code AST / graph | **None** | Zero AST extraction, zero graph tables, zero tree-sitter. |
-| TUI / doctor | **Spec written, not built** | `tui-doctor-setup` spec exists. |
+| CI Scorecard & Eval | **Shipped** | `memlayer eval [--smoke] [--save-scorecard <file>]` and `.github/workflows/eval.yml`. |
+| Code Anchors | **Shipped** | V7 `code_anchor` schema, CLI `--anchor` & Graphify call-graph bridge. |
+| TUI & Doctor | **Shipped** | `memlayer tui` observation browser and `memlayer doctor [--repair]` auto-repair. |
+| LLM judge | **Planned** | Engram-style relation classifier (`observation_relations`). |
 
 The agent-side surface is sound. The *retrieval substrate* is where the
 gap to the published research benchmarks lives.

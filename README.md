@@ -90,6 +90,9 @@ memlayer obs search "auth"                     # BM25
 memlayer obs search "auth" --mode hybrid       # + dense (BGE-small + RRF)
 memlayer obs context --query "deploy" --limit 20
 memlayer obs history <id>                      # supersession chain
+memlayer tui                                   # interactive observation browser
+memlayer doctor [--repair]                     # database integrity audit & auto-repair
+memlayer eval --smoke --save-scorecard card.json # retrieval benchmark evaluation
 memlayer config show
 memlayer daemon status
 memlayer logs --lines 50
