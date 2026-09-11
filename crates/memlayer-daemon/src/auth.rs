@@ -25,6 +25,7 @@ pub struct AuthCtx {
 }
 
 /// tonic interceptor closure.
+#[allow(clippy::result_large_err)]
 pub fn make_interceptor(
     store: Arc<TokenStore>,
 ) -> impl Fn(Request<()>) -> Result<Request<()>, Status> + Clone + Send + Sync + 'static {

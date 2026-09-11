@@ -22,6 +22,7 @@ use crate::error::{Result, SyncError};
 /// (Confirmed in plan decisions §S2.)
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "_kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ChunkLine {
     Observation(Observation),
     Session(Session),

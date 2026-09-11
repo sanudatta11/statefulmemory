@@ -90,8 +90,8 @@ fn write_observation_row(o: &p::Observation, w: &mut dyn Write) -> io::Result<()
 fn write_table_header(w: &mut dyn Write) -> io::Result<()> {
     writeln!(
         w,
-        "{:<6}  {:<10}  {:<8}  {:<32}  {}",
-        "ID", "TYPE", "SCOPE", "TITLE", "SNIPPET"
+        "{:<6}  {:<10}  {:<8}  {:<32}  SNIPPET",
+        "ID", "TYPE", "SCOPE", "TITLE"
     )
 }
 
@@ -263,8 +263,8 @@ impl Render for p::ContextResponse {
                 writeln!(w, "ACTIVE TOPICS")?;
                 writeln!(
                     w,
-                    "{:<32}  {:<8}  {:<32}  {}",
-                    "TOPIC_KEY", "SCOPE", "LATEST_TITLE", "UPDATED_AT"
+                    "{:<32}  {:<8}  {:<32}  UPDATED_AT",
+                    "TOPIC_KEY", "SCOPE", "LATEST_TITLE"
                 )?;
                 for t in &snap.active_topics {
                     writeln!(
@@ -423,8 +423,8 @@ fn write_session_detail(s: &p::Session, w: &mut dyn Write) -> io::Result<()> {
 fn write_session_table_header(w: &mut dyn Write) -> io::Result<()> {
     writeln!(
         w,
-        "{:<24}  {:<20}  {:<20}  {}",
-        "ID", "STARTED_AT", "ENDED_AT", "DIRECTORY"
+        "{:<24}  {:<20}  {:<20}  DIRECTORY",
+        "ID", "STARTED_AT", "ENDED_AT"
     )
 }
 
@@ -564,8 +564,8 @@ fn write_prompt_detail(p: &p::Prompt, w: &mut dyn Write) -> io::Result<()> {
 fn write_prompt_table_header(w: &mut dyn Write) -> io::Result<()> {
     writeln!(
         w,
-        "{:<6}  {:<24}  {:<20}  {}",
-        "ID", "SESSION", "CREATED_AT", "CONTENT"
+        "{:<6}  {:<24}  {:<20}  CONTENT",
+        "ID", "SESSION", "CREATED_AT"
     )
 }
 
@@ -635,8 +635,8 @@ impl Render for p::ListProjectsResponse {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(
             w,
-            "{:<24}  {:<24}  {:<6}  {:<6}  {:<6}  {}",
-            "NAME", "DISPLAY", "OBS", "SES", "PRM", "CREATED_AT"
+            "{:<24}  {:<24}  {:<6}  {:<6}  {:<6}  CREATED_AT",
+            "NAME", "DISPLAY", "OBS", "SES", "PRM"
         )?;
         for proj in &self.projects {
             writeln!(
@@ -711,8 +711,8 @@ impl Render for p::ConsolidateProjectsResponse {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(
             w,
-            "{:<32}  {:<32}  {}",
-            "FROM", "TO", "SIMILARITY"
+            "{:<32}  {:<32}  SIMILARITY",
+            "FROM", "TO"
         )?;
         for c in &self.candidates {
             writeln!(
@@ -817,8 +817,8 @@ impl Render for p::ListTokensResponse {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(
             w,
-            "{:<24}  {:<5}  {:<20}  {}",
-            "NAME", "ADMIN", "CREATED_AT", "REVOKED_AT"
+            "{:<24}  {:<5}  {:<20}  REVOKED_AT",
+            "NAME", "ADMIN", "CREATED_AT"
         )?;
         for t in &self.tokens {
             writeln!(

@@ -81,6 +81,7 @@ macro_rules! info {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]

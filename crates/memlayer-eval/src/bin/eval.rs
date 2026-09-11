@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
 
 fn load_dataset(
     kind: BenchmarkKind,
-    data_dir: &PathBuf,
+    data_dir: &std::path::Path,
     limit: usize,
 ) -> Result<(Vec<memlayer_eval::datasets::EvalMemory>, Vec<memlayer_eval::datasets::EvalQuery>)> {
     match kind {
@@ -267,6 +267,7 @@ fn load_dataset(
 /// 5. For each unique project name in the dataset, call
 ///    `extract_pipeline.extract_project(project, &facts_db_path)`.
 /// 6. Print rolled-up stats.
+#[allow(clippy::too_many_arguments)]
 async fn run_extract(
     benchmark: BenchmarkKind,
     data_dir: &std::path::Path,
@@ -284,7 +285,7 @@ async fn run_extract(
     use memlayer_extract::entities::{HaikuEntityExtractor, HeuristicEntityExtractor};
 
     let lim = limit.unwrap_or(usize::MAX);
-    let (memories, _queries) = load_dataset(benchmark, &data_dir.to_path_buf(), lim)?;
+    let (memories, _queries) = load_dataset(benchmark, data_dir, lim)?;
 
     if memories.is_empty() {
         println!("No memories loaded for {:?}; nothing to extract.", benchmark);

@@ -18,7 +18,7 @@
 //! Settings / MCP patches are additive — existing keys are preserved.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::agents::{self, AgentId};
@@ -526,7 +526,7 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
     }
 
     let text = serde_json::to_string_pretty(&root)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     fs::write(path, text + "\n")?;
     Ok(true)
 }
@@ -537,7 +537,7 @@ fn patch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
 /// `autoMemoryEnabled` — those belong in the user-level file. Writes a
 /// `<path>.bak` before modifying the file so a user can recover if anything
 /// goes wrong. Idempotent via the same prefix-match rule as the global patch.
-fn patch_claude_settings_project_hooks(path: &PathBuf) -> std::io::Result<bool> {
+fn patch_claude_settings_project_hooks(path: &Path) -> std::io::Result<bool> {
     let text = fs::read_to_string(path)?;
     let mut root: serde_json::Value = serde_json::from_str(&text)
         .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -572,7 +572,7 @@ fn patch_claude_settings_project_hooks(path: &PathBuf) -> std::io::Result<bool> 
     fs::write(&bak, &text)?;
 
     let new_text = serde_json::to_string_pretty(&root)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     fs::write(path, new_text + "\n")?;
     Ok(true)
 }
@@ -740,7 +740,7 @@ fn install_file(path: &PathBuf, content: &str) -> std::io::Result<bool> {
 /// Each file is written via staged tmp + rename so a crash mid-write never
 /// leaves a half-written sidecar in place. Returns Ok(true) if any file was
 /// written or modified, Ok(false) if every file was already up to date.
-fn install_skill_references(skill_dir: &PathBuf) -> std::io::Result<bool> {
+fn install_skill_references(skill_dir: &Path) -> std::io::Result<bool> {
     let refs_dir = skill_dir.join("references");
     fs::create_dir_all(&refs_dir)?;
 

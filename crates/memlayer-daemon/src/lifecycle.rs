@@ -24,6 +24,7 @@ pub struct LifecycleGuard {
 }
 
 impl Drop for LifecycleGuard {
+    #[allow(clippy::incompatible_msrv)]
     fn drop(&mut self) {
         if let Some(sock) = &self.socket_path {
             let _ = std::fs::remove_file(sock);

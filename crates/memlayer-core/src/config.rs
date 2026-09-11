@@ -192,12 +192,18 @@ mod tests {
 
     #[test]
     fn tcp_mode_requires_tls() {
-        let mut c = Config::default();
-        c.listen = Some("tcp://0.0.0.0:9090".into());
+        let c = Config {
+            listen: Some("tcp://0.0.0.0:9090".into()),
+            ..Config::default()
+        };
         assert!(c.validate().is_err());
-        c.tls_cert_path = Some(PathBuf::from("/x"));
-        c.tls_key_path = Some(PathBuf::from("/y"));
-        assert!(c.validate().is_ok());
+        let c2 = Config {
+            listen: Some("tcp://0.0.0.0:9090".into()),
+            tls_cert_path: Some(PathBuf::from("/x")),
+            tls_key_path: Some(PathBuf::from("/y")),
+            ..Config::default()
+        };
+        assert!(c2.validate().is_ok());
     }
 }
 
@@ -505,6 +511,7 @@ mod memlayer_config_tests {
     /// `MEMLAYER_*` env vars + `MEMLAYER_DATA_DIR` are process-global.
     /// Cargo runs tests in parallel by default; serialize through the crate
     /// lock so tests don't race on the env or the temp data dir.
+    #[allow(unused_imports)]
     use crate::TEST_ENV_LOCK;
     fn clear_env() {
         for k in [

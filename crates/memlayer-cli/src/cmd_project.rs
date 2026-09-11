@@ -1,5 +1,7 @@
 //! `project` subcommand handlers (FR7, FR12.10–FR12.14, EC-4).
 
+#![allow(clippy::result_large_err)]
+
 use std::io;
 use std::process::ExitCode;
 

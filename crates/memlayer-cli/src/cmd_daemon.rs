@@ -136,7 +136,7 @@ async fn restart(fmt: Formatter) -> ExitCode {
     // to spawn.
     let socket = memlayer_core::paths::socket_path();
     if socket.exists() {
-        if let Some(c) = open_client_no_spawn(&socket).await.ok() {
+        if let Ok(c) = open_client_no_spawn(&socket).await {
             let mut client = c;
             if let Err(s) = client.shutdown(p::ShutdownRequest {}).await {
                 eprintln!("memlayer: stop during restart: {}", s.message());

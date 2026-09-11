@@ -57,7 +57,7 @@ fn ts6_partial_garbage_recovers_what_it_can() {
     let facts = parse_facts(raw, &turns_2()).unwrap();
     // Either both parsed (with line repair) or just one — either is acceptable
     // as long as we got at least one and didn't crash.
-    assert!(facts.len() >= 1);
+    assert!(!facts.is_empty());
 }
 
 #[test]

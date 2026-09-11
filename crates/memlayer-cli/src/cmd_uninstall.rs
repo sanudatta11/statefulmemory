@@ -242,7 +242,7 @@ fn unpatch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
         return Ok(false);
     }
     let new_text = serde_json::to_string_pretty(&root)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     fs::write(path, new_text + "\n")?;
     Ok(true)
 }

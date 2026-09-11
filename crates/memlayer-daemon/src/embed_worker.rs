@@ -199,6 +199,30 @@ fn process(
     Ok(())
 }
 
+/// Generic retry-with-backoff helper used by `process_with_retry` and
+/// exercised directly in unit tests. Public-in-module so tests can drive
+/// the retry policy without standing up a real embedder.
+#[allow(clippy::needless_range_loop)]
+fn retry_with_backoff<F, T, E>(backoffs: &[std::time::Duration], mut op: F) -> Result<T, E>
+where
+    F: FnMut() -> Result<T, E>,
+{
+    let max_attempts = backoffs.len() + 1;
+    let mut last_err: Option<E> = None;
+    for attempt in 0..max_attempts {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt + 1 < max_attempts {
+                    std::thread::sleep(backoffs[attempt]);
+                }
+            }
+        }
+    }
+    Err(last_err.expect("loop ran at least once"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,27 +333,4 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
-}
-
-/// Generic retry-with-backoff helper used by `process_with_retry` and
-/// exercised directly in unit tests. Public-in-module so tests can drive
-/// the retry policy without standing up a real embedder.
-fn retry_with_backoff<F, T, E>(backoffs: &[std::time::Duration], mut op: F) -> Result<T, E>
-where
-    F: FnMut() -> Result<T, E>,
-{
-    let max_attempts = backoffs.len() + 1;
-    let mut last_err: Option<E> = None;
-    for attempt in 0..max_attempts {
-        match op() {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                last_err = Some(e);
-                if attempt + 1 < max_attempts {
-                    std::thread::sleep(backoffs[attempt]);
-                }
-            }
-        }
-    }
-    Err(last_err.expect("loop ran at least once"))
 }

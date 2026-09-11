@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)]
 // Generated with AI Coding Rules Hub
 //! Integration tests for memory search end-to-end.
 //!
@@ -8,6 +9,7 @@
 //! benchmark accuracy surfaced.
 
 use std::path::PathBuf;
+
 use std::sync::Mutex;
 
 use memlayer_eval::{
@@ -172,7 +174,7 @@ async fn k_limits_returned_results() {
 
     let result = retrieve(&data_dir, "k-proj", "Caroline topic", 5).unwrap();
     assert!(result.hits.len() <= 5, "k=5 must cap returned hits; got {}", result.hits.len());
-    assert!(result.hits.len() >= 1, "should still return some hits");
+    assert!(!result.hits.is_empty(), "should still return some hits");
 }
 
 #[tokio::test]

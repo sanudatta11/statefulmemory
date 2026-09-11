@@ -25,6 +25,7 @@ use crate::service::DaemonState;
 /// Returns `SyncStatusResponse::default()` (all-zero, no errors) when the
 /// project has never been exported (EC-1).
 #[instrument(level = "debug", skip(state, project), fields(project = %project.normalized))]
+#[allow(clippy::result_large_err)]
 pub async fn compute(
     state: &Arc<DaemonState>,
     project: &Arc<ProjectState>,

@@ -117,6 +117,7 @@ impl TokenStore {
     /// Constant-time match by candidate hash. Returns metadata when the hash
     /// is recognized (revoked or not). Caller decides whether to honor a
     /// revoked token.
+    #[allow(clippy::manual_find)]
     pub fn find(&self, candidate: &[u8]) -> Option<TokenMeta> {
         let all = self.list().ok()?;
         for meta in all {

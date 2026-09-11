@@ -1,4 +1,6 @@
 //! `obs` subcommand handlers (FR4, FR12.1–FR12.6).
+
+#![allow(clippy::result_large_err)]
 //!
 //! Each verb function takes a connected `MemlayerClient<Channel>`, the
 //! resolved project name, the chosen [`Formatter`], and the verb-specific
@@ -755,7 +757,7 @@ mod tests {
 
     #[test]
     fn stdin_rejects_invalid_utf8() {
-        let bad = vec![0x80, 0x81, 0x82];
+        let bad = [0x80, 0x81, 0x82];
         let r = Cursor::new(&bad[..]);
         let err = read_capped(r, MAX_CONTENT_CHARS).expect_err("expected utf8 rejection");
         assert!(err.contains("UTF-8"), "unexpected error: {err}");

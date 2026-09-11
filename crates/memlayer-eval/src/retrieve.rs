@@ -13,6 +13,7 @@
 //!     Catches near-phrase matches with intervening stopwords.
 //!   * Tier-3 (OR fallback): each individual token, ORed together. Preserves
 //!     recall against memories that only share scattered tokens.
+//!
 //! All three tiers are joined with OR. Per-token quote-escape and the
 //! existing stopword set are preserved.
 //!

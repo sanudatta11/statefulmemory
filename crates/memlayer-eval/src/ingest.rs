@@ -102,7 +102,7 @@ pub async fn ingest_memories(
             h.update(b"\x00");
             h.update(mem.topic_key.as_deref().unwrap_or("").as_bytes());
             h.update(b"\x00");
-            h.update(&(idx as u64).to_le_bytes());
+            h.update((idx as u64).to_le_bytes());
             format!("{:x}", h.finalize())
         };
 

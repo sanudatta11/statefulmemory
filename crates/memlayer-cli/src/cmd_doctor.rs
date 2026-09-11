@@ -58,7 +58,7 @@ pub async fn run(
     }
 
     // Render formatted human-readable table
-    println!("{:<8} {:<18} {:<45} {}", "STATUS", "CODE", "MESSAGE", "REMEDY");
+    println!("{:<8} {:<18} {:<45} REMEDY", "STATUS", "CODE", "MESSAGE");
     println!("{}", "-".repeat(90));
 
     let mut warn_count = 0;

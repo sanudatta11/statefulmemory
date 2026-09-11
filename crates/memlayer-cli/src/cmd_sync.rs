@@ -2,6 +2,8 @@
 //!
 //! Spec 2 ships only `sync status`; export/import verbs land in Spec 3.
 
+#![allow(clippy::result_large_err)]
+
 use std::io;
 use std::process::ExitCode;
 

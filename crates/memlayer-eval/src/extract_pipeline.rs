@@ -386,6 +386,7 @@ impl ExtractPipeline {
             // 1.5k-window benchmarks while guaranteeing visible heartbeat
             // when calls are slow.
             let since_last = last_log_at.elapsed();
+            #[allow(clippy::manual_is_multiple_of)]
             let should_log = completed <= 5
                 || completed == total_handles
                 || completed % 10 == 0
@@ -495,7 +496,7 @@ impl ExtractPipeline {
                 .context("persist freshly embedded facts")?;
             // Splice fresh vectors back into the per-fact Option<Vec<f32>>
             // array at their original indices.
-            for (&i, v) in emb_miss_indices.iter().zip(fresh.into_iter()) {
+            for (&i, v) in emb_miss_indices.iter().zip(fresh) {
                 embeddings[i] = Some(v);
             }
         }
@@ -503,7 +504,7 @@ impl ExtractPipeline {
         // Build the writer batch. Any None at this point is a bug — a miss
         // index that we just filled — but guard against it defensively.
         let mut batch: Vec<FactWithEmbedding> = Vec::with_capacity(all_facts.len());
-        for (fact, emb) in all_facts.into_iter().zip(embeddings.into_iter()) {
+        for (fact, emb) in all_facts.into_iter().zip(embeddings) {
             match emb {
                 Some(embedding) => batch.push(FactWithEmbedding { fact, embedding }),
                 None => {
@@ -619,6 +620,7 @@ impl ExtractPipeline {
 /// project, embed the unique names (cached), and bulk-upsert into
 /// `entities` + `entity_links` + `entities_vec`. Returns the count of
 /// distinct entities written.
+#[allow(clippy::too_many_arguments)]
 async fn extract_and_write_entities(
     conn: &mut rusqlite::Connection,
     project: &str,
@@ -702,7 +704,7 @@ async fn extract_and_write_entities(
         embedding_cache
             .put_many(&put_items)
             .context("persist entity-name embeddings")?;
-        for (&i, v) in miss_indices.iter().zip(fresh.into_iter()) {
+        for (&i, v) in miss_indices.iter().zip(fresh) {
             embeddings[i] = Some(v);
         }
     }
@@ -791,55 +793,7 @@ fn build_windows(turns: &[Turn], size: usize, stride: usize) -> Vec<Vec<Turn>> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn turn(idx: i64) -> Turn {
-        Turn {
-            speaker: format!("speaker-{idx}"),
-            text: format!("text-{idx}"),
-            obs_id: idx,
-            session_id: Some("s".into()),
-        }
-    }
-
-    #[test]
-    fn build_windows_short_input_returns_single_window() {
-        let turns: Vec<Turn> = (1..=4).map(turn).collect();
-        let w = build_windows(&turns, 6, 3);
-        assert_eq!(w.len(), 1);
-        assert_eq!(w[0].len(), 4);
-    }
-
-    #[test]
-    fn build_windows_overlaps_at_50_percent() {
-        let turns: Vec<Turn> = (1..=12).map(turn).collect();
-        let w = build_windows(&turns, 6, 3);
-        // Starts at 0, 3, 6 => windows of size 6, 6, 6 (last is 6..12).
-        assert_eq!(w.len(), 3);
-        assert_eq!(w[0].first().unwrap().obs_id, 1);
-        assert_eq!(w[1].first().unwrap().obs_id, 4);
-        assert_eq!(w[2].first().unwrap().obs_id, 7);
-        assert_eq!(w[2].last().unwrap().obs_id, 12);
-    }
-
-    #[test]
-    fn build_windows_handles_uneven_tail() {
-        let turns: Vec<Turn> = (1..=10).map(turn).collect();
-        let w = build_windows(&turns, 6, 3);
-        // Starts at 0, 3, 6 => last window is [7..10] (size 4).
-        assert_eq!(w.len(), 3);
-        assert_eq!(w.last().unwrap().len(), 4);
-        assert_eq!(w.last().unwrap().last().unwrap().obs_id, 10);
-    }
-
-    #[test]
-    fn build_windows_empty_input() {
-        let w = build_windows(&[], 6, 3);
-        assert!(w.is_empty());
-    }
-}
 
 /// Group window-tier facts by `source_session`, ask Haiku for a 2-3
 /// sentence summary per session, and insert each summary as a single
@@ -999,4 +953,54 @@ fn embed_summary(
         .put_many(&[(text.to_string(), v.clone())])
         .context("cache session summary embedding")?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(idx: i64) -> Turn {
+        Turn {
+            speaker: format!("speaker-{idx}"),
+            text: format!("text-{idx}"),
+            obs_id: idx,
+            session_id: Some("s".into()),
+        }
+    }
+
+    #[test]
+    fn build_windows_short_input_returns_single_window() {
+        let turns: Vec<Turn> = (1..=4).map(turn).collect();
+        let w = build_windows(&turns, 6, 3);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].len(), 4);
+    }
+
+    #[test]
+    fn build_windows_overlaps_at_50_percent() {
+        let turns: Vec<Turn> = (1..=12).map(turn).collect();
+        let w = build_windows(&turns, 6, 3);
+        // Starts at 0, 3, 6 => windows of size 6, 6, 6 (last is 6..12).
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].first().unwrap().obs_id, 1);
+        assert_eq!(w[1].first().unwrap().obs_id, 4);
+        assert_eq!(w[2].first().unwrap().obs_id, 7);
+        assert_eq!(w[2].last().unwrap().obs_id, 12);
+    }
+
+    #[test]
+    fn build_windows_handles_uneven_tail() {
+        let turns: Vec<Turn> = (1..=10).map(turn).collect();
+        let w = build_windows(&turns, 6, 3);
+        // Starts at 0, 3, 6 => last window is [7..10] (size 4).
+        assert_eq!(w.len(), 3);
+        assert_eq!(w.last().unwrap().len(), 4);
+        assert_eq!(w.last().unwrap().last().unwrap().obs_id, 10);
+    }
+
+    #[test]
+    fn build_windows_empty_input() {
+        let w = build_windows(&[], 6, 3);
+        assert!(w.is_empty());
+    }
 }

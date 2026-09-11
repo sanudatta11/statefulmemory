@@ -15,7 +15,7 @@ fn read_log_lines(env: &CliEnv) -> Vec<serde_json::Value> {
     };
     std::io::BufReader::new(f)
         .lines()
-        .filter_map(Result::ok)
+        .map_while(Result::ok)
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str(&l).ok())
         .collect()

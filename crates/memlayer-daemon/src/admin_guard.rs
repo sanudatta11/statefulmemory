@@ -25,6 +25,7 @@ use crate::auth::AuthCtx;
 /// - No `AuthCtx` in extensions: UDS mode. Always allowed.
 /// - `AuthCtx { is_admin: true, .. }`: explicit admin token. Allowed.
 /// - `AuthCtx { is_admin: false, .. }`: TCP mode + non-admin. Denied.
+#[allow(clippy::result_large_err)]
 pub fn require_admin<T>(req: &Request<T>) -> Result<(), Status> {
     match req.extensions().get::<AuthCtx>() {
         None => Ok(()),

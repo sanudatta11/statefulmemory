@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn io_error_is_internal() {
-        let e: Error = io::Error::new(io::ErrorKind::Other, "boom").into();
+        let e: Error = io::Error::other("boom").into();
         assert_eq!(e.kind(), ErrorKind::Internal);
         assert_eq!(e.code(), "INTERNAL");
     }

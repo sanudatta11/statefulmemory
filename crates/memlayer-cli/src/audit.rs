@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 /// One JSONL row in `~/.memlayer/queries.log`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct AuditEntry<'a> {
     pub ts: String,
     pub command: &'a str,
@@ -55,23 +55,6 @@ pub struct HitMeta {
     pub id: i64,
     pub r#type: String,
     pub title: String,
-}
-
-impl<'a> Default for AuditEntry<'a> {
-    fn default() -> Self {
-        Self {
-            ts: String::new(),
-            command: "",
-            project: None,
-            result_count: None,
-            duration_ms: 0,
-            query: None,
-            top_hits: None,
-            embed_queued: None,
-            extract_queued: None,
-            extract_model: None,
-        }
-    }
 }
 
 /// Maximum bytes for any single string field in full mode.
@@ -261,7 +244,6 @@ mod tests {
                 embed_queued: Some(true),
                 extract_queued: Some(true),
                 extract_model: Some("haiku"),
-                ..Default::default()
             };
             record(&entry);
 
@@ -287,7 +269,6 @@ mod tests {
                 embed_queued: Some(true),
                 extract_queued: Some(false),
                 extract_model: None,
-                ..Default::default()
             };
             record(&entry);
 

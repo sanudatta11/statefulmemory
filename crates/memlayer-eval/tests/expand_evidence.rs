@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)]
 // Generated with AI Coding Rules Hub
 //! Skeleton (TS-1b): expand_evidence walks ±N observations clamped to session.
 

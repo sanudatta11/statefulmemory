@@ -98,6 +98,7 @@ pub struct FactsHybridResult {
 
 /// Hybrid retrieval over `facts.db` for one project. See module-level docs
 /// for the full pipeline.
+#[allow(clippy::too_many_arguments)]
 pub async fn retrieve_facts(
     data_dir: &Path,
     facts_db_path: &Path,
@@ -517,7 +518,7 @@ fn compute_entity_boost(
                         project,
                         ENTITY_VEC_DISTANCE_THRESHOLD,
                     ],
-                    |r| Ok(r.get::<_, i64>(0)?),
+                    |r| r.get::<_, i64>(0),
                 )
                 .context("run entity vec ANN SELECT")?;
             let entry = per_query_entity_links
@@ -550,6 +551,7 @@ fn compute_entity_boost(
 
 /// Fetch the canonical fact rows for `ids`, preserving the input order.
 /// Returns `(id, subject, predicate, object, temporal, evidence_obs_id)`.
+#[allow(clippy::type_complexity)]
 fn fetch_facts_by_ids(
     facts_db_path: &Path,
     ids: &[u64],
@@ -559,10 +561,7 @@ fn fetch_facts_by_ids(
     }
     let conn = open_with_vec(facts_db_path).context("open facts.db for fetch")?;
 
-    let placeholders = std::iter::repeat("?")
-        .take(ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = vec!["?"; ids.len()].join(",");
     let sql = format!(
         "SELECT id, subject, predicate, object, temporal, evidence_obs_id \
            FROM facts \
@@ -587,6 +586,7 @@ fn fetch_facts_by_ids(
         })
         .context("run facts SELECT")?;
 
+    #[allow(clippy::type_complexity)]
     let mut by_id: HashMap<i64, (i64, String, String, String, Option<String>, i64)> =
         HashMap::with_capacity(ids.len());
     for r in rows {
@@ -615,10 +615,7 @@ fn fetch_meta_for_ids(
         return Ok(HashMap::new());
     }
     let conn = open_with_vec(facts_db_path).context("open facts.db for meta fetch")?;
-    let placeholders = std::iter::repeat("?")
-        .take(ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = vec!["?"; ids.len()].join(",");
     let sql = format!(
         "SELECT id, salience, temporal, subject, predicate, object \
            FROM facts \
@@ -666,6 +663,7 @@ fn fetch_meta_for_ids(
 ///   - `"[2023-05-25]"` → same, brackets stripped
 ///   - `"2023-05"` → 2023-05-01 00:00 UTC
 ///   - `"2023"` → 2023-01-01 00:00 UTC
+///
 /// Anything we can't parse returns None (decay disabled for that fact).
 fn parse_temporal_to_unix(raw: &str) -> Option<i64> {
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime};

@@ -133,16 +133,11 @@ fn all_equal(xs: &[f32]) -> bool {
 /// token count to pick (midpoint, steepness) per Mem0's tuned table.
 /// Sigmoid is bounded [0, 1] and gracefully maps the wide raw BM25 range
 /// without depending on the largest hit in the batch.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum Bm25Norm {
+    #[default]
     MinMax,
     AdaptiveSigmoid { query_token_count: usize },
-}
-
-impl Default for Bm25Norm {
-    fn default() -> Self {
-        Bm25Norm::MinMax
-    }
 }
 
 /// Mem0's empirically tuned (midpoint, steepness) per query length.

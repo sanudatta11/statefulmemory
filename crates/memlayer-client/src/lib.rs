@@ -46,6 +46,7 @@ pub enum ClientError {
 /// The closure is `FnMut` so the caller can re-clone a `Channel` or `Request`
 /// inside it on each attempt — `tonic` clients take `&mut self`, and bodies
 /// like `prost`-encoded messages are not re-readable after a failed call.
+#[allow(clippy::result_large_err)]
 pub async fn with_retry<F, Fut, T>(mut op: F) -> Result<T, tonic::Status>
 where
     F: FnMut() -> Fut,

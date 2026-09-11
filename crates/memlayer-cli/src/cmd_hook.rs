@@ -252,7 +252,7 @@ pub fn keywords_from_path(path: &Path) -> Vec<String> {
 
     let mut out: Vec<String> = Vec::new();
     for s in sources {
-        for token in s.split(|c: char| c == '-' || c == '_' || c == '.' || c == '/') {
+        for token in s.split(['-', '_', '.', '/']) {
             if token.len() < 3 {
                 continue;
             }

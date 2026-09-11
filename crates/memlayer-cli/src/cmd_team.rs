@@ -7,6 +7,8 @@
 //!   talk to the daemon. UDS mode passes the admin guard implicitly
 //!   (filesystem mode 0600); TCP mode requires an admin bearer token.
 
+#![allow(clippy::result_large_err)]
+
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -208,7 +210,7 @@ mod tests {
             assert!(
                 body.starts_with("-----BEGIN "),
                 "{name} is not a PEM file: starts with {:?}",
-                &body.chars().take(20).collect::<String>()
+                body.chars().take(20).collect::<String>()
             );
         }
     }

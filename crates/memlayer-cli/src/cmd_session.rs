@@ -1,5 +1,7 @@
 //! `session` subcommand handlers (FR5, FR12.7, FR12.8).
 
+#![allow(clippy::result_large_err)]
+
 use std::io;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -91,6 +93,7 @@ async fn summary(
 /// - default (--auto): list observations by session_id, group by topic_key
 ///   (or title fallback), pick latest per group, render Engram-shaped markdown.
 /// - --content -: read agent-supplied prose from stdin and use it verbatim.
+///
 /// Both paths save as a single observation with topic_key="session-summary/<id>"
 /// so the V3 supersession path dedups re-runs (and supersedes the auto rollup
 /// when an agent later writes a richer prose version).

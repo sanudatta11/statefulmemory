@@ -240,7 +240,7 @@ fn read_origin_url(git_root: &Path) -> std::io::Result<Option<String>> {
 fn parse_remote_to_name(url: &str) -> Option<String> {
     let trimmed = url.trim();
     let last = trimmed
-        .rsplit(|c: char| c == '/' || c == ':')
+        .rsplit(['/', ':'])
         .next()
         .filter(|s| !s.is_empty())?;
     let stripped = last.strip_suffix(".git").unwrap_or(last);

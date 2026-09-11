@@ -1,5 +1,7 @@
 //! `prompt` subcommand handlers (FR6, FR12.9).
 
+#![allow(clippy::result_large_err)]
+
 use std::io;
 use std::process::ExitCode;
 

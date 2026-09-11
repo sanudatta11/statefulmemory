@@ -23,6 +23,7 @@ use crate::service::DaemonState;
 /// Returns an all-zero `SyncExportResponse` with `chunk_id = None` when
 /// there are no unexported rows (FR1.2, EC-1).
 #[instrument(level = "debug", skip(state, project), fields(project = %project.normalized))]
+#[allow(clippy::result_large_err)]
 pub async fn run(
     state: &Arc<DaemonState>,
     project: &Arc<ProjectState>,
@@ -163,6 +164,7 @@ pub async fn run(
 
 /// Resolve the `repo_path` for export: prefer the request-supplied value, then
 /// the stored config value, then `None`.
+#[allow(clippy::result_large_err)]
 fn resolve_repo_path(
     state: &Arc<DaemonState>,
     project: &Arc<ProjectState>,
@@ -186,6 +188,7 @@ fn resolve_repo_path(
 }
 
 /// Entry point called from the `sync_export` RPC handler in `service.rs`.
+#[allow(clippy::result_large_err)]
 pub async fn handle(
     state: &Arc<DaemonState>,
     req: SyncExportRequest,

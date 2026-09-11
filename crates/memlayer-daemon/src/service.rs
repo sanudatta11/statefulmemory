@@ -228,7 +228,7 @@ impl MemlayerService {
         // case where the same observations rank in both lists.
         let mut by_id: std::collections::HashMap<i64, Observation> =
             std::collections::HashMap::new();
-        for o in bm25_hits.into_iter().chain(dense_hits.into_iter()) {
+        for o in bm25_hits.into_iter().chain(dense_hits) {
             by_id.entry(o.id).or_insert(o);
         }
 
@@ -349,6 +349,7 @@ impl Drop for RpcGuard {
 /// `oneshot` channel. Two failure modes need flattening:
 /// - `oneshot::RecvError` (channel closed → write thread panicked).
 /// - The domain `Error` returned by the handler.
+#[allow(clippy::result_large_err)]
 async fn await_write_reply<T>(
     rx: tokio::sync::oneshot::Receiver<Result<T>>,
 ) -> std::result::Result<T, Status> {
@@ -1477,7 +1478,7 @@ impl Memlayer for MemlayerService {
         map(reply_rx.await.map_err(|_| {
             memlayer_core::error::Error::Unavailable("merge_projects: write thread reply lost".into())
         }))
-        .and_then(|inner| map(inner))?;
+        .and_then(map)?;
         let outcome = outcome
             .lock()
             .expect("outcome mutex")

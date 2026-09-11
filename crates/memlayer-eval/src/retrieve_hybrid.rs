@@ -234,10 +234,7 @@ fn fetch_observations(project: &str, ids: &[u64]) -> Result<Vec<String>> {
 
     // Build "?,?,?,..." placeholder list. SQLite's bound-parameter limit is
     // 32766 by default; our k is tiny so we never approach it.
-    let placeholders = std::iter::repeat("?")
-        .take(ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = vec!["?"; ids.len()].join(",");
     let sql = format!(
         "SELECT id, title, content FROM observations \
          WHERE id IN ({placeholders}) AND deleted_at IS NULL"

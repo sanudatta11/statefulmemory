@@ -124,7 +124,7 @@ impl RunReport {
         if let Some(p95) = self.rerank_p95_ms {
             md.push_str(&format!("| Rerank p95 | {:.2}ms |\n", p95));
         }
-        md.push_str("\n");
+        md.push('\n');
         md.push_str("## Per-query results\n\n");
         md.push_str("| id | correct | ret_ms | e2e_ms | tokens |\n|---|---|---|---|---|\n");
         for q in &self.query_results {
@@ -460,7 +460,7 @@ fn infer_project(kind: BenchmarkKind, query_id: &str) -> String {
     match kind {
         BenchmarkKind::Locomo => {
             // id format: "{conv_id}-{qa_id}"
-            let conv_id = query_id.rsplitn(2, '-').nth(1).unwrap_or(query_id);
+            let conv_id = query_id.rsplit_once('-').map(|x| x.0).unwrap_or(query_id);
             format!("locomo-{conv_id}")
         }
         BenchmarkKind::Longmemeval => {
@@ -532,7 +532,7 @@ fn build_report(
     }
 }
 
-fn percentile_ms(values: &mut Vec<u64>, p: usize) -> f64 {
+fn percentile_ms(values: &mut [u64], p: usize) -> f64 {
     if values.is_empty() { return 0.0; }
     values.sort_unstable();
     let idx = ((p as f64 / 100.0) * (values.len() - 1) as f64).round() as usize;

@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)]
 // Generated with AI Coding Rules Hub
 //! Integration tests for the 3-tier tokenizer (TS-1, TS-14, SC-9).
 //!

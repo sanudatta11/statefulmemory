@@ -37,6 +37,7 @@ pub fn to_status(err: Error) -> Status {
 }
 
 /// Helper: short-circuit Result<T, memlayer::Error> → Result<T, tonic::Status>.
+#[allow(clippy::result_large_err)]
 pub fn map<T>(r: memlayer_core::Result<T>) -> Result<T, Status> {
     r.map_err(to_status)
 }
