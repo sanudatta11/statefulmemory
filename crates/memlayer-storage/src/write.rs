@@ -518,7 +518,7 @@ fn handle_save_observation(
     //    heuristic (unconditional supersession).
     let superseded_id = find_conflict_candidate(tx, id, &input)?;
     let do_supersede = if let Some(old_id) = superseded_id {
-        should_supersede(old_id, tx, &input, conflict_classifier)
+        should_supersede(old_id, id, tx, &input, conflict_classifier)
     } else {
         false
     };
@@ -971,6 +971,7 @@ fn find_conflict_candidate(
 /// 3. If no classifier is wired, always supersede (current default).
 fn should_supersede(
     old_id: i64,
+    new_id: i64,
     tx: &rusqlite::Transaction<'_>,
     input: &SaveObservationInput,
     classifier: Option<&dyn crate::conflict_judge::ConflictClassifier>,
@@ -1007,12 +1008,29 @@ fn should_supersede(
     };
 
     match classifier.classify(&old_title, &old_content, &input.title, &input.content) {
-        Ok(ConflictVerdict::Supersedes) | Ok(ConflictVerdict::ConflictsWith) => true,
-        Ok(ConflictVerdict::Compatible) | Ok(ConflictVerdict::NotConflict) => {
+        Ok(ConflictVerdict::Supersedes) => {
+            let _ = crate::relations::add_relation(tx, new_id, old_id, "supersedes", 0.95);
+            true
+        }
+        Ok(ConflictVerdict::ConflictsWith) => {
+            let _ = crate::relations::add_relation(tx, new_id, old_id, "conflicts_with", 0.95);
+            true
+        }
+        Ok(ConflictVerdict::Compatible) => {
+            let _ = crate::relations::add_relation(tx, new_id, old_id, "compatible", 0.85);
             tracing::debug!(
                 old_id,
                 new_title = %input.title,
-                "conflict judge: NOT superseding (Compatible/NotConflict)"
+                "conflict judge: NOT superseding (Compatible)"
+            );
+            false
+        }
+        Ok(ConflictVerdict::NotConflict) => {
+            let _ = crate::relations::add_relation(tx, new_id, old_id, "not_conflict", 0.85);
+            tracing::debug!(
+                old_id,
+                new_title = %input.title,
+                "conflict judge: NOT superseding (NotConflict)"
             );
             false
         }

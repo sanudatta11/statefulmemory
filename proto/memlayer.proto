@@ -650,6 +650,28 @@ message DoctorResponse {
 }
 
 // ---
+// Observation Relations (Phase 4)
+// ---
+
+message ObservationRelation {
+  int64  id            = 1;
+  int64  source_id     = 2;
+  int64  target_id     = 3;
+  string relation_type = 4;   // "conflicts_with" | "supersedes" | "scoped_by" | "compatible"
+  double confidence    = 5;
+  string created_at    = 6;
+}
+
+message GetObservationRelationsRequest {
+  string project_name   = 1;
+  int64  observation_id = 2;
+}
+
+message GetObservationRelationsResponse {
+  repeated ObservationRelation relations = 1;
+}
+
+// ---
 // Service
 // ---
 
@@ -662,6 +684,7 @@ service Memlayer {
   rpc SearchObservations     (SearchObservationsRequest)     returns (SearchObservationsResponse);
   rpc ListObservations       (ListObservationsRequest)       returns (ListObservationsResponse);
   rpc RecentObservations     (RecentObservationsRequest)     returns (RecentObservationsResponse);
+  rpc GetObservationRelations(GetObservationRelationsRequest) returns (GetObservationRelationsResponse);
 
   // Context / timeline / heuristics
   rpc Context                (ContextRequest)                returns (ContextResponse);

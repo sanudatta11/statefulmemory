@@ -216,6 +216,14 @@ pub enum ObsVerb {
     Reextract(ObsReextractArgs),
     /// Print the full supersession history of an observation (oldest → newest).
     History(ObsHistoryArgs),
+    /// Print graph relation edges for an observation (conflicts_with, supersedes, etc.).
+    Relations(ObsRelationsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ObsRelationsArgs {
+    /// Target observation ID.
+    pub id: i64,
 }
 
 #[derive(Args, Debug)]

@@ -23,6 +23,7 @@ pub mod projects_admin;
 pub mod prompts;
 pub mod read;
 pub mod registry;
+pub mod relations;
 pub mod sessions;
 pub mod stats;
 pub mod sync_state;
@@ -33,6 +34,7 @@ pub use doctor::{audit_and_repair, DoctorFinding};
 pub use global::{GlobalDb, GlobalHit, ManifestRow};
 pub use models::{Observation, Prompt, Session};
 pub use registry::{ProjectConfig, ProjectRegistry, ProjectState};
+pub use relations::{add_relation, get_relations_for_observation, ObservationRelation};
 pub use sync_state::{ExportedIds, UpsertOutcome};
 
 mod migrations {

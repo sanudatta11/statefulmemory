@@ -23,7 +23,7 @@ cross-project global mirror DB), the platform looks like this:
 | CI Scorecard & Eval | **Shipped** | `memlayer eval [--smoke] [--save-scorecard <file>]` and `.github/workflows/eval.yml`. |
 | Code Anchors | **Shipped** | V7 `code_anchor` schema, CLI `--anchor` & Graphify call-graph bridge. |
 | TUI & Doctor | **Shipped** | `memlayer tui` observation browser and `memlayer doctor [--repair]` auto-repair. |
-| LLM judge | **Planned** | Engram-style relation classifier (`observation_relations`). |
+| LLM judge | **Shipped** | Engram-style relation classifier (`observation_relations`). |
 
 The agent-side surface is sound. The *retrieval substrate* is where the
 gap to the published research benchmarks lives.

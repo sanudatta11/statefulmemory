@@ -1720,6 +1720,34 @@ impl Memlayer for MemlayerService {
         Err(Status::unimplemented("SyncImportMd: implemented in Spec 3"))
     }
 
+    async fn get_observation_relations(
+        &self,
+        req: Request<GetObservationRelationsRequest>,
+    ) -> Result<Response<GetObservationRelationsResponse>, Status> {
+        let _guard = self.enter_rpc();
+        let inner = req.into_inner();
+        let project = map(self.open_project(&inner.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let rels = map(memlayer_storage::relations::get_relations_for_observation(
+            &conn,
+            inner.observation_id,
+        ))?;
+        let proto_rels = rels
+            .into_iter()
+            .map(|r| memlayer_proto::ObservationRelation {
+                id: r.id,
+                source_id: r.source_id,
+                target_id: r.target_id,
+                relation_type: r.relation_type,
+                confidence: r.confidence,
+                created_at: r.created_at,
+            })
+            .collect();
+        Ok(Response::new(GetObservationRelationsResponse {
+            relations: proto_rels,
+        }))
+    }
+
     // ---- Doctor (Spec 4) ----
 
     async fn doctor(

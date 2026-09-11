@@ -934,8 +934,8 @@ impl Render for p::GetObservationHistoryResponse {
                 "{}#{} ({}) {:?} {}",
                 indent, obs.id, obs.r#type, obs.title, status,
             )?;
-            if entry.superseded_by_id.is_some() {
-                writeln!(w, "{}  ↑ superseded by #{}", indent, entry.superseded_by_id.unwrap())?;
+            if let Some(sup_id) = entry.superseded_by_id {
+                writeln!(w, "{}  ↑ superseded by #{}", indent, sup_id)?;
             }
         }
         Ok(())
@@ -953,6 +953,46 @@ impl Render for p::GetObservationHistoryResponse {
             })
             .collect();
         json!({ "entries": entries })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observation relations (Phase 4).
+// ---------------------------------------------------------------------------
+
+impl Render for p::GetObservationRelationsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if self.relations.is_empty() {
+            writeln!(w, "(no relations found)")?;
+            return Ok(());
+        }
+        writeln!(
+            w,
+            "{:<6}  {:<6}  {:<16}  {:<10}  CREATED_AT",
+            "SOURCE", "TARGET", "RELATION", "CONFIDENCE"
+        )?;
+        writeln!(w, "{}", "-".repeat(60))?;
+        for r in &self.relations {
+            writeln!(
+                w,
+                "{:<6}  {:<6}  {:<16}  {:<10.2}  {}",
+                r.source_id, r.target_id, r.relation_type, r.confidence, r.created_at
+            )?;
+        }
+        Ok(())
+    }
+
+    fn to_json_value(&self) -> Value {
+        json!({
+            "relations": self.relations.iter().map(|r| json!({
+                "id": r.id,
+                "source_id": r.source_id,
+                "target_id": r.target_id,
+                "relation_type": r.relation_type,
+                "confidence": r.confidence,
+                "created_at": r.created_at,
+            })).collect::<Vec<_>>()
+        })
     }
 }
 

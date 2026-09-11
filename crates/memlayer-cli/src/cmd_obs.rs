@@ -19,7 +19,7 @@ use tonic::Status;
 use crate::audit::{self, AuditEntry, HitMeta};
 use crate::cli::{
     ObsCapturePassiveArgs, ObsContextArgs, ObsDeleteArgs, ObsFactsArgs, ObsGetArgs, ObsHistoryArgs,
-    ObsListArgs, ObsRecentArgs, ObsReextractArgs, ObsSaveArgs, ObsSearchArgs,
+    ObsListArgs, ObsRecentArgs, ObsReextractArgs, ObsRelationsArgs, ObsSaveArgs, ObsSearchArgs,
     ObsSuggestTopicKeyArgs, ObsTimelineArgs, ObsUpdateArgs, ObsVerb,
 };
 use crate::exit;
@@ -54,6 +54,7 @@ pub async fn dispatch(
         ObsVerb::Facts(a) => facts(client, project_name, fmt, a).await,
         ObsVerb::Reextract(a) => reextract(client, project_name, a).await,
         ObsVerb::History(a) => history(client, project_name, fmt, a).await,
+        ObsVerb::Relations(a) => relations(client, project_name, fmt, a).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -147,7 +148,6 @@ async fn save(
         embed_queued: Some(true),
         extract_queued: Some(cfg.extract.enabled),
         extract_model: extract_model_str,
-        ..Default::default()
     });
     // Inform the user if any conflicting observations were superseded.
     for old in &resp.similar_observations {
@@ -686,6 +686,22 @@ async fn history(
         observation_id,
     };
     let resp = client.get_observation_history(req).await?.into_inner();
+    write_render(&resp, fmt)?;
+    Ok(())
+}
+
+/// `obs relations <id>` — print relation edges (conflicts_with, supersedes, etc.) for an observation.
+async fn relations(
+    client: &mut Client,
+    project_name: &str,
+    fmt: Formatter,
+    a: ObsRelationsArgs,
+) -> Result<(), VerbError> {
+    let req = p::GetObservationRelationsRequest {
+        project_name: project_name.to_string(),
+        observation_id: a.id,
+    };
+    let resp = client.get_observation_relations(req).await?.into_inner();
     write_render(&resp, fmt)?;
     Ok(())
 }
