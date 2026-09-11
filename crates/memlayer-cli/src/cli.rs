@@ -87,8 +87,29 @@ pub enum Command {
     /// Run the local stdio MCP server, exposing memory tools to MCP-capable
     /// agents (Claude Code, Windsurf). Speaks MCP on stdout; logs to stderr.
     Mcp,
+    /// Run accuracy and latency retrieval evaluation benchmark (LoCoMo, LongMemEval, BEAM).
+    Eval(EvalArgs),
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct EvalArgs {
+    /// Benchmark to evaluate: locomo, longmemeval, beam1m, beam10m. Default: locomo.
+    #[arg(long, default_value = "locomo")]
+    pub benchmark: String,
+
+    /// Run in smoke mode (stops after 5 queries or --limit N).
+    #[arg(long)]
+    pub smoke: bool,
+
+    /// Limit maximum number of queries evaluated.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Save JSON benchmark scorecard to specified file path.
+    #[arg(long)]
+    pub save_scorecard: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

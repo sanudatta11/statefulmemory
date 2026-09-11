@@ -23,6 +23,8 @@ pub mod rrf;
 pub mod runner;
 pub mod scoring;
 pub mod sharding;
+pub mod scorecard;
 pub mod vec_index;
 
 pub use runner::{BenchmarkKind, RunConfig, RunReport};
+pub use scorecard::Scorecard;

@@ -8,19 +8,14 @@ use serde::{Deserialize, Serialize};
 
 /// Retrieval mode requested by the caller. The CLI flag `--mode` and the
 /// proto `mode` field deserialize to this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HybridMode {
     /// Lexical BM25 only. The default in v1.x for back-compat.
+    #[default]
     Bm25,
     /// BM25 top-30 + dense top-30, fused via RRF.
     Hybrid,
-}
-
-impl Default for HybridMode {
-    fn default() -> Self {
-        HybridMode::Bm25
-    }
 }
 
 impl HybridMode {

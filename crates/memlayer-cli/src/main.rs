@@ -130,6 +130,7 @@ async fn main() -> ExitCode {
             },
         },
         Command::Config(args) => memlayer_cli::cmd_config::dispatch(args.verb).await,
+        Command::Eval(args) => memlayer_cli::cmd_eval::dispatch(args, cli.output).await,
         Command::Mcp => memlayer_cli::cmd_mcp::dispatch(cli.project).await,
         Command::Reindex(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, _fmt)) => {

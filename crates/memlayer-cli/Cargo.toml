@@ -22,7 +22,9 @@ memlayer-proto = { path = "../memlayer-proto" }
 memlayer-client = { path = "../memlayer-client" }
 memlayer-daemon = { path = "../memlayer-daemon" }
 memlayer-mcp = { path = "../memlayer-mcp" }
+memlayer-eval = { path = "../memlayer-eval" }
 
+tempfile = "3"
 clap.workspace = true
 tokio.workspace = true
 tonic.workspace = true

@@ -161,12 +161,12 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.is_tcp_mode() {
-            if self.tls_cert_path.is_none() || self.tls_key_path.is_none() {
-                return Err(Error::FailedPrecondition(
-                    "TCP mode requires both MEMLAYER_TLS_CERT and MEMLAYER_TLS_KEY".into(),
-                ));
-            }
+        if self.is_tcp_mode()
+            && (self.tls_cert_path.is_none() || self.tls_key_path.is_none())
+        {
+            return Err(Error::FailedPrecondition(
+                "TCP mode requires both MEMLAYER_TLS_CERT and MEMLAYER_TLS_KEY".into(),
+            ));
         }
         if self.project_lru_capacity == 0 {
             return Err(Error::invalid("project_lru_capacity must be > 0"));
@@ -307,17 +307,12 @@ impl Default for ConflictConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelKind {
+    #[default]
     Haiku,
     Sonnet,
-}
-
-impl Default for ModelKind {
-    fn default() -> Self {
-        ModelKind::Haiku
-    }
 }
 
 impl ModelKind {

@@ -78,6 +78,7 @@ impl EmbeddingCache {
     /// * `hits[i]` is `Some(vec)` if `texts[i]` was cached and its fingerprint
     ///   matches; otherwise `None`.
     /// * `miss_indices` lists, in input order, every `i` where `hits[i]` is `None`.
+    #[allow(clippy::type_complexity)]
     pub fn get_many(&self, texts: &[&str]) -> Result<(Vec<Option<Vec<f32>>>, Vec<usize>)> {
         let mut hits: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
         let mut miss_indices: Vec<usize> = Vec::new();
@@ -186,19 +187,14 @@ fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
 /// Decode little-endian bytes back into a `Vec<f32>`. Errors if the byte count
 /// is not a multiple of 4 (corrupt cache row).
 fn bytes_to_f32_vec(bytes: &[u8]) -> Result<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         anyhow::bail!(
             "corrupt embedding cache payload: {} bytes is not a multiple of 4",
             bytes.len()
         );
     }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|c| {
-            let arr: [u8; 4] = c.try_into().expect("chunks_exact yields 4-byte slices");
-            f32::from_le_bytes(arr)
-        })
-        .collect())
+    let (chunks, _) = bytes.as_chunks::<4>();
+    Ok(chunks.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 #[cfg(test)]
