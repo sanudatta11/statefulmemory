@@ -35,5 +35,17 @@ RUST_LOG=memlayer=debug cargo run -p memlayer-cli -- daemon start --foreground
 CI runs the same build + unit + integration path on every push/PR to `main`
 (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
+## Git commit hooks
+
+Enable the repo hooks once per clone (sets `core.hooksPath`):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`.githooks/commit-msg` requires a **single-line** Conventional Commits subject
+and rejects `Co-authored-by` / `Assisted-by` / `Signed-off-by` and similar AI
+attribution. See [`.cursor/rules/git-commits.mdc`](.cursor/rules/git-commits.mdc).
+
 See [`CLAUDE.md`](CLAUDE.md) for architectural invariants, config reference,
 and the gRPC surface listing.
