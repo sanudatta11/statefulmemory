@@ -21,7 +21,7 @@ use crate::formatter::Render;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn obs_to_json(o: &p::Observation) -> Value {
+pub(crate) fn obs_to_json(o: &p::Observation) -> Value {
     json!({
         "id": o.id,
         "sync_id": o.sync_id,
@@ -42,6 +42,7 @@ fn obs_to_json(o: &p::Observation) -> Value {
         "deleted_at": o.deleted_at,
         "review_after": o.review_after,
         "project_name": o.project_name,
+        "code_anchor": o.code_anchor,
     })
 }
 
@@ -54,6 +55,9 @@ fn write_observation_detail(o: &p::Observation, w: &mut dyn Write) -> io::Result
     writeln!(w, "scope       {}", o.scope)?;
     if let Some(t) = &o.topic_key {
         writeln!(w, "topic_key   {t}")?;
+    }
+    if let Some(a) = &o.code_anchor {
+        writeln!(w, "anchor      {a}")?;
     }
     writeln!(w, "revisions   {}", o.revision_count)?;
     writeln!(w, "created_at  {}", o.created_at)?;
@@ -977,6 +981,7 @@ mod tests {
             deleted_at: None,
             review_after: None,
             project_name: None,
+            code_anchor: None,
         }
     }
 
@@ -1218,6 +1223,7 @@ mod tests {
             deleted_at: if deleted { Some("2026-06-01T00:00:00Z".into()) } else { None },
             review_after: None,
             project_name: None,
+            code_anchor: None,
         }
     }
 

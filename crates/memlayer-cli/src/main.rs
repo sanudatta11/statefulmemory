@@ -13,8 +13,8 @@ use tracing::error;
 
 use memlayer_cli::cli::{Cli, Command, DaemonArgs, DaemonVerb, HookVerb, OutputFormat};
 use memlayer_cli::{
-    cmd_daemon, cmd_hook, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill,
-    cmd_sync, cmd_team, cmd_uninstall, cmd_version,
+    cmd_daemon, cmd_doctor, cmd_eval, cmd_hook, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session,
+    cmd_skill, cmd_sync, cmd_team, cmd_tui, cmd_uninstall, cmd_version,
 };
 use memlayer_cli::{autospawn, exit};
 use memlayer_cli::formatter::Formatter;
@@ -130,7 +130,43 @@ async fn main() -> ExitCode {
             },
         },
         Command::Config(args) => memlayer_cli::cmd_config::dispatch(args.verb).await,
-        Command::Eval(args) => memlayer_cli::cmd_eval::dispatch(args, cli.output).await,
+        Command::Eval(args) => cmd_eval::dispatch(args, cli.output).await,
+        Command::Doctor(args) => {
+            let project = detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());
+            let is_json = matches!(cli.output, Some(memlayer_cli::cli::OutputFormat::Json));
+            match open_client(cli.output, cli.project).await {
+                Ok((mut client, detection, _fmt)) => {
+                    match cmd_doctor::run(Some(&mut client), &detection.normalized, args, is_json).await {
+                        Ok(_) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("memlayer doctor error: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                Err(_) => {
+                    match cmd_doctor::run(None, &project, args, is_json).await {
+                        Ok(_) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("memlayer doctor error: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+            }
+        }
+        Command::Tui(args) => match open_client(cli.output, cli.project).await {
+            Ok((mut client, detection, _fmt)) => {
+                match cmd_tui::run(&mut client, &detection.normalized, args.query).await {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("memlayer tui error: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            Err(code) => code,
+        },
         Command::Mcp => memlayer_cli::cmd_mcp::dispatch(cli.project).await,
         Command::Reindex(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, _fmt)) => {

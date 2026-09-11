@@ -34,6 +34,7 @@ pub struct Observation {
     pub updated_at: String,
     pub deleted_at: Option<String>,
     pub review_after: Option<String>,
+    pub code_anchor: Option<String>,
     /// IDs of observations superseded (soft-deleted) when this one was saved.
     #[serde(default)]
     pub superseded_ids: Vec<i64>,
@@ -81,6 +82,7 @@ impl Observation {
             updated_at: row.get("updated_at")?,
             deleted_at: row.get("deleted_at")?,
             review_after: row.get("review_after")?,
+            code_anchor: row.get("code_anchor").unwrap_or(None),
             superseded_ids: vec![],
         })
     }

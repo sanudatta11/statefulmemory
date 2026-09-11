@@ -209,6 +209,7 @@ mod tests {
             updated_at: "2024-01-01T00:00:00+00:00".into(),
             deleted_at: None,
             review_after: None,
+            code_anchor: None,
             superseded_ids: vec![],
         }
     }

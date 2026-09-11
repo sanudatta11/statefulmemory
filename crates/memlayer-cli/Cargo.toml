@@ -23,6 +23,7 @@ memlayer-client = { path = "../memlayer-client" }
 memlayer-daemon = { path = "../memlayer-daemon" }
 memlayer-mcp = { path = "../memlayer-mcp" }
 memlayer-eval = { path = "../memlayer-eval" }
+memlayer-storage = { path = "../memlayer-storage" }
 
 tempfile = "3"
 clap.workspace = true
@@ -44,6 +45,8 @@ tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

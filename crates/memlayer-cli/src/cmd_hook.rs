@@ -142,6 +142,7 @@ pub async fn dispatch_session_start(project_name: &str, limit: i32) -> ExitCode 
         query: None,
         mode: "bm25".to_string(),
         rerank: None,
+        anchor: None,
     };
     let _ = crate::cmd_obs::context(
         &mut client,

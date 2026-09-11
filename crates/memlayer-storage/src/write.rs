@@ -101,6 +101,7 @@ pub enum WriteRequest {
     /// Run an ad-hoc closure under the write connection. Used by sync import,
     /// project merge, and other multi-row operations.
     Custom {
+        #[allow(clippy::type_complexity)]
         f: Box<dyn FnOnce(&mut Connection) -> Result<()> + Send>,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -139,6 +140,7 @@ pub struct ObservationPatch {
     pub topic_key: Option<String>,
     pub scope: Option<String>,
     pub r#type: Option<String>,
+    pub code_anchor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +154,7 @@ pub struct SaveObservationInput {
     pub scope: String,
     pub created_by: Option<String>,
     pub topic_key: Option<String>,
+    pub code_anchor: Option<String>,
     /// Dedupe window in seconds (0 disables hash dedupe, EC-11).
     pub dedupe_window_secs: u64,
     /// Maximum content length (EC-2).
@@ -413,7 +416,7 @@ fn handle_save_observation(
     let now = mtime::now_rfc3339();
     let normalized_hash = dedupe::hash(&input.content);
     let review_after =
-        dedupe::review_months_for_type(&input.r#type).map(|m| mtime::months_from_now(m));
+        dedupe::review_months_for_type(&input.r#type).map(mtime::months_from_now);
 
     // 2. Topic-key upsert: if (topic_key, scope) match a non-deleted row,
     //    update it in place and return. (SC-5, EC-9)
@@ -427,7 +430,8 @@ fn handle_save_observation(
                         revision_count = revision_count + 1,
                         updated_at = ?5,
                         last_seen_at = ?5,
-                        review_after = COALESCE(?6, review_after)
+                        review_after = COALESCE(?6, review_after),
+                        code_anchor = COALESCE(?7, code_anchor)
                   WHERE id = ?1",
                 params![
                     existing.id,
@@ -436,6 +440,7 @@ fn handle_save_observation(
                     &normalized_hash,
                     &now,
                     &review_after,
+                    &input.code_anchor,
                 ],
             )
             .map_err(|e| Error::internal(format!("topic upsert update: {e}")))?;
@@ -475,10 +480,10 @@ fn handle_save_observation(
     tx.execute(
         "INSERT INTO observations
             (sync_id, session_id, type, title, content, tool_name, scope,
-             created_by, topic_key, normalized_hash, last_seen_at,
+             created_by, topic_key, code_anchor, normalized_hash, last_seen_at,
              created_at, updated_at, review_after)
          VALUES
-            (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
+            (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)",
         params![
             &sync_id,
             &input.session_id,
@@ -489,6 +494,7 @@ fn handle_save_observation(
             &input.scope,
             &input.created_by,
             &input.topic_key,
+            &input.code_anchor,
             &normalized_hash,
             &now,
             &now,
@@ -630,13 +636,12 @@ fn handle_save_prompt(
         return Err(Error::invalid("prompt content is empty"));
     }
     // Idempotency: existing sync_id returns the same row.
-    if let Some(p) = tx
+    if let Ok(p) = tx
         .query_row(
             "SELECT id, sync_id, session_id, content, created_at FROM user_prompts WHERE sync_id = ?1",
             params![sync_id],
             crate::models::Prompt::from_row,
         )
-        .ok()
     {
         return Ok(p);
     }
@@ -703,6 +708,7 @@ fn handle_update_obs(
     let topic_key = patch.topic_key.as_deref().or(existing.topic_key.as_deref());
     let scope = patch.scope.as_deref().unwrap_or(&existing.scope);
     let r#type = patch.r#type.as_deref().unwrap_or(&existing.r#type);
+    let code_anchor = patch.code_anchor.as_deref().or(existing.code_anchor.as_deref());
     let normalized_hash = dedupe::hash(content);
     tx.execute(
         "UPDATE observations
@@ -712,8 +718,9 @@ fn handle_update_obs(
                 scope = ?5,
                 type = ?6,
                 normalized_hash = ?7,
+                code_anchor = ?8,
                 revision_count = revision_count + 1,
-                updated_at = ?8
+                updated_at = ?9
           WHERE id = ?1",
         params![
             existing.id,
@@ -723,6 +730,7 @@ fn handle_update_obs(
             scope,
             r#type,
             &normalized_hash,
+            code_anchor,
             &now,
         ],
     )
@@ -1052,6 +1060,7 @@ mod tests {
             scope: "project".into(),
             created_by: None,
             topic_key: None,
+            code_anchor: None,
             dedupe_window_secs: 60 * 60 * 24 * 30,
             max_content_chars: 50_000,
         }

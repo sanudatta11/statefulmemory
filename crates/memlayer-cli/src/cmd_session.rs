@@ -156,6 +156,7 @@ async fn summarize(
         }
         .into()),
         topic_key: Some(topic),
+        code_anchor: None,
     };
     let resp = client.save_observation(req).await?.into_inner();
     if let Some(obs) = resp.observation {

@@ -28,6 +28,7 @@ async fn ts3_topic_key_upsert() {
         scope: "project".into(),
         created_by: None,
         topic_key: Some("policy/auth".into()),
+        code_anchor: None,
     }).await.unwrap();
     let r2 = c.save_observation(SaveObservationRequest {
         project_name: "p".into(),
@@ -40,6 +41,7 @@ async fn ts3_topic_key_upsert() {
         scope: "project".into(),
         created_by: None,
         topic_key: Some("policy/auth".into()),
+        code_anchor: None,
     }).await.unwrap().into_inner();
     let obs = r2.observation.unwrap();
     assert_eq!(obs.revision_count, 2);
@@ -63,6 +65,7 @@ async fn ts5_sync_id_idempotency() {
         scope: "project".into(),
         created_by: None,
         topic_key: None,
+        code_anchor: None,
     }).await.unwrap();
     let r2 = c.save_observation(SaveObservationRequest {
         project_name: "p".into(),
@@ -75,6 +78,7 @@ async fn ts5_sync_id_idempotency() {
         scope: "project".into(),
         created_by: None,
         topic_key: None,
+        code_anchor: None,
     }).await.unwrap().into_inner();
     let obs = r2.observation.unwrap();
     assert_eq!(obs.title, "a", "sync_id idempotency: original row returned unchanged");

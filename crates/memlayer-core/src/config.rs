@@ -502,10 +502,10 @@ fn parse_bool_env(v: &str) -> bool {
 #[cfg(test)]
 mod memlayer_config_tests {
     use super::*;
-
     /// `MEMLAYER_*` env vars + `MEMLAYER_DATA_DIR` are process-global.
     /// Cargo runs tests in parallel by default; serialize through the crate
     /// lock so tests don't race on the env or the temp data dir.
+    use crate::TEST_ENV_LOCK;
     fn clear_env() {
         for k in [
             "MEMLAYER_EXTRACT_ENABLED",

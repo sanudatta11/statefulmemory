@@ -40,6 +40,8 @@ message Observation {
   // Originating project for cross-project (--all-projects) results.
   // Empty / absent for per-project queries.
   optional string project_name = 19;
+  // Optional code anchor (e.g. "<file>::<symbol>::<line>") for code-structure linking.
+  optional string code_anchor = 20;
 }
 
 message Session {
@@ -92,6 +94,7 @@ message SaveObservationRequest {
   string scope        = 8;         // default "project"
   optional string created_by = 9;
   optional string topic_key = 10;
+  optional string code_anchor = 11;
 }
 
 message SaveObservationResponse {
@@ -123,6 +126,7 @@ message UpdateObservationRequest {
   optional string topic_key = 6;
   optional string scope = 7;
   optional string type = 8;
+  optional string code_anchor = 9;
 }
 
 message UpdateObservationResponse {
@@ -205,6 +209,8 @@ message ContextRequest {
   // Optional query string. When set, context is filtered/ranked against this
   // query (used by `obs context --query`). Empty/absent = recent slice only.
   optional string query = 5;
+  // Optional code anchor string to retrieve context tied to a specific symbol/file.
+  optional string anchor = 6;
 }
 message ContextResponse {
   ContextSnapshot snapshot = 1;

@@ -23,7 +23,7 @@ pub const ALL_PROJECTS_CAP: usize = 32;
 
 const SELECT_COLS: &str = "id, sync_id, session_id, type, title, content, tool_name, scope,
     created_by, topic_key, normalized_hash, revision_count, duplicate_count,
-    last_seen_at, created_at, updated_at, deleted_at, review_after";
+    last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor";
 
 /// `GetObservation` — fetch a single row by id or sync_id.
 pub fn get(conn: &Connection, key: &ObservationKey) -> Result<Observation> {
@@ -329,6 +329,7 @@ pub fn search_all_projects(
 
 /// `ListObservations`. Cursor-based: rows are ordered `created_at DESC, id DESC`
 /// and `(last_created_at, last_id)` is the high-water mark.
+#[allow(clippy::too_many_arguments)]
 pub fn list(
     conn: &Connection,
     type_filter: Option<&str>,
@@ -501,11 +502,11 @@ pub fn recent_active(
 /// `Timeline` (FR12.4): chronological neighbors of one observation.
 ///
 /// Returns `(before, anchor, after)` where:
-/// - `before`  = up to `before_n` rows with `created_at < anchor.created_at`,
-///               sorted DESC (closest-older-first).
-/// - `anchor`  = the observation identified by `key`.
-/// - `after`   = up to `after_n` rows with `created_at > anchor.created_at`,
-///               sorted ASC (closest-newer-first).
+/// - `before` = up to `before_n` rows with `created_at < anchor.created_at`,
+///   sorted DESC (closest-older-first).
+/// - `anchor` = the observation identified by `key`.
+/// - `after`  = up to `after_n` rows with `created_at > anchor.created_at`,
+///   sorted ASC (closest-newer-first).
 ///
 /// Soft-deleted rows are excluded; the anchor itself must not be soft-deleted.
 pub fn timeline(
@@ -675,6 +676,31 @@ pub fn search_dense_multi(
     Ok(out)
 }
 
+/// Search observations matching a code_anchor exactly or by prefix.
+pub fn search_by_anchor(
+    conn: &Connection,
+    anchor: &str,
+    limit: i32,
+) -> Result<Vec<Observation>> {
+    let limit = limit.clamp(1, MAX_LIMIT);
+    let prefix = format!("{}%", anchor);
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {SELECT_COLS} FROM observations \
+             WHERE (code_anchor = ?1 OR code_anchor LIKE ?2) AND deleted_at IS NULL \
+             ORDER BY updated_at DESC LIMIT ?3"
+        ))
+        .map_err(|e| Error::internal(format!("prepare search_by_anchor: {e}")))?;
+    let rows = stmt
+        .query_map(params![anchor, prefix, limit], Observation::from_row)
+        .map_err(|e| Error::internal(format!("search_by_anchor query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("search_by_anchor row: {e}")))?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,6 +733,7 @@ mod tests {
                 scope: "project".into(),
                 created_by: None,
                 topic_key: None,
+                code_anchor: None,
                 dedupe_window_secs: 0, // disable dedupe so each row inserts
                 max_content_chars: 50_000,
             },
@@ -793,6 +820,7 @@ mod tests {
                     scope: "project".into(),
                     created_by: None,
                     topic_key: Some(format!("note/topic-{i}")),
+                    code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
                 },
@@ -839,6 +867,7 @@ mod tests {
                     scope: "project".into(),
                     created_by: None,
                     topic_key: None,
+                    code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
                 },
@@ -1023,6 +1052,7 @@ mod tests {
                     scope: "project".into(),
                     created_by: None,
                     topic_key: None,
+                    code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
                 },
@@ -1104,6 +1134,7 @@ mod tests {
                 scope: "project".into(),
                 created_by: None,
                 topic_key: None,
+                code_anchor: None,
                 dedupe_window_secs: 0,
                 max_content_chars: 50_000,
             },
@@ -1165,6 +1196,7 @@ mod tests {
                     scope: "project".into(),
                     created_by: None,
                     topic_key: None,
+                    code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
                 },
@@ -1204,7 +1236,7 @@ mod tests {
                     sync_id: None, session_id: "s1".into(), r#type: "note".into(),
                     title: format!("t-{content}"), content: content.into(),
                     tool_name: None, scope: "project".into(), created_by: None,
-                    topic_key: None, dedupe_window_secs: 0, max_content_chars: 50_000,
+                    topic_key: None, code_anchor: None, dedupe_window_secs: 0, max_content_chars: 50_000,
                 },
             ).unwrap();
             tx.commit().unwrap();

@@ -91,7 +91,6 @@ pub fn ensure_dirs(dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn data_dir_respects_env_var() {
         let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

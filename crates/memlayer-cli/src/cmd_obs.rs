@@ -120,6 +120,7 @@ async fn save(
         scope: a.scope,
         created_by: None,
         topic_key: a.topic,
+        code_anchor: a.anchor,
     };
     let resp = client.save_observation(req).await?.into_inner();
     write_render(&resp, fmt)?;
@@ -175,6 +176,7 @@ async fn update(
         topic_key: a.topic,
         scope: a.scope,
         r#type: a.r#type,
+        code_anchor: a.anchor,
     };
     let resp = client.update_observation(req).await?.into_inner();
     write_render(&resp, fmt)?;
@@ -347,6 +349,7 @@ pub(crate) async fn context(
             mode: Some(a.mode.clone()),
             rerank: a.rerank.clone(),
             query: a.query.clone(),
+            anchor: a.anchor.clone(),
         };
         let resp = client.context(req).await?.into_inner();
         let recent_count = resp
@@ -425,6 +428,7 @@ pub(crate) async fn context(
         mode: Some(a.mode.clone()),
         rerank: a.rerank.clone(),
         query: a.query.clone(),
+        anchor: a.anchor.clone(),
     };
     let resp = client.context(req).await?.into_inner();
     let recent_count = resp
@@ -432,8 +436,14 @@ pub(crate) async fn context(
         .as_ref()
         .map(|s| s.recent_observations.len())
         .unwrap_or(0);
-    resp.render(Formatter::Text, &mut h)?;
-    h.flush()?;
+    if let Some(s) = &resp.snapshot {
+        if !s.recent_observations.is_empty() {
+            writeln!(h, "# Recent context")?;
+            for o in &s.recent_observations {
+                writeln!(h, "- [{}] {}: {}", o.r#type, o.title, o.content)?;
+            }
+        }
+    }
     audit::record(&AuditEntry {
         ts: audit::now_rfc3339(),
         command: "obs.context",
@@ -536,6 +546,7 @@ async fn capture_passive(
             scope: "project".to_string(),
             created_by: None,
             topic_key: None,
+            code_anchor: None,
         };
         let s = client.save_observation(save_req).await?.into_inner();
         if let Some(o) = s.observation {

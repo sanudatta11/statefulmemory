@@ -120,6 +120,7 @@ pub async fn ingest_memories(
                     scope: "project".to_string(),
                     created_by: Some("memlayer-eval".to_string()),
                     topic_key: mem.topic_key.clone(),
+                    code_anchor: None,
                     dedupe_window_secs: 0, // disable dedup in eval
                     max_content_chars: 8192,
                 },

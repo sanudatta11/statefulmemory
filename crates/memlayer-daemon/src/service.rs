@@ -383,6 +383,7 @@ fn obs_to_proto(o: Observation) -> memlayer_proto::Observation {
         deleted_at: o.deleted_at,
         review_after: o.review_after,
         project_name: None,
+        code_anchor: o.code_anchor,
     }
 }
 
@@ -459,6 +460,7 @@ impl Memlayer for MemlayerService {
             scope: if r.scope.is_empty() { "project".into() } else { r.scope },
             created_by: r.created_by,
             topic_key: r.topic_key,
+            code_anchor: r.code_anchor,
             dedupe_window_secs: self.state.dedupe_window.as_secs(),
             max_content_chars: self.state.max_content_chars,
         };
@@ -566,6 +568,7 @@ impl Memlayer for MemlayerService {
             topic_key: r.topic_key,
             scope: r.scope,
             r#type: r.r#type,
+            code_anchor: r.code_anchor,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::UpdateObservation { key, patch, reply: tx }))?;
@@ -671,6 +674,7 @@ impl Memlayer for MemlayerService {
                                         revision_count: 1, duplicate_count: 1, last_seen_at: None,
                                         created_at: h.created_at.clone(), updated_at: h.created_at,
                                         deleted_at: None, review_after: None, project_name: Some(h.project),
+                                        code_anchor: None,
                                     });
                                 }
                             }
@@ -723,6 +727,7 @@ impl Memlayer for MemlayerService {
                         deleted_at: None,
                         review_after: None,
                         project_name: Some(h.project),
+                        code_anchor: None,
                     })
                     .collect();
                 return Ok(Response::new(SearchObservationsResponse {
@@ -833,6 +838,17 @@ impl Memlayer for MemlayerService {
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.recent_limit <= 0 { 10 } else { r.recent_limit };
         let conn = map(project.open_read_conn())?;
+
+        if let Some(anchor) = r.anchor.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            let hits = map(read_q::search_by_anchor(&conn, anchor, limit))?;
+            let snapshot = ContextSnapshot {
+                recent_observations: hits.into_iter().map(obs_to_proto).collect(),
+                active_topics: vec![],
+            };
+            return Ok(Response::new(ContextResponse {
+                snapshot: Some(snapshot),
+            }));
+        }
 
         // Spec retrieval-promotion: when caller provides --query alongside
         // --mode hybrid, the context window is the hybrid retrieval result

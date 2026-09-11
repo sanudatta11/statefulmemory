@@ -29,6 +29,7 @@ async fn ts6_search_returns_ranked_hits() {
             scope: "project".into(),
             created_by: None,
             topic_key: None,
+            code_anchor: None,
         }).await.unwrap();
     }
 
@@ -65,6 +66,7 @@ async fn ts10_soft_deleted_invisible() {
         scope: "project".into(),
         created_by: None,
         topic_key: None,
+        code_anchor: None,
     }).await.unwrap().into_inner().observation.unwrap();
     c.delete_observation(DeleteObservationRequest {
         project_name: "p".into(),

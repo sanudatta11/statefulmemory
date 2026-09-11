@@ -63,3 +63,6 @@ Cargo.lock.bak
 .agents/
 skills-lock.json
 
+# Local evaluation output
+/eval/
+

@@ -17,6 +17,7 @@ pub mod diskmon;
 pub mod facts;
 pub mod global;
 pub mod models;
+pub mod doctor;
 pub mod pragmas;
 pub mod projects_admin;
 pub mod prompts;
@@ -28,12 +29,14 @@ pub mod sync_state;
 pub mod write;
 
 pub use db::{open_read, open_write, Migrate};
+pub use doctor::{audit_and_repair, DoctorFinding};
 pub use global::{GlobalDb, GlobalHit, ManifestRow};
 pub use models::{Observation, Prompt, Session};
 pub use registry::{ProjectConfig, ProjectRegistry, ProjectState};
 pub use sync_state::{ExportedIds, UpsertOutcome};
 
 mod migrations {
+    // Embedded SQLite migrations from ../../migrations directory (V1..V7)
     refinery::embed_migrations!("../../migrations");
 }
 

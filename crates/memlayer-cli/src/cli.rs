@@ -89,8 +89,26 @@ pub enum Command {
     Mcp,
     /// Run accuracy and latency retrieval evaluation benchmark (LoCoMo, LongMemEval, BEAM).
     Eval(EvalArgs),
+    /// Run database integrity audit and auto-repair routines.
+    Doctor(DoctorArgs),
+    /// Launch interactive TUI observation browser.
+    Tui(TuiArgs),
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    /// Attempt non-destructive automatic repair of schema, FTS indexes, and orphan vectors.
+    #[arg(long, aliases = ["auto-repair", "auto_repair"])]
+    pub repair: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TuiArgs {
+    /// Initial search query filter for TUI browser.
+    #[arg(short = 's', long)]
+    pub query: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -220,6 +238,9 @@ pub struct ObsSaveArgs {
     /// Session id this observation belongs to.
     #[arg(long)]
     pub session: Option<String>,
+    /// Optional code anchor (e.g. "src/auth.rs::validate_token::42").
+    #[arg(long)]
+    pub anchor: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -236,6 +257,8 @@ pub struct ObsUpdateArgs {
     pub scope: Option<String>,
     #[arg(long)]
     pub topic: Option<String>,
+    #[arg(long)]
+    pub anchor: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -314,6 +337,9 @@ pub struct ObsContextArgs {
     /// back on error.
     #[arg(long, value_parser = ["haiku", "sonnet"])]
     pub rerank: Option<String>,
+    /// Optional code anchor to filter context by code path/symbol.
+    #[arg(long)]
+    pub anchor: Option<String>,
 }
 
 #[derive(Args, Debug)]

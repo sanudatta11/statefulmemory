@@ -20,6 +20,7 @@ pub mod audit;
 pub mod autospawn;
 pub mod cli;
 pub mod cmd_daemon;
+pub mod cmd_doctor;
 pub mod cmd_eval;
 pub mod cmd_hook;
 pub mod cmd_logs;
@@ -30,6 +31,7 @@ pub mod cmd_project;
 pub mod cmd_prompt;
 pub mod cmd_session;
 pub mod cmd_skill;
+pub mod cmd_tui;
 pub mod cmd_uninstall;
 pub mod cmd_sync;
 pub mod cmd_team;
@@ -77,6 +79,9 @@ macro_rules! info {
         }
     }};
 }
+
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod globals_tests {

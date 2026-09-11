@@ -248,10 +248,11 @@ impl MemoryServer {
             r#type: args.type_,
             title: args.title,
             content: args.content,
-            tool_name: args.anchor,
+            tool_name: args.anchor.clone(),
             scope: "project".into(),
             created_by: Some(created_by),
             topic_key: None,
+            code_anchor: args.anchor,
         };
         let resp = self
             .client
@@ -285,6 +286,7 @@ impl MemoryServer {
             mode: Some(args.mode.unwrap_or_else(|| "bm25".into())),
             rerank: args.rerank,
             query: args.query.filter(|q| !q.trim().is_empty()),
+            anchor: None,
         };
         let resp = self
             .client

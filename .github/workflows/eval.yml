@@ -23,6 +23,7 @@ jobs:
 
       - name: Run memlayer eval smoke benchmark
         run: |
+          mkdir -p ./eval
           cargo run -p memlayer-cli -- eval --smoke --benchmark locomo --save-scorecard ./eval/scorecard.json --output json > ./eval/scorecard_output.json
 
       - name: Upload Scorecard Artifact

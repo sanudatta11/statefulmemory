@@ -635,6 +635,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            code_anchor: None,
             superseded_ids: vec![],
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
@@ -675,6 +676,7 @@ mod tests {
             updated_at: "2026-01-02T00:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            code_anchor: None,
             superseded_ids: vec![],
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
@@ -712,9 +714,10 @@ mod tests {
             duplicate_count: 1,
             last_seen_at: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-02T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
             deleted_at: None,
             review_after: None,
+            code_anchor: None,
             superseded_ids: vec![],
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();

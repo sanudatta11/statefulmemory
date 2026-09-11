@@ -263,14 +263,16 @@ pub fn consolidate_pairs(projects: &[ProjectCounts], threshold: f64) -> Vec<Cons
             if sim < threshold {
                 continue;
             }
-            let (from, to) = if a.observation_count < b.observation_count {
-                (a, b)
-            } else if b.observation_count < a.observation_count {
-                (b, a)
-            } else if a.created_at <= b.created_at {
-                (b, a)
-            } else {
-                (a, b)
+            let (from, to) = match a.observation_count.cmp(&b.observation_count) {
+                std::cmp::Ordering::Less => (a, b),
+                std::cmp::Ordering::Greater => (b, a),
+                std::cmp::Ordering::Equal => {
+                    if a.created_at <= b.created_at {
+                        (b, a)
+                    } else {
+                        (a, b)
+                    }
+                }
             };
             let key = (from.normalized_name.clone(), to.normalized_name.clone());
             if seen_pairs.insert(key) {

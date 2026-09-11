@@ -48,8 +48,7 @@ pub fn apply(conn: &Connection) -> Result<()> {
         } else {
             // Use query_row to safely handle pragmas that may return a result row.
             // We ignore the returned value for all non-journal_mode pragmas.
-            let _ = conn
-                .query_row(&format!("PRAGMA {key} = {value}"), [], |_| Ok(()))
+            conn.query_row(&format!("PRAGMA {key} = {value}"), [], |_| Ok(()))
                 .or_else(|e| match e {
                     // QueryReturnedNoRows is fine — pragma had no result row.
                     rusqlite::Error::QueryReturnedNoRows => Ok(()),

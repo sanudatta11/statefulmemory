@@ -82,7 +82,7 @@ pub fn spawn(
 /// Wraps `nix::sys::statvfs` so the rest of the crate doesn't depend on libc.
 fn check_free_space(path: &std::path::Path) -> std::io::Result<u64> {
     let stat = nix::sys::statvfs::statvfs(path)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     // bavail × frsize is bytes available to non-root.
     Ok(stat.blocks_available() as u64 * stat.fragment_size())
 }

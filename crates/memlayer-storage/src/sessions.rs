@@ -91,6 +91,7 @@ pub fn has_observations(conn: &Connection, session_id: &str) -> Result<bool> {
 /// Per FR6.1, the snapshot has:
 /// - The most-recent N non-deleted observations across all sessions in this project.
 /// - Active topic keys (latest title per topic).
+#[allow(clippy::type_complexity)]
 pub fn build_context_snapshot(
     conn: &Connection,
     recent_limit: usize,
