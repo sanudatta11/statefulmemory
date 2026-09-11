@@ -162,6 +162,7 @@ mod tests {
     use std::io::BufRead;
 
     fn with_tmp_data_dir<F: FnOnce(&std::path::Path)>(f: F) {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::var_os("MEMLAYER_DATA_DIR");
         std::env::set_var("MEMLAYER_DATA_DIR", tmp.path());
@@ -202,6 +203,7 @@ mod tests {
 
     #[test]
     fn full_mode_env_var_toggles() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::remove_var("MEMLAYER_AUDIT_FULL");
         assert!(!full_mode_enabled());
         std::env::set_var("MEMLAYER_AUDIT_FULL", "1");
@@ -215,6 +217,7 @@ mod tests {
 
     #[test]
     fn record_silent_on_unwritable_path() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Point data_dir at a path that can't be created (parent is a file).
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let blocked = tmp.path().join("queries.log"); // tmp.path() is a regular file, .join().parent()==tmp.path() => create_dir_all fails

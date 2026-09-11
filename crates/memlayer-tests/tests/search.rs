@@ -13,17 +13,17 @@ async fn ts6_search_returns_ranked_hits() {
         directory: "/tmp".into(),
     }).await.unwrap();
 
-    for body in &[
-        "the auth strategy is JWT",
-        "we use postgres for storage",
-        "the auth flow uses OAuth in v2",
+    for (title, body) in &[
+        ("auth-jwt", "the auth strategy is JWT"),
+        ("storage-pg", "we use postgres for storage"),
+        ("auth-oauth", "the auth flow uses OAuth in v2"),
     ] {
         c.save_observation(SaveObservationRequest {
             project_name: "p".into(),
             sync_id: None,
             session_id: "s1".into(),
             r#type: "note".into(),
-            title: "x".into(),
+            title: (*title).into(),
             content: (*body).into(),
             tool_name: None,
             scope: "project".into(),

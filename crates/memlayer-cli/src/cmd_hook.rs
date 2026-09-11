@@ -228,16 +228,25 @@ fn first_meaningful_line(content: &str) -> String {
     }
 }
 
-/// Naive path-keyword extraction: take the file stem + parent dir name,
-/// split on `-_./`, filter to ≥3-char non-stopword tokens, lowercase.
-/// Returns at most 4 tokens to keep the FTS5 query bounded.
+/// Path-keyword extraction for Read-hook search: file stem plus every path
+/// component, split on `-_./`, filtered to ≥3-char non-stopword tokens,
+/// lowercased. Returns at most 4 tokens to keep the FTS5 query bounded.
 pub fn keywords_from_path(path: &Path) -> Vec<String> {
     let mut sources: Vec<String> = Vec::new();
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         sources.push(stem.to_string());
     }
-    if let Some(parent) = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
-        sources.push(parent.to_string());
+    for component in path.components() {
+        if let std::path::Component::Normal(os) = component {
+            if let Some(s) = os.to_str() {
+                // Skip the filename itself — stem already covers it without
+                // the extension.
+                if path.file_name().is_some_and(|f| f == os) {
+                    continue;
+                }
+                sources.push(s.to_string());
+            }
+        }
     }
 
     let mut out: Vec<String> = Vec::new();

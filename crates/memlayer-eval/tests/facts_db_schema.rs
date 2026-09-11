@@ -23,7 +23,7 @@ fn ts8_facts_db_open_applies_v1_cleanly() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "1");
+    assert_eq!(v, "5");
 
     // Re-opening must be idempotent.
     drop(db);

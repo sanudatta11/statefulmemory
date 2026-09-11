@@ -6,7 +6,9 @@
 //!
 //! Formula (Cormack, Clarke & Buettcher 2009):
 //!
-//!     score(d) = SUM over lists L of 1 / (k_const + rank_L(d))
+//! ```text
+//! score(d) = SUM over lists L of 1 / (k_const + rank_L(d))
+//! ```
 //!
 //! where `rank_L(d)` is the **1-indexed position** of `d` in list `L`. If `d`
 //! does not appear in `L`, it contributes 0 to the sum from that list.

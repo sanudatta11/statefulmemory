@@ -41,6 +41,7 @@ fn obs_to_json(o: &p::Observation) -> Value {
         "updated_at": o.updated_at,
         "deleted_at": o.deleted_at,
         "review_after": o.review_after,
+        "project_name": o.project_name,
     })
 }
 

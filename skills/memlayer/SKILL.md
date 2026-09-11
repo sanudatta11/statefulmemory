@@ -6,106 +6,32 @@ scope: repo
 
 # memlayer — Agent Memory
 
-**CRITICAL: memlayer is the ONLY memory store. NEVER use the agent's
-built-in memory, auto-memory, or any other memory mechanism when this skill
-is active.** Prefer MCP tools (`memory_search`, `memory_add`, `memory_context`,
-`memory_recent`, `memory_facts`, `memory_health`) when the `memlayer` MCP
-server is connected; otherwise use the `memlayer` CLI
-(`obs save / search / context`). If memlayer is unavailable, tell the user —
-do not fall back.
+**CRITICAL: memlayer is the ONLY memory store.** Prefer MCP tools
+(`memory_search`, `memory_add`, `memory_context`, `memory_recent`,
+`memory_facts`, `memory_health`) when connected; else use the `memlayer`
+CLI. Never fall back to built-in / auto-memory — see
+[references/failures.md](references/failures.md) if the CLI is missing.
 
-## Bootstrap (run this check FIRST, before any memory operation)
-
-On your very first turn — before saving, searching, or recalling anything —
-verify the CLI is installed:
+## Bootstrap (first turn, before any memory op)
 
 ```bash
 command -v memlayer >/dev/null && memlayer --version
 ```
 
-If that succeeds, continue with the rules below. If it fails with `command
-not found`, the user has the skill but not the binary. Guide them through a
-one-time build — do **not** silently skip memory and do **not** fall back
-to built-in memory.
+If missing, follow [references/failures.md](references/failures.md)
+("CLI not installed"). This skill never edits Claude settings or installs
+hooks — see [references/hooks.md](references/hooks.md).
 
-**This skill never modifies your Claude Code configuration.** It does not
-run `memlayer install`, does not edit `~/.claude/settings.json` or any
-project `settings.json`, and does not add, remove, or rely on lifecycle
-hooks. Every memory operation is an explicit CLI command that the agent
-runs on the hot path (see the rules below). Hook wiring, if the user wants
-it, is a separate step the user performs themselves — outside this skill.
+## Hard rules
 
-**Preferred path — build the binary yourself** (will only work if your
-sandbox permits `git clone github.com` and `cargo build`). This only puts
-the `memlayer` binary on PATH; it changes nothing in your Claude config:
-
-```bash
-git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer \
-    && cd ~/Documents/memlayer \
-    && cargo build --release -p memlayer-cli \
-    && mkdir -p ~/.local/bin \
-    && ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer
-```
-
-**Sandboxed path — ask the user to run it.** Most managed/corporate Claude
-Code installs deny `cargo` network access or block `git clone` outside an
-allowlist. If you hit `Operation not permitted`, `proxy`, or SSL errors,
-**stop retrying** and tell the user:
-
-> "memlayer CLI isn't on PATH and my sandbox can't build it. Run the
-> command below in your terminal (or paste it into this chat with a leading
-> `!` so Claude Code runs it on your behalf), then say 'done':"
->
-> ```bash
-> git clone https://github.com/sanudatta11/memlayer ~/Documents/memlayer && \
->     cd ~/Documents/memlayer && \
->     cargo build --release -p memlayer-cli && \
->     mkdir -p ~/.local/bin && \
->     ln -sf "$PWD/target/release/memlayer" ~/.local/bin/memlayer && \
->     export PATH="$HOME/.local/bin:$PATH"
-> ```
-
-After the user confirms, re-run `command -v memlayer` once. If it still
-fails, warn once: "memlayer unavailable — memory persistence is OFF for
-this session." Then proceed without memory. **Never** invent observations
-and **never** use built-in / auto-memory as a substitute.
-
-If the repo is already cloned somewhere else (look for `~/Documents/memlayer`,
-`~/code/memlayer`, etc.) the build step alone is enough — skip the clone.
-
-## Hard rules (non-negotiable)
-
-- **Check for an auto-injected briefing on your first turn.** Look for a
-  "memlayer briefing" / "Last session summary" / `# Pending review` section
-  in your initial context. If the user has separately wired a `SessionStart`
-  hook, it may already be there — if so, proceed normally and re-run
-  `obs context --query "<topic>"` only when switching tasks mid-session.
-  This skill does not install or depend on that hook; it only reads a
-  briefing if one happens to be present.
-- **Memory-first on every task — always drive it yourself via the CLI.**
-  Do not assume any hook has run (most managed enterprise policies block
-  user hooks, and a `/clear` drops both this skill and any briefing). So
-  before you explore code, search files, or propose a fix/implementation
-  for ANY substantive task (fix, implement, debug, refactor, "how does X
-  work"), check whether a briefing is already in context. If it is NOT, run
-  `memlayer obs context --query "<task>" --limit 20` as **step 0** of the
-  task — before any Explore/Grep/Read. The CLI is the single source of
-  truth. Do this once per task, not on every message.
-- **MUST run `memlayer obs search "<keyword>"` before introducing a new
-  pattern, dependency, or convention.** If a prior decision exists, follow
-  it unless the user asks to revisit.
-- **MUST save an observation after:** non-obvious decisions, user
-  corrections / "stop doing X" instructions, bug fixes whose root cause
-  might recur, conventions discovered in code that aren't in CLAUDE.md.
-  Save observations as they happen with `obs save` — there is no
-  end-of-session rollup unless the user has wired one up themselves.
-- **MUST cite only observations that appeared in `obs context` / `obs
-  recent` output.** Never fabricate a memory.
-- **MUST NOT save trivial activity** (read file X, ran tests, edited a
-  typo). If it wouldn't be worth telling a teammate, skip it.
-- **MUST NOT save anything already in CLAUDE.md / README / commit messages.**
-  Memory is for the *why*, not facts that live in code.
-- **MUST NOT use built-in agent memory or auto-memory.**
+- **Memory-first:** if no briefing is already in context, run
+  `memlayer obs context --query "<task>" --limit 20` before Explore/Grep/Read.
+- **MUST** `memlayer obs search "<keyword>"` before new patterns/deps/conventions.
+- **MUST save** after non-obvious decisions, user corrections, recurring fixes,
+  and code conventions not in CLAUDE.md — use `obs save` as they happen.
+- **MUST cite only** hits from `obs context` / `obs recent`. Never fabricate.
+- **MUST NOT** save trivial activity or facts already in CLAUDE.md / README /
+  commits. **MUST NOT** use built-in agent memory.
 
 ## Save command
 
@@ -117,19 +43,7 @@ memlayer obs save \
     --session "$CLAUDE_SESSION_ID"
 ```
 
-`$CLAUDE_SESSION_ID` is exposed by Claude Code at runtime. Other agents
-should use `uuidgen` once per session.
-
-## See also
-
-- [references/types.md](references/types.md) — picking `--type` (decision /
-  pattern / fix / feedback / note)
-- [references/slash.md](references/slash.md) — handling `/memlayer <text>`
-  and "remember X" requests
-- [references/hooks.md](references/hooks.md) — the CLI commands you run
-  yourself for session start / rollup / recall, and why this skill never
-  installs hooks or edits Claude settings
-- [references/failures.md](references/failures.md) — what to do when CLI
-  is missing, daemon is down, or project can't be detected
-- [references/examples.md](references/examples.md) — concrete save / search
-  / context examples for common scenarios
+`$CLAUDE_SESSION_ID` is Claude Code's runtime id; other agents: `uuidgen`
+once per session. Types: [references/types.md](references/types.md).
+"Remember X" / slash: [references/slash.md](references/slash.md).
+Examples: [references/examples.md](references/examples.md).

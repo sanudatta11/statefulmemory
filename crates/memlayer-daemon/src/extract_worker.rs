@@ -303,6 +303,8 @@ mod tests {
 
     #[test]
     fn resolved_model_for_returns_none_when_disabled() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Default cfg has extract.enabled=false → expect None.
         // Ensure no env override leaks in.
         std::env::remove_var("MEMLAYER_EXTRACT_ENABLED");

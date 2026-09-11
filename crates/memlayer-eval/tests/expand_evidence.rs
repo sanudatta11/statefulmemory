@@ -2,6 +2,7 @@
 //! Skeleton (TS-1b): expand_evidence walks ±N observations clamped to session.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use memlayer_core::paths;
 use memlayer_eval::{
     datasets::EvalMemory,
@@ -11,6 +12,9 @@ use memlayer_eval::{
 use memlayer_storage::ProjectRegistry;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// `MEMLAYER_DATA_DIR` is process-global; serialize these tests.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn fresh_data_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir()
@@ -33,6 +37,7 @@ fn mk_mem(project: &str, session: &str, title: &str, content: &str) -> EvalMemor
 
 #[tokio::test]
 async fn expand_evidence_returns_window_clamped_to_session() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("expand-evidence");
     let session_a = uuid::Uuid::new_v4().to_string();
     let session_b = uuid::Uuid::new_v4().to_string();
@@ -70,6 +75,7 @@ async fn expand_evidence_returns_window_clamped_to_session() {
 
 #[tokio::test]
 async fn expand_evidence_window_zero_returns_seed_only() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("expand-evidence-zero");
     let session = uuid::Uuid::new_v4().to_string();
     let mems: Vec<EvalMemory> = (0..3)

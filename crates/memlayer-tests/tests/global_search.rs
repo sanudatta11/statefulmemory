@@ -21,7 +21,7 @@ fn save(env: &CliEnv, project: &str, session: &str, title: &str, content: &str, 
     let mut start = env.cmd();
     start.env("MEMLAYER_PROJECT", project).args([
         "session", "start",
-        "--id", session,
+        session,
     ]);
     let out = start.output().expect("session start");
     assert!(

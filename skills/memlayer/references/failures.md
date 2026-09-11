@@ -34,9 +34,8 @@ Before introducing new patterns / dependencies, run `obs search
 
 This is the most common state when a user only installed the **skill** files
 (e.g. dropped `SKILL.md` into `~/.claude/skills/`) without cloning the repo.
-See the "Bootstrap" section of `SKILL.md` — that is the canonical handler.
-Building the binary only puts `memlayer` on PATH; it does not touch your
-Claude configuration. Quick recap:
+Building the binary only puts `memlayer` on PATH; it does not touch Claude
+configuration. Quick recap:
 
 1. **Try to build yourself** (works in unsandboxed dev environments):
    ```bash

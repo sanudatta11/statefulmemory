@@ -10,3 +10,7 @@ pub mod project;
 pub mod time;
 
 pub use error::{Error, ErrorKind, Result};
+
+/// Shared by unit tests that mutate process-global `MEMLAYER_*` env vars.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

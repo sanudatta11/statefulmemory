@@ -258,10 +258,6 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Process-global env mutex (MEMLAYER_DATA_DIR is read by paths::data_dir).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn fresh_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -274,8 +270,15 @@ mod tests {
         for k in [
             "MEMLAYER_EXTRACT_ENABLED",
             "MEMLAYER_EXTRACT_MODEL",
+            "MEMLAYER_EXTRACT_TIMEOUT_SECS",
+            "MEMLAYER_EXTRACT_WORKERS",
             "MEMLAYER_RERANK_MODEL",
+            "MEMLAYER_RERANK_TIMEOUT_SECS",
             "MEMLAYER_EMBED_WORKERS",
+            "MEMLAYER_EMBED_QUANTIZE",
+            "MEMLAYER_CONFLICT_ENABLED",
+            "MEMLAYER_CONFLICT_MODEL",
+            "MEMLAYER_CONFLICT_TIMEOUT_SECS",
         ] {
             std::env::remove_var(k);
         }
@@ -283,7 +286,7 @@ mod tests {
 
     #[test]
     fn set_get_roundtrip_global() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
 
@@ -309,7 +312,7 @@ mod tests {
 
     #[test]
     fn project_overrides_global_in_show() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
 
@@ -337,7 +340,7 @@ mod tests {
 
     #[test]
     fn set_creates_missing_file() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_dir();
         let p = dir.path().join("projects").join("brand-new.config.toml");
@@ -354,7 +357,7 @@ mod tests {
 
     #[test]
     fn set_rejects_unknown_key() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
         let err = set(ConfigSetArgs {
@@ -369,7 +372,7 @@ mod tests {
 
     #[test]
     fn set_rejects_bad_value() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
         let err = set(ConfigSetArgs {
@@ -384,7 +387,7 @@ mod tests {
 
     #[test]
     fn set_does_not_clobber_unrelated_sections() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
 
@@ -412,7 +415,7 @@ mod tests {
 
     #[test]
     fn get_resolves_known_keys() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
         set(ConfigSetArgs {

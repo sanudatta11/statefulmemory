@@ -10,6 +10,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Shared by unit tests that mutate process-global `MEMLAYER_*` / `NO_COLOR` env.
+/// Each module used to have its own mutex, which still raced across modules.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod agents;
 pub mod audit;
 pub mod autospawn;
@@ -81,6 +86,7 @@ mod globals_tests {
     /// is required to set the env var when not already set.
     #[test]
     fn init_globals_no_color_sets_env_var() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Snapshot and clear the env so the test is hermetic regardless of
         // how the developer's shell is configured.
         let original = std::env::var_os("NO_COLOR");

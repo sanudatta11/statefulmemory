@@ -8,12 +8,16 @@
 //! benchmark accuracy surfaced.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use memlayer_eval::{
     datasets::EvalMemory,
     ingest::ingest_memories,
     retrieve::retrieve,
 };
+
+/// `MEMLAYER_DATA_DIR` is process-global; serialize these tests.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn fresh_data_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir()
@@ -42,6 +46,7 @@ async fn ingest(data_dir: &std::path::Path, memories: &[EvalMemory]) {
 
 #[tokio::test]
 async fn single_keyword_query_finds_matching_memory() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("single-keyword");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![
@@ -67,6 +72,7 @@ async fn single_keyword_query_finds_matching_memory() {
 
 #[tokio::test]
 async fn natural_language_question_with_punctuation_returns_hits() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("nl-question");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![
@@ -98,6 +104,7 @@ async fn natural_language_question_with_punctuation_returns_hits() {
 
 #[tokio::test]
 async fn stopword_only_query_does_not_panic() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("stopword");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![
@@ -114,6 +121,7 @@ async fn stopword_only_query_does_not_panic() {
 
 #[tokio::test]
 async fn project_isolation_no_cross_project_leakage() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("isolation");
     let session = uuid::Uuid::new_v4().to_string();
     let mems_a = vec![
@@ -147,6 +155,7 @@ async fn project_isolation_no_cross_project_leakage() {
 
 #[tokio::test]
 async fn k_limits_returned_results() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("k-limit");
     let session = uuid::Uuid::new_v4().to_string();
     let memories: Vec<EvalMemory> = (0..15)
@@ -168,6 +177,7 @@ async fn k_limits_returned_results() {
 
 #[tokio::test]
 async fn ranking_prefers_more_specific_match() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let data_dir = fresh_data_dir("ranking");
     let session = uuid::Uuid::new_v4().to_string();
     let memories = vec![

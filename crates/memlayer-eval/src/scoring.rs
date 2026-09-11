@@ -3,15 +3,19 @@
 //!
 //! The core additive formula remains:
 //!
-//!     base(f) = sem(f) + bm25(f) + entity_boost(f)
+//! ```text
+//! base(f) = sem(f) + bm25(f) + entity_boost(f)
+//! ```
 //!
 //! P5 layers four modifiers on top (locked grill 2026-06-12):
 //!
-//!     combined(f) = base(f)
-//!                 * max(salience(f), 0.3)              // P5 spec-task-27
-//!                 * exp(-0.005 * age_days(f))          // P5 spec-task-29
-//!                 * contradiction_factor(f)            // P5 spec-task-30
-//!                 + tiebreak_bonus(f)                  // P5 spec-task-30
+//! ```text
+//! combined(f) = base(f)
+//!             * max(salience(f), 0.3)              // P5 spec-task-27
+//!             * exp(-0.005 * age_days(f))          // P5 spec-task-29
+//!             * contradiction_factor(f)            // P5 spec-task-30
+//!             + tiebreak_bonus(f)                  // P5 spec-task-30
+//! ```
 //!
 //! BM25 normalization itself is upgraded from min-max to an adaptive
 //! sigmoid (P5 spec-task-28) tuned by query token count — Mem0's

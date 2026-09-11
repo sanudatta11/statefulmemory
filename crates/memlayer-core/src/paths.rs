@@ -92,15 +92,9 @@ pub fn ensure_dirs(dir: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// `MEMLAYER_DATA_DIR` is a process-global env var; the two tests below
-    /// both mutate it. Without a shared lock the default cargo-test parallel
-    /// runner interleaves their `set_var` calls and one of them reads the
-    /// other's value. Serialize them through this mutex.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn data_dir_respects_env_var() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var("MEMLAYER_DATA_DIR", "/tmp/memlayer-test-xyz");
         assert_eq!(data_dir(), PathBuf::from("/tmp/memlayer-test-xyz"));
         std::env::remove_var("MEMLAYER_DATA_DIR");
@@ -108,7 +102,7 @@ mod tests {
 
     #[test]
     fn project_paths_compose() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var("MEMLAYER_DATA_DIR", "/tmp/memlayer-paths");
         assert_eq!(
             project_db_path("foo"),

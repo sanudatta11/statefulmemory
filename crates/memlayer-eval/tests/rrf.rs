@@ -8,18 +8,18 @@ fn ts4_two_lists_top_30_matches_manual_rrf_math() {
     // List A (BM25): doc 1 best, then 2, 3, 4, 5
     // List B (dense): doc 3 best, then 2, 1, 6, 7
     //
-    // Manual RRF with k=60:
-    //   doc 1: 1/(60+1) + 1/(60+3)  = 0.01639 + 0.01587 = 0.03226
-    //   doc 2: 1/(60+2) + 1/(60+2)  = 0.01613 + 0.01613 = 0.03226   (tie with doc 1)
-    //   doc 3: 1/(60+3) + 1/(60+1)  = 0.01587 + 0.01639 = 0.03226   (tie too)
-    //   doc 4: 1/(60+4)              = 0.01563
-    //   doc 5: 1/(60+5)              = 0.01538
-    //   doc 6: 1/(60+4)              = 0.01563
-    //   doc 7: 1/(60+5)              = 0.01538
+    // Manual RRF with k=60 (exact fractions, not rounded):
+    //   doc 1: 1/61 + 1/63 = 124/3843 ≈ 0.0322665
+    //   doc 2: 1/62 + 1/62 = 1/31     ≈ 0.0322581  (slightly below 1/3)
+    //   doc 3: 1/63 + 1/61 = 124/3843 ≈ 0.0322665  (tie with doc 1)
+    //   doc 4: 1/64                   ≈ 0.015625
+    //   doc 5: 1/65                   ≈ 0.0153846
+    //   doc 6: 1/64                   ≈ 0.015625
+    //   doc 7: 1/65                   ≈ 0.0153846
     //
-    // Top three are tied; tie-break is first-seen order: 1, 2, 3.
-    // Then doc 4 (first-seen-4) > doc 6 (first-seen-6) at score 0.01563 tie.
-    // Then doc 5 > doc 7 at score 0.01538 tie.
+    // Docs 1 and 3 tie at the top; first-seen order puts 1 before 3.
+    // Doc 2 is next (lower score than the 1/3 pair).
+    // Then doc 4 > doc 6 (score tie, first-seen), then doc 5 > doc 7.
     let bm25  = vec![1u64, 2, 3, 4, 5];
     let dense = vec![3u64, 2, 1, 6, 7];
 
@@ -27,7 +27,7 @@ fn ts4_two_lists_top_30_matches_manual_rrf_math() {
 
     assert_eq!(
         fused,
-        vec![1u64, 2, 3, 4, 6, 5, 7],
+        vec![1u64, 3, 2, 4, 6, 5, 7],
         "RRF fusion must rank co-occurring docs above singletons, with first-seen tie-break"
     );
 }

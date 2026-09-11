@@ -507,13 +507,10 @@ fn parse_bool_env(v: &str) -> bool {
 #[cfg(test)]
 mod memlayer_config_tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// `MEMLAYER_*` env vars + `MEMLAYER_DATA_DIR` are process-global.
-    /// Cargo runs tests in parallel by default; serialize through this lock
-    /// so tests don't race on the env or the temp data dir.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
+    /// Cargo runs tests in parallel by default; serialize through the crate
+    /// lock so tests don't race on the env or the temp data dir.
     fn clear_env() {
         for k in [
             "MEMLAYER_EXTRACT_ENABLED",
@@ -537,7 +534,7 @@ mod memlayer_config_tests {
 
     #[test]
     fn default_extract_disabled_haiku() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_data_dir();
         let cfg = load_resolved(None);
@@ -550,7 +547,7 @@ mod memlayer_config_tests {
 
     #[test]
     fn precedence_env_overrides_project_overrides_global_overrides_default() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
 
@@ -601,7 +598,7 @@ model = "sonnet"
 
     #[test]
     fn invalid_per_project_falls_back_to_global() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
 
@@ -629,7 +626,7 @@ model = "sonnet"
 
     #[test]
     fn unknown_keys_warn_but_dont_fail() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
 
@@ -654,7 +651,7 @@ hello = "world"
     #[test]
     fn project_overlay_preserves_global_section() {
         // Sanity: per-project file with only [rerank] must not erase [extract].
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
         std::fs::write(

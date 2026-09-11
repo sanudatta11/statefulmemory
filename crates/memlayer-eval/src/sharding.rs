@@ -56,9 +56,14 @@ impl ShardRouter {
 
     /// Suggested per-shard k. Over-fetch 1.5× so the merge has enough
     /// candidates to cover the top-K when relevant items cluster in a
-    /// single shard. `ceil((k * 1.5) / shard_count)`, never below 1.
+    /// single shard. `ceil(k * 1.5)`, never below 1.
+    ///
+    /// Note: this is intentionally **not** divided by `shard_count`. Dividing
+    /// would under-fetch (e.g. k=10, shards=16 → 1) and break the TS-13
+    /// single-DB equivalence property whenever two global top-K hits share a
+    /// shard.
     pub fn k_per_shard(&self, k: usize) -> usize {
-        let raw = ((k as f32) * 1.5 / self.shard_count as f32).ceil() as usize;
+        let raw = ((k as f32) * 1.5).ceil() as usize;
         raw.max(1)
     }
 }
@@ -151,18 +156,21 @@ mod tests {
     #[test]
     fn k_per_shard_over_fetches_1_5x() {
         let r = ShardRouter::new(16);
-        // k=10 → ceil(15/16) = 1.
-        assert_eq!(r.k_per_shard(10), 1);
-        // k=100 → ceil(150/16) = 10.
-        assert_eq!(r.k_per_shard(100), 10);
-        // k=160 → ceil(240/16) = 15.
-        assert_eq!(r.k_per_shard(160), 15);
+        // k=10 → ceil(15) = 15 (enough if all top-K land in one shard).
+        assert_eq!(r.k_per_shard(10), 15);
+        // k=100 → ceil(150) = 150.
+        assert_eq!(r.k_per_shard(100), 150);
+        // k=160 → ceil(240) = 240.
+        assert_eq!(r.k_per_shard(160), 240);
     }
 
     #[test]
     fn k_per_shard_minimum_1() {
         let r = ShardRouter::new(100);
-        assert_eq!(r.k_per_shard(1), 1);
+        // k=0 would ceil to 0; floor at 1 so a shard always returns something.
+        assert_eq!(r.k_per_shard(0), 1);
+        // k=1 → ceil(1.5) = 2.
+        assert_eq!(r.k_per_shard(1), 2);
     }
 
     #[test]
