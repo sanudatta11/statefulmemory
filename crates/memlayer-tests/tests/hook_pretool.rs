@@ -146,8 +146,13 @@ fn read_hook_writes_only_stderr() {
 fn install_patches_pretool_grep_read_idempotent() {
     let env = CliEnv::new();
 
-    // First install.
-    let out1 = env.cmd().args(["install"]).output().expect("install 1");
+    // Target Claude Code explicitly — bare `install` only patches agents
+    // detected under HOME/PATH, which is empty in CI tempdirs.
+    let out1 = env
+        .cmd()
+        .args(["install", "--agent", "claude-code"])
+        .output()
+        .expect("install 1");
     assert!(
         out1.status.success(),
         "install must succeed: {}",
@@ -156,7 +161,14 @@ fn install_patches_pretool_grep_read_idempotent() {
 
     let settings_path = env.data_path().join(".claude").join("settings.json");
     let settings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&settings_path).expect("read settings.json"),
+        &std::fs::read_to_string(&settings_path).unwrap_or_else(|e| {
+            panic!(
+                "read settings.json at {}: {e}; install stdout=\n{}stderr=\n{}",
+                settings_path.display(),
+                String::from_utf8_lossy(&out1.stdout),
+                String::from_utf8_lossy(&out1.stderr),
+            )
+        }),
     )
     .expect("parse settings.json");
 
@@ -202,7 +214,11 @@ fn install_patches_pretool_grep_read_idempotent() {
     assert_eq!(memlayer_read_count, 1, "exactly one Read entry expected");
 
     // Re-install. Idempotency: counts unchanged.
-    let _ = env.cmd().args(["install"]).output().expect("install 2");
+    let _ = env
+        .cmd()
+        .args(["install", "--agent", "claude-code"])
+        .output()
+        .expect("install 2");
     let settings2: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read"))
             .expect("parse 2");

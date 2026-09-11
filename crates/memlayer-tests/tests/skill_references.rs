@@ -21,8 +21,13 @@ const EXPECTED_REFS: &[&str] = &[
 fn install_writes_all_five_sidecars() {
     let env = CliEnv::new();
 
-    // Run install. HOME is pointed at the env's tempdir by CliEnv::cmd().
-    let out = env.cmd().args(["install"]).output().expect("run install");
+    // Target Claude Code explicitly so sidecars are always written under the
+    // test HOME, even when no agent is auto-detected on the runner PATH.
+    let out = env
+        .cmd()
+        .args(["install", "--agent", "claude-code"])
+        .output()
+        .expect("run install");
     assert!(
         out.status.success(),
         "memlayer install failed: stderr={}",
