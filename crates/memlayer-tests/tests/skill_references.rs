@@ -55,11 +55,16 @@ fn install_writes_all_five_sidecars() {
 #[test]
 fn sidecar_bytes_match_source() {
     let env = CliEnv::new();
-    let _ = env
+    let out = env
         .cmd()
-        .args(["install"])
+        .args(["install", "--agent", "claude-code"])
         .output()
         .expect("install must succeed");
+    assert!(
+        out.status.success(),
+        "memlayer install failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
 
     let installed_dir = env
         .data_path()
