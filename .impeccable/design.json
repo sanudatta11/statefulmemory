@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "world": "memory-strata",
+  "seed": "6f2e0391",
+  "palette": {
+    "accent": "#c8783a",
+    "groundDark": "#0f1714",
+    "groundLight": "#f4f7f5"
+  },
+  "fonts": {
+    "display": "Bricolage Grotesque Variable",
+    "body": "Source Sans 3 Variable",
+    "mono": "JetBrains Mono"
+  },
+  "surfaces": ["/", "/docs/**"]
+}

@@ -1,0 +1,28 @@
+---
+title: Install
+description: Build and install the memlayer CLI on macOS or Linux.
+---
+
+**Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL / `pkg-config`, macOS or Linux (WSL OK).
+
+```bash
+git clone https://github.com/sanudatta11/memlayer && cd memlayer
+make prereqs && make install    # → ~/.local/bin/memlayer
+export PATH="$HOME/.local/bin:$PATH"
+memlayer --version
+```
+
+The daemon auto-starts on first use. Put `~/.local/bin` on your `PATH` permanently
+if `memlayer` is not found after install.
+
+## Verify
+
+```bash
+memlayer daemon status
+memlayer doctor
+```
+
+## Next steps
+
+- [Getting started](/docs/getting-started/) — save and search
+- [Wire into your agent](/docs/agents/) — MCP and skills

@@ -1,0 +1,37 @@
+---
+import { LinkButton } from '@astrojs/starlight/components';
+
+const PAGE_TITLE_ID = '_top';
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+---
+
+<section class="ml-hero" aria-labelledby={PAGE_TITLE_ID}>
+	<h1 id={PAGE_TITLE_ID} class="ml-hero__wordmark" data-page-title set:html={title} />
+	{tagline && <p class="ml-hero__tagline" set:html={tagline} />}
+	{
+		actions.length > 0 && (
+			<div class="ml-hero__actions">
+				{actions.map(
+					({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+						<LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+							{text}
+							{icon?.html && <Fragment set:html={icon.html} />}
+						</LinkButton>
+					)
+				)}
+			</div>
+		)
+	}
+	<div class="ml-hero__core">
+		<span class="ml-hero__core-label">local · on disk</span>
+		<pre><code>git clone https://github.com/sanudatta11/memlayer && cd memlayer
+make prereqs && make install
+export PATH="$HOME/.local/bin:$PATH"
+memlayer --version</code></pre>
+		<p class="ml-hero__note">
+			Per-project SQLite under <code>~/.memlayer/</code>. A thin CLI talks to a local daemon;
+			agents reach it through MCP or shell hooks.
+		</p>
+	</div>
+</section>

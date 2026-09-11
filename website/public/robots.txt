@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://memlayer.org/sitemap-index.xml

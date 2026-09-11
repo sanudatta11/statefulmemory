@@ -1,0 +1,286 @@
+@import '@fontsource-variable/bricolage-grotesque';
+@import '@fontsource-variable/source-sans-3';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/700.css';
+
+:root {
+	--sl-font: 'Source Sans 3 Variable', 'Source Sans 3', var(--sl-font-system);
+	--sl-font-mono: 'JetBrains Mono', var(--sl-font-system-mono);
+	--ml-display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', var(--sl-font-system);
+}
+
+/* Dark: mineral slate + copper */
+:root,
+::backdrop {
+	--sl-color-white: hsl(140, 12%, 96%);
+	--sl-color-gray-1: hsl(150, 10%, 90%);
+	--sl-color-gray-2: hsl(150, 8%, 72%);
+	--sl-color-gray-3: hsl(155, 7%, 52%);
+	--sl-color-gray-4: hsl(160, 8%, 32%);
+	--sl-color-gray-5: hsl(162, 10%, 18%);
+	--sl-color-gray-6: hsl(165, 12%, 12%);
+	--sl-color-black: hsl(168, 14%, 7%);
+
+	--sl-color-accent-low: hsl(28, 42%, 18%);
+	--sl-color-accent: hsl(28, 68%, 48%);
+	--sl-color-accent-high: hsl(28, 78%, 68%);
+
+	--sl-color-text: var(--sl-color-gray-2);
+	/* Sidebar current item uses text-accent as background + text-invert as foreground */
+	--sl-color-text-accent: var(--sl-color-accent);
+	--sl-color-text-invert: hsl(30, 30%, 98%);
+	--sl-color-bg: var(--sl-color-black);
+	--sl-color-bg-nav: hsla(165, 14%, 9%, 0.94);
+	--sl-color-bg-sidebar: hsl(165, 12%, 9%);
+	--sl-color-bg-inline-code: hsl(162, 12%, 14%);
+	--sl-color-bg-accent: var(--sl-color-accent);
+	--sl-color-hairline-light: hsl(160, 10%, 20%);
+	--sl-color-hairline: hsl(165, 12%, 14%);
+	--sl-color-hairline-shade: var(--sl-color-black);
+}
+
+/* Light: cool stone + deep copper */
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+	--sl-color-white: hsl(168, 18%, 8%);
+	--sl-color-gray-1: hsl(165, 12%, 16%);
+	--sl-color-gray-2: hsl(160, 8%, 28%);
+	--sl-color-gray-3: hsl(155, 6%, 42%);
+	--sl-color-gray-4: hsl(150, 8%, 72%);
+	--sl-color-gray-5: hsl(148, 10%, 88%);
+	--sl-color-gray-6: hsl(145, 12%, 94%);
+	--sl-color-black: hsl(140, 14%, 97%);
+
+	--sl-color-accent-low: hsl(28, 70%, 88%);
+	--sl-color-accent: hsl(28, 72%, 36%);
+	--sl-color-accent-high: hsl(28, 65%, 26%);
+
+	--sl-color-text: var(--sl-color-gray-2);
+	--sl-color-text-accent: var(--sl-color-accent);
+	--sl-color-text-invert: hsl(30, 40%, 98%);
+	--sl-color-bg: var(--sl-color-black);
+	--sl-color-bg-nav: hsla(145, 12%, 98%, 0.94);
+	--sl-color-bg-sidebar: hsl(145, 14%, 96%);
+	--sl-color-bg-inline-code: hsl(148, 12%, 90%);
+	--sl-color-bg-accent: var(--sl-color-accent);
+	--sl-color-hairline-light: hsl(150, 10%, 84%);
+	--sl-color-hairline: hsl(148, 10%, 88%);
+	--sl-color-hairline-shade: hsl(145, 12%, 94%);
+}
+
+/* Type */
+.site-title,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+	font-family: var(--ml-display);
+	letter-spacing: -0.02em;
+}
+
+.site-title {
+	font-weight: 700;
+	font-size: 1.15rem;
+}
+
+::selection {
+	background: color-mix(in oklab, var(--sl-color-accent) 40%, transparent);
+	color: var(--sl-color-white);
+}
+
+:focus-visible {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 3px;
+}
+
+/* Quiet splash atmosphere — no motion */
+[data-has-hero] .page {
+	isolation: isolate;
+}
+
+[data-has-hero] .main-frame {
+	position: relative;
+	overflow: clip;
+}
+
+[data-has-hero] .main-frame::before {
+	content: '';
+	position: fixed;
+	inset: 0;
+	z-index: -2;
+	pointer-events: none;
+	background:
+		radial-gradient(100% 70% at 0% 0%, hsl(28, 35%, 14%) 0%, transparent 50%),
+		linear-gradient(
+			180deg,
+			hsl(168, 14%, 8%) 0%,
+			hsl(165, 14%, 6.5%) 45%,
+			hsl(170, 16%, 5%) 100%
+		);
+}
+
+[data-theme='light'][data-has-hero] .main-frame::before {
+	background:
+		radial-gradient(90% 60% at 0% 0%, hsl(28, 30%, 92%) 0%, transparent 50%),
+		linear-gradient(
+			180deg,
+			hsl(140, 14%, 97%) 0%,
+			hsl(148, 10%, 95%) 100%
+		);
+}
+
+/* Soft static strata lines (no animation) */
+[data-has-hero] .main-frame::after {
+	content: '';
+	position: fixed;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	opacity: 0.35;
+	background:
+		repeating-linear-gradient(
+			180deg,
+			transparent 0 5rem,
+			hsla(28, 30%, 40%, 0.06) 5rem 5.08rem,
+			transparent 5.08rem 10rem,
+			hsla(165, 15%, 45%, 0.04) 10rem 10.08rem
+		);
+	mask-image: linear-gradient(180deg, transparent 0%, #000 15%, #000 65%, transparent 100%);
+}
+
+/* Hero */
+.ml-hero {
+	display: grid;
+	gap: clamp(1.5rem, 3vw, 2.25rem);
+	padding-block: clamp(2.5rem, 8vmin, 5.5rem) clamp(2rem, 4vmin, 3.5rem);
+	max-width: 48rem;
+}
+
+.ml-hero__wordmark {
+	font-family: var(--ml-display);
+	font-size: clamp(3rem, 11vw, 5.25rem);
+	font-weight: 700;
+	line-height: 0.95;
+	letter-spacing: -0.04em;
+	color: var(--sl-color-white);
+	margin: 0;
+	max-width: none;
+}
+
+.ml-hero__tagline {
+	font-size: clamp(1.05rem, 2vw, 1.25rem);
+	line-height: 1.5;
+	color: var(--sl-color-gray-2);
+	max-width: 38ch;
+	margin: 0;
+}
+
+.ml-hero__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem 1.1rem;
+	align-items: center;
+}
+
+.ml-hero__actions .sl-link-button.primary {
+	background: var(--sl-color-accent);
+	color: var(--sl-color-text-invert);
+	border: 1px solid color-mix(in oklab, var(--sl-color-accent) 65%, #000);
+	box-shadow: none;
+}
+
+.ml-hero__actions .sl-link-button.primary:hover {
+	filter: brightness(1.06);
+}
+
+.ml-hero__core {
+	position: relative;
+	margin-top: 0.35rem;
+	padding: 1rem 1.1rem 1.05rem;
+	border: 1px solid var(--sl-color-hairline-light);
+	border-radius: 0.35rem;
+	background: color-mix(in oklab, var(--sl-color-bg) 78%, #000);
+	box-shadow: none;
+}
+
+.ml-hero__core-label {
+	position: absolute;
+	top: -0.6rem;
+	left: 0.85rem;
+	padding: 0.1rem 0.45rem;
+	font-family: var(--__sl-font-mono);
+	font-size: 0.68rem;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--sl-color-accent-high);
+	background: var(--sl-color-bg);
+	border: 1px solid var(--sl-color-hairline-light);
+}
+
+[data-theme='light'] .ml-hero__core-label {
+	color: var(--sl-color-accent);
+}
+
+.ml-hero__core pre {
+	margin: 0.35rem 0 0;
+	padding: 0;
+	background: transparent !important;
+	border: 0 !important;
+	box-shadow: none !important;
+}
+
+.ml-hero__core code {
+	font-family: var(--__sl-font-mono);
+	font-size: 0.82rem;
+	line-height: 1.65;
+	color: var(--sl-color-gray-1);
+}
+
+.ml-hero__note {
+	margin: 0.8rem 0 0;
+	font-size: 0.9rem;
+	color: var(--sl-color-gray-3);
+	max-width: 52ch;
+}
+
+/* Docs */
+.sl-markdown-content {
+	--sl-content-width: 45rem;
+}
+
+.sl-markdown-content pre:not([data-theme]) {
+	border: 1px solid var(--sl-color-hairline-light);
+	border-radius: 0.35rem;
+}
+
+header.header {
+	border-bottom: 1px solid var(--sl-color-hairline);
+	backdrop-filter: blur(8px);
+}
+
+/* Selected sidebar: copper fill + light text (Starlight uses text-accent bg + text-invert fg) */
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+	color: var(--sl-color-text-invert) !important;
+	background-color: var(--sl-color-accent) !important;
+	font-weight: 600;
+}
+
+/* TOC current heading — accent text only, readable */
+starlight-toc a[aria-current='true'],
+nav[aria-labelledby='starlight__on-this-page'] a[aria-current='true'] {
+	color: var(--sl-color-accent-high);
+	font-weight: 600;
+}
+
+[data-theme='light'] starlight-toc a[aria-current='true'],
+[data-theme='light'] nav[aria-labelledby='starlight__on-this-page'] a[aria-current='true'] {
+	color: var(--sl-color-accent);
+}

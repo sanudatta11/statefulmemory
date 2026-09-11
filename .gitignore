@@ -66,3 +66,9 @@ skills-lock.json
 # Local evaluation output
 /eval/
 
+# Impeccable / Cursor harness (large binaries; product design lives in PRODUCT.md / DESIGN.md)
+.cursor/
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/build/
+

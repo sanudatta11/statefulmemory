@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
+# PR comment step needs write; contents is enough for checkout + build.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   eval-smoke:
     name: Retrieval Benchmark Scorecard
@@ -49,7 +54,9 @@ jobs:
           script: |
             const fs = require('fs');
             const card = JSON.parse(fs.readFileSync('./eval/scorecard.json', 'utf8'));
-            const body = `### 📊 memlayer Retrieval Benchmark Scorecard
+            const marker = '<!-- memlayer-retrieval-scorecard -->';
+            const body = `${marker}
+            ### memlayer Retrieval Benchmark Scorecard
             - **Benchmark**: ${card.benchmark}
             - **Commit**: \`${card.commit_hash}\`
             - **Accuracy**: **${card.accuracy_pct.toFixed(2)}%**
@@ -58,9 +65,26 @@ jobs:
             - **Retrieval Latency (p95)**: ${card.retrieval_p95_ms.toFixed(2)} ms
             - **End-to-End Latency (p50)**: ${card.end_to_end_p50_ms.toFixed(2)} ms
             `;
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
             });
+            const existing = comments.find((c) => c.user?.type === 'Bot' && c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }

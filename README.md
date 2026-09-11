@@ -2,6 +2,8 @@
 
 Persistent memory for AI coding agents — local, per-project, no cloud.
 
+**Docs:** [https://memlayer.org](https://memlayer.org)
+
 memlayer stores decisions, patterns, fixes, and notes in SQLite and surfaces
 the right ones when you (or your agent) start the next session. A thin CLI
 talks to a per-user daemon over gRPC; agents can also use MCP tools or
@@ -35,7 +37,7 @@ export PATH="$HOME/.local/bin:$PATH"
 memlayer --version
 ```
 
-The daemon auto-starts on first use.
+The daemon auto-starts on first use. Full guide: [Install](https://memlayer.org/docs/install/).
 
 ## Quick start
 
@@ -50,6 +52,8 @@ memlayer obs recent --limit 5
 memlayer obs search "pgx"
 ```
 
+More: [Getting started](https://memlayer.org/docs/getting-started/).
+
 ## Wire into your agent
 
 ```bash
@@ -62,8 +66,7 @@ This installs skills/rules, Claude Code hooks (where applicable), and MCP
 registration for detected agents. Restart the agent afterward.
 
 **MCP tools:** `memory_search`, `memory_recent`, `memory_context`,
-`memory_add`, `memory_facts`, `memory_health` — launched as `memlayer mcp`
-(stdio; do not run it by hand except for debugging).
+`memory_add`, `memory_facts`, `memory_health` — launched as `memlayer mcp`.
 
 | Agent | Config touched by install |
 |---|---|
@@ -74,56 +77,16 @@ registration for detected agents. Restart the agent afterward.
 | OpenCode | `~/.config/opencode/opencode.json` |
 | Others | Kimi, ZCode, VS Code, Copilot, Codex, Gemini, Amazon Q, `.agents/mcp.json` |
 
-Manual fallback for any shell-out agent:
+Details: [Wire into your agent](https://memlayer.org/docs/agents/).
 
-```markdown
-Before a substantive task, run: memlayer obs context --query "<task>" --limit 20
-After a decision or correction, run: memlayer obs save --type decision --title "..." --content "..." --session "$SESSION_ID"
-```
+## Docs
 
-## Everyday commands
-
-```bash
-memlayer obs save --type decision --title "..." --content "..." --session "$SID"
-memlayer obs recent --limit 10
-memlayer obs search "auth"                     # BM25
-memlayer obs search "auth" --mode hybrid       # + dense (BGE-small + RRF)
-memlayer obs context --query "deploy" --limit 20
-memlayer obs history <id>                      # supersession chain tree
-memlayer obs relations <id>                    # graph relation edges (conflicts_with, supersedes, etc.)
-memlayer obs reindex [--force]                 # queue re-embedding and quantization
-memlayer tui                                   # interactive observation browser
-memlayer doctor [--repair]                     # database integrity audit & auto-repair
-memlayer eval --smoke --save-scorecard card.json # retrieval benchmark evaluation
-memlayer config show
-memlayer daemon status
-memlayer logs --lines 50
-```
-
-TTY → text; pipes → JSON. Override with `--output {text,json,yaml}`.
-
-## Optional features (off by default)
-
-```bash
-memlayer config set extract.enabled true     # LLM fact triples on save
-memlayer config set conflict.enabled true    # LLM supersession judge
-memlayer config set embed.quantize true      # int8 vectors (~75% smaller)
-memlayer obs reindex                         # backfill embeddings
-```
-
-Config: `~/.memlayer/config.toml` and per-project overlays. Full knobs and
-env overrides: [`CLAUDE.md`](CLAUDE.md).
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `command not found` | Put `~/.local/bin` on `PATH` |
-| Exit 4 — daemon down | `memlayer daemon force-start` |
-| Exit 5 — no project | Run in a git repo, or `export MEMLAYER_PROJECT=…` |
-| MCP missing in agent | `memlayer install`, then fully restart the agent |
-| Hybrid search empty | `memlayer reindex` |
-| Start over | `memlayer daemon stop && rm -rf ~/.memlayer/` |
+- [Getting started](https://memlayer.org/docs/getting-started/)
+- [Install](https://memlayer.org/docs/install/)
+- [Agents / MCP](https://memlayer.org/docs/agents/)
+- [Everyday commands](https://memlayer.org/docs/commands/)
+- [Config](https://memlayer.org/docs/config/)
+- [Troubleshooting](https://memlayer.org/docs/troubleshooting/)
 
 ## Contributing
 
