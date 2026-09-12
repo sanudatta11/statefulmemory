@@ -1,7 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="6" fill="#0f1714"/>
-  <rect x="6" y="7" width="20" height="3.2" rx="1" fill="#3d4a44"/>
-  <rect x="6" y="12.4" width="20" height="3.2" rx="1" fill="#5a4636"/>
-  <rect x="6" y="17.8" width="20" height="3.2" rx="1" fill="#c8783a"/>
-  <rect x="6" y="23.2" width="20" height="3.2" rx="1" fill="#2a3832"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="memlayer">
+  <rect width="32" height="32" rx="7" fill="#0f1714"/>
+  <!-- Bold geometric M in brand copper -->
+  <path
+    fill="#d4894a"
+    d="M5.5 24.5V7.5h4.2l6.3 12.6L22.3 7.5h4.2v17h-3.6V13.2L17.4 24.5h-2.8L9.1 13.2v11.3H5.5z"
+  />
 </svg>
