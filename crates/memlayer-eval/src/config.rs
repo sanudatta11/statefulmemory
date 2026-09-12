@@ -66,8 +66,8 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
     match b {
         BenchmarkKind::Locomo => RetrievalConfig {
             mode: RetrievalMode::HybridRerank,
-            k: 10,
-            evidence_window: 2,
+            k: 20,
+            evidence_window: 4,
             rerank: true,
             decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
         },

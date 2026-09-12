@@ -53,7 +53,62 @@ pub struct HybridResult {
 ///
 /// See module-level doc for the full pipeline. Returns up to `k` formatted
 /// hits in fused-rank order plus the end-to-end latency.
+///
+/// Serialized per-project: concurrent callers for the same project name wait
+/// on [`crate::project_lock`] so SQLite open/migrate and vec rebuild never race.
 pub async fn retrieve_hybrid(
+    data_dir: &Path,
+    project: &str,
+    query: &str,
+    k: i32,
+    embedder: Arc<dyn Embedder>,
+    cache: Arc<EmbeddingCache>,
+) -> Result<HybridResult> {
+    let data_dir = data_dir.to_path_buf();
+    let project = project.to_string();
+    let query = query.to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::project_lock::with_project_lock(&project, || {
+            retrieve_hybrid_sync(&data_dir, &project, &query, k, embedder, cache)
+        })
+    })
+    .await
+    .context("join hybrid retrieve task")?
+}
+
+/// Ensure sidecar vec indexes exist for each project (sequential, locked).
+/// Call once after ingest before fanning out concurrent queries.
+pub async fn prewarm_vec_indexes(
+    data_dir: &Path,
+    projects: &[String],
+    embedder: Arc<dyn Embedder>,
+    cache: Arc<EmbeddingCache>,
+) -> Result<()> {
+    let data_dir = data_dir.to_path_buf();
+    let projects = projects.to_vec();
+    tokio::task::spawn_blocking(move || {
+        std::env::set_var("MEMLAYER_DATA_DIR", &data_dir);
+        paths::ensure_dirs(&data_dir).ok();
+        for project in &projects {
+            crate::project_lock::with_project_lock(project, || {
+                let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
+                ensure_vec_index(
+                    &data_dir,
+                    project,
+                    embedder.as_ref(),
+                    cache.as_ref(),
+                    &registry,
+                )
+            })
+            .with_context(|| format!("prewarm vec index for '{project}'"))?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("join prewarm task")?
+}
+
+fn retrieve_hybrid_sync(
     data_dir: &Path,
     project: &str,
     query: &str,
@@ -66,6 +121,10 @@ pub async fn retrieve_hybrid(
     // Storage paths must be initialised before the registry opens any DB.
     std::env::set_var("MEMLAYER_DATA_DIR", data_dir);
     paths::ensure_dirs(data_dir).ok();
+
+    // One registry for the whole call — avoids concurrent write-thread opens
+    // on the same project DB from ensure / BM25 / fetch.
+    let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
 
     // 1. Embed the query (cache → fall through to embedder on miss).
     let (mut hits, _miss_idx) = cache.get_many(&[query]).context("query cache lookup")?;
@@ -83,28 +142,18 @@ pub async fn retrieve_hybrid(
     };
 
     // 2. Ensure the sidecar vec DB has embeddings for every live observation.
-    //    Synchronous: the cost only materialises on a fresh project, and the
-    //    embedder is borrowed (not Cloned/Arc'd) for clarity.
-    ensure_vec_index(data_dir, project, embedder.as_ref(), cache.as_ref())
-        .context("ensure sidecar vec index is populated")?;
+    ensure_vec_index(
+        data_dir,
+        project,
+        embedder.as_ref(),
+        cache.as_ref(),
+        &registry,
+    )
+    .context("ensure sidecar vec index is populated")?;
 
-    // 3. Parallel BM25 + ANN over blocking sqlite handles.
-    let bm25_data_dir = data_dir.to_path_buf();
-    let bm25_project = project.to_string();
-    let bm25_query = query.to_string();
-    let bm25_handle = tokio::task::spawn_blocking(move || {
-        bm25_top_n(&bm25_data_dir, &bm25_project, &bm25_query, 100)
-    });
-
-    let ann_data_dir = data_dir.to_path_buf();
-    let ann_project = project.to_string();
-    let ann_query_vec = query_vec.clone();
-    let ann_handle = tokio::task::spawn_blocking(move || {
-        ann_top_n(&ann_data_dir, &ann_project, &ann_query_vec, 100)
-    });
-
-    let bm25_ids = bm25_handle.await.context("join bm25 task")??;
-    let ann_ids = ann_handle.await.context("join ann task")??;
+    // 3. BM25 + ANN (sequential under the project lock).
+    let bm25_ids = bm25_top_n(registry.clone(), project, query, 100).context("bm25 top-n")?;
+    let ann_ids = ann_top_n(data_dir, project, &query_vec, 100).context("ann top-n")?;
 
     // 4. Fuse — or fall back to BM25 if dense returned nothing (EH-6).
     let fused: Vec<u64> = if ann_ids.is_empty() {
@@ -120,7 +169,8 @@ pub async fn retrieve_hybrid(
     let top_k: Vec<u64> = fused.into_iter().take(k.max(0) as usize).collect();
 
     // 5. SELECT title+content in fused order.
-    let hits = fetch_observations(project, &top_k).context("fetch observations by id")?;
+    let hits = fetch_observations(registry, project, &top_k)
+        .context("fetch observations by id")?;
 
     Ok(HybridResult {
         hits,
@@ -128,14 +178,13 @@ pub async fn retrieve_hybrid(
     })
 }
 
-/// BM25 top-N over `<data_dir>/projects/<project>.db`. Returns observation
-/// rowids (cast to `u64`) in BM25-ranked order. Mirrors the field-weighted
-/// SELECT used by `retrieve::retrieve` so TS-1 stays unaffected.
-fn bm25_top_n(data_dir: &Path, project: &str, query: &str, n: i32) -> Result<Vec<u64>> {
-    std::env::set_var("MEMLAYER_DATA_DIR", data_dir);
-    paths::ensure_dirs(data_dir).ok();
-
-    let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
+/// BM25 top-N over the project DB. Returns observation rowids in BM25 order.
+fn bm25_top_n(
+    registry: Arc<ProjectRegistry>,
+    project: &str,
+    query: &str,
+    n: i32,
+) -> Result<Vec<u64>> {
     let project_state = registry
         .get_or_open(project)
         .with_context(|| format!("open project '{project}' for BM25 retrieval"))?;
@@ -218,13 +267,15 @@ fn ann_top_n(
 }
 
 /// SELECT `title || '\n' || content` for `ids`, preserving the input order.
-/// SQLite's `IN (...)` returns rows in arbitrary order, so we hash + rebuild.
-fn fetch_observations(project: &str, ids: &[u64]) -> Result<Vec<String>> {
+fn fetch_observations(
+    registry: Arc<ProjectRegistry>,
+    project: &str,
+    ids: &[u64],
+) -> Result<Vec<String>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
     let project_state = registry
         .get_or_open(project)
         .with_context(|| format!("open project '{project}' for fetch_observations"))?;
@@ -285,6 +336,7 @@ fn ensure_vec_index(
     project: &str,
     embedder: &dyn Embedder,
     cache: &EmbeddingCache,
+    registry: &ProjectRegistry,
 ) -> Result<()> {
     let vec_path = data_dir.join("vec").join(format!("{project}.vec.db"));
     let vec_conn = open_with_vec(&vec_path).context("open sidecar for ensure_vec_index")?;
@@ -292,7 +344,6 @@ fn ensure_vec_index(
         .context("bootstrap observations_vec for ensure_vec_index")?;
 
     // Read live observations from the project DB.
-    let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
     let project_state = registry
         .get_or_open(project)
         .with_context(|| format!("open project '{project}' for ensure_vec_index"))?;

@@ -39,6 +39,9 @@ struct LoCoMoQA {
     question: Value,
     answer: Option<Value>,
     category: Option<Value>,
+    /// Dialogue turn ids supporting the answer (e.g. `["D1:3", "D1:5"]`).
+    #[serde(default)]
+    evidence: Vec<Value>,
 }
 
 fn value_to_string(v: &Value) -> String {
@@ -112,6 +115,12 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
 
         for (i, qa) in conv.qa.iter().enumerate() {
             let Some(answer) = &qa.answer else { continue };
+            let evidence: Vec<String> = qa
+                .evidence
+                .iter()
+                .map(value_to_string)
+                .filter(|s| !s.trim().is_empty())
+                .collect();
             queries.push(EvalQuery {
                 id: format!("{conv_id}-q{i}"),
                 question: value_to_string(&qa.question),
@@ -119,9 +128,51 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
                 judge_context: qa.category.as_ref().map(|c| format!("category: {c}")),
                 category: qa.category.as_ref().map(value_to_string),
                 anti_answer: None,
+                evidence,
             });
         }
     }
 
     Ok((memories, queries))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_evidence_ids_from_fixture_shape() {
+        // Minimal LoCoMo-shaped JSON exercising evidence parsing.
+        let dir = tempfile::tempdir().unwrap();
+        let locomo_dir = dir.path().join("locomo");
+        std::fs::create_dir_all(&locomo_dir).unwrap();
+        let json = r#"[
+          {
+            "sample_id": "conv-test",
+            "conversation": {
+              "speaker_a": "A",
+              "speaker_b": "B",
+              "session_1_date_time": "1:00 pm on 1 January, 2023",
+              "session_1": [
+                {"speaker": "A", "dia_id": "D1:1", "text": "hi"},
+                {"speaker": "B", "dia_id": "D1:3", "text": "went to the park"}
+              ]
+            },
+            "qa": [
+              {
+                "question": "Where did B go?",
+                "answer": "the park",
+                "evidence": ["D1:3"],
+                "category": 1
+              }
+            ]
+          }
+        ]"#;
+        std::fs::write(locomo_dir.join("locomo10.json"), json).unwrap();
+        let (mems, qs) = load(dir.path()).unwrap();
+        assert_eq!(mems.len(), 2);
+        assert!(mems.iter().any(|m| m.title.contains("D1:3")));
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].evidence, vec!["D1:3".to_string()]);
+    }
 }

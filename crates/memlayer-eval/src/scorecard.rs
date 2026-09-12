@@ -19,9 +19,16 @@ pub struct Scorecard {
     pub total_queries: usize,
     pub correct: usize,
     pub accuracy_pct: f64,
-    /// Retrieval recall@k: gold answer present anywhere in the retrieved set.
+    /// Retrieval recall@k: evidence turn present (when provided) or gold
+    /// substring present in the retrieved set.
     pub recall_at_k: f64,
     pub mrr: f64,
+    /// Gold-answer substring recall (diagnostic; often lower than evidence R@k).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gold_substring_recall: Option<f64>,
+    /// Fraction of queries where LLM rerank was configured but skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_skipped_pct: Option<f64>,
     /// Judge/lexical pass rate per category.
     #[serde(default)]
     pub by_category: BTreeMap<String, CategoryStats>,
@@ -54,6 +61,8 @@ impl Scorecard {
             accuracy_pct: report.accuracy_pct,
             recall_at_k: report.recall_at_k,
             mrr: report.mrr,
+            gold_substring_recall: report.gold_substring_recall,
+            rerank_skipped_pct: report.rerank_skipped_pct,
             by_category: report.by_category.clone(),
             total_prompt_tokens: report.total_prompt_tokens,
             mean_prompt_tokens: report.mean_prompt_tokens,
@@ -107,6 +116,12 @@ impl Scorecard {
             self.retrieval_p95_ms,
             self.end_to_end_p50_ms,
         );
+        if let Some(gsr) = self.gold_substring_recall {
+            out.push_str(&format!("Gold-substring R:  {:.4}\n", gsr));
+        }
+        if let Some(rsp) = self.rerank_skipped_pct {
+            out.push_str(&format!("Rerank skipped:    {:.1}%\n", rsp));
+        }
         if let Some(pct) = self.superseded_served_pct {
             out.push_str(&format!("Superseded served: {:.2}%\n", pct));
         }
@@ -148,6 +163,8 @@ mod tests {
             total_prompt_tokens: 1500,
             recall_at_k: 0.9,
             mrr: 0.75,
+            gold_substring_recall: Some(0.4),
+            rerank_skipped_pct: Some(25.0),
             by_category,
             superseded_served_pct: None,
             retrieval_p50_ms: 12.5,

@@ -36,18 +36,21 @@ pub fn build_answer_prompt(
            the original chat turns surrounding the fact.\n\
          \n\
          Answering rules:\n\
-         1. For questions like 'how long ago' or 'when', anchor to the LATEST\n\
+         1. Prefer short answers grounded in quoted or paraphrased spans from\n\
+            the memories. Do not invent details that are not supported.\n\
+         2. If the memories do not contain enough information to answer, say\n\
+            exactly: unknown\n\
+         3. For questions like 'how long ago' or 'when', anchor to the LATEST\n\
             timestamp visible in the memories (the conversation's present),\n\
             not today's calendar date.\n\
-         2. For questions like 'what activities does X do' or 'what does X like',\n\
+         4. For questions like 'what activities does X do' or 'what does X like',\n\
             enumerate EVERY distinct item mentioned across the memories. Do not\n\
             stop at the first 2-3.\n\
-         3. Match the specificity of the question. If the gold-style answer\n\
+         5. Match the specificity of the question. If the gold-style answer\n\
             would include a modifier (e.g. 'counseling for X'), include it\n\
             when memories support it.\n\
-         4. Be concise — answer the question directly. Avoid bullet lists or\n\
+         6. Be concise — answer the question directly. Avoid bullet lists or\n\
             paragraphs of context unless asked.\n\
-         5. Only say 'I don't know' if NO memory relates to the question.\n\
          \n\
          <memories>\n{memories_block}\n</memories>"
     );

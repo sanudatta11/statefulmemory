@@ -124,7 +124,7 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
         data_dir: eval_data_dir,
         k: retrieval.k,
         limit,
-        concurrency: 2,
+        concurrency: memlayer_eval::runner::eval_concurrency_from_env(4),
         output_path,
         skip_ingest,
         retrieval,
@@ -192,6 +192,7 @@ fn smoke_queries() -> Vec<EvalQuery> {
         judge_context: None,
         category: None,
         anti_answer: None,
+        evidence: Vec::new(),
     }]
 }
 

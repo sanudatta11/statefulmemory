@@ -81,6 +81,11 @@ RUST_LOG=memlayer=debug cargo run -p memlayer-cli -- daemon start --foreground
 make eval-locomo-smoke              # fixture, no dataset / LLM
 make eval-locomo                    # full locomo10 (needs BGE + agent CLI)
 LIMIT=50 make eval-locomo           # cheaper slice
+# Pin OpenCode flash + concurrency:
+#   MEMLAYER_LLM_PROVIDER=opencode MEMLAYER_LLM_BIN=opencode \
+#   MEMLAYER_LLM_MODEL=opencode-go/deepseek-v4.1-flash \
+#   MEMLAYER_EVAL_CONCURRENCY=4 LIMIT=50 make eval-locomo
+# Optional facts: EXTRACT=1 LIMIT=50 make eval-locomo
 make eval-locomo-e2e                # smoke then full
 make eval-locomo-compare SCORECARD=eval/locomo-full.json
 make eval-staleness                 # supersession vs --no-supersede baseline

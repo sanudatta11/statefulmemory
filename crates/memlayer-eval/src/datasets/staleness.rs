@@ -96,6 +96,7 @@ fn load_jsonl(path: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
             judge_context: None,
             category: Some("staleness".into()),
             anti_answer: if anti.is_empty() { None } else { Some(anti) },
+            evidence: Vec::new(),
         });
     }
 

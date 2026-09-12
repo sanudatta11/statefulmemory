@@ -5,6 +5,7 @@
         daemon-start daemon-stop daemon-status logs skill-install \
         extract-locomo run-locomo \
         eval-locomo-smoke eval-locomo-fetch eval-bge-model \
+        eval-locomo-extract \
         eval-locomo eval-locomo-full \
         eval-locomo-e2e eval-locomo-compare eval-staleness
 
@@ -38,6 +39,12 @@ else
 LIMIT_FLAG :=
 endif
 
+# Optional pre-extract before full LoCoMo (builds data/locomo/facts.db).
+EXTRACT_DEPS :=
+ifeq ($(EXTRACT),1)
+EXTRACT_DEPS := eval-locomo-extract
+endif
+
 # ── Default ──────────────────────────────────────────────────────────────────
 
 help:
@@ -69,12 +76,14 @@ help:
 	@echo "  eval-locomo-smoke    Fixture: BM25 + lexical judge, write eval/locomo-smoke.json"
 	@echo "  eval-locomo-fetch    Download SNAP locomo10.json into data/locomo/"
 	@echo "  eval-bge-model       Vendor BGE-small into BGE_MODEL_DIR (default ~/.memlayer-models/bge-small)"
+	@echo "  eval-locomo-extract  Pre-extract facts.db for all LoCoMo projects (LLM + BGE)"
 	@echo "  eval-locomo          Full locomo10: hybrid-rerank + LLM answer/judge"
 	@echo "  eval-locomo-full     Alias for eval-locomo"
 	@echo "  eval-locomo-e2e      Smoke then full"
 	@echo "  eval-locomo-compare  Print SCORECARD vs published paper/LLM-judge bands"
 	@echo "  eval-staleness       Fixture: supersession vs --no-supersede baseline"
-	@echo "                       LIMIT=N slices the full run; SCORECARD=path for compare"
+	@echo "                       LIMIT=N slices the full run; EXTRACT=1 runs extract first"
+	@echo "                       MEMLAYER_EVAL_CONCURRENCY=N parallel answer/judge (default 4)"
 	@echo ""
 	@echo "Eval (legacy eval binary in crates/memlayer-eval)"
 	@echo "  extract-locomo   Extract facts for LoCoMo conv-26 (requires BGE model)"
@@ -182,7 +191,16 @@ eval-locomo-fetch:
 eval-bge-model:
 	@QUIET=1 "$(VENDOR_BGE)"
 
-eval-locomo eval-locomo-full: release eval-locomo-fetch eval-bge-model
+# Pre-extract facts for every LoCoMo conversation (expensive; opt-in via EXTRACT=1).
+eval-locomo-extract: release eval-locomo-fetch eval-bge-model
+	@mkdir -p "$(EVAL_OUT)"
+	@echo "Extracting LoCoMo facts → $(EVAL_DATA)/locomo/facts.db (needs agent CLI)."
+	cd crates/memlayer-eval && \
+	RUST_LOG=info cargo run --release --bin eval -- extract \
+	  --benchmark locomo --data-dir "$(EVAL_DATA)" \
+	  2>&1 | tee "$(EVAL_OUT)/extract-locomo.log"
+
+eval-locomo eval-locomo-full: release eval-locomo-fetch eval-bge-model $(EXTRACT_DEPS)
 	@mkdir -p "$(EVAL_OUT)"
 	@echo "Full LoCoMo: MEMLAYER_BGE_MODEL_DIR=$(MEMLAYER_BGE_MODEL_DIR) (hybrid+rerank; needs agent CLI for answer/judge)."
 	MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark locomo $(LIMIT_FLAG) \

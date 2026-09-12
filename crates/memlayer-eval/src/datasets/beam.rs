@@ -77,6 +77,7 @@ pub fn generate_queries(scale: BeamScale, num_queries: usize) -> Vec<EvalQuery> 
             judge_context: None,
             category: None,
             anti_answer: None,
+            evidence: Vec::new(),
         });
     }
     queries

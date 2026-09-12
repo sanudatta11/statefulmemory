@@ -179,7 +179,7 @@ async fn main() -> Result<()> {
                 data_dir: data_dir.clone(),
                 k,
                 limit,
-                concurrency: 4,
+                concurrency: memlayer_eval::runner::eval_concurrency_from_env(4),
                 output_path: out,
                 skip_ingest,
                 retrieval,

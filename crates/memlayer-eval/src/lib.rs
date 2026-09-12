@@ -14,6 +14,7 @@ pub mod facts_db;
 pub mod facts_writer;
 pub mod ingest;
 pub mod judge;
+pub mod project_lock;
 pub mod prompt;
 pub mod retrieve;
 pub mod retrieve_facts;

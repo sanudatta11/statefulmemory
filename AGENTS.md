@@ -58,6 +58,16 @@ make eval-staleness
 LIMIT=50 make eval-locomo
 ```
 
+Pinned LoCoMo measure (OpenCode deepseek-flash, concurrency 4):
+
+```bash
+export MEMLAYER_LLM_PROVIDER=opencode MEMLAYER_LLM_BIN=opencode
+export MEMLAYER_LLM_MODEL=opencode-go/deepseek-v4.1-flash
+export MEMLAYER_EVAL_CONCURRENCY=4
+LIMIT=50 make eval-locomo
+# Optional facts path: EXTRACT=1 LIMIT=50 make eval-locomo
+```
+
 Full LoCoMo on AWS (one-shot EC2, scorecards → S3): see
 [`infra/eval/README.md`](infra/eval/README.md).
 

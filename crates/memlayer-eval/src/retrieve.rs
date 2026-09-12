@@ -110,6 +110,17 @@ pub fn retrieve(
     query: &str,
     k: i32,
 ) -> Result<RetrieveResult> {
+    crate::project_lock::with_project_lock(project, || {
+        retrieve_unlocked(data_dir, project, query, k)
+    })
+}
+
+fn retrieve_unlocked(
+    data_dir: &Path,
+    project: &str,
+    query: &str,
+    k: i32,
+) -> Result<RetrieveResult> {
     std::env::set_var("MEMLAYER_DATA_DIR", data_dir);
     paths::ensure_dirs(data_dir).ok();
 

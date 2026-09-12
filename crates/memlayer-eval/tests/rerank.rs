@@ -79,7 +79,8 @@ fn ts11_locomo_enables_rerank() {
     let p = default_profile(BenchmarkKind::Locomo);
     assert!(p.rerank, "LoCoMo should enable rerank");
     assert_eq!(p.mode, RetrievalMode::HybridRerank);
-    assert!(p.evidence_window > 0);
+    assert_eq!(p.k, 20);
+    assert_eq!(p.evidence_window, 4);
 }
 
 #[test]

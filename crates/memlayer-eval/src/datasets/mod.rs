@@ -27,6 +27,11 @@ pub struct EvalQuery {
     /// Value that must NOT be served (superseded). Staleness benchmark only.
     #[serde(default)]
     pub anti_answer: Option<String>,
+    /// LoCoMo (and similar) dialogue turn ids that support the gold answer
+    /// (e.g. `D1:3`). Used for evidence-aware recall@k / MRR. Empty when the
+    /// dataset does not provide evidence ids.
+    #[serde(default)]
+    pub evidence: Vec<String>,
 }
 
 /// A single memory item to be ingested before querying.

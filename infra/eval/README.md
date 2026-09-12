@@ -121,12 +121,39 @@ make eval-staleness
 LIMIT=50 make eval-locomo   # or full without LIMIT
 ```
 
-Pin the same provider the stack uses when several CLIs are on `PATH`:
+### Recommended local measure recipe (accuracy + wall-clock)
+
+Pin OpenCode + deepseek-flash (same pair used for promotion slices):
+
+```bash
+export MEMLAYER_LLM_PROVIDER=opencode
+export MEMLAYER_LLM_BIN=opencode
+export MEMLAYER_LLM_MODEL=opencode-go/deepseek-v4.1-flash
+# Parallel answer/judge (default 4; raise carefully for rate limits)
+export MEMLAYER_EVAL_CONCURRENCY=4
+
+LIMIT=50 make eval-locomo
+# Optional: build facts.db first for fact-level hybrid
+# EXTRACT=1 LIMIT=50 make eval-locomo
+```
+
+`recall_at_k` / `mrr` are evidence-turn based when LoCoMo provides `evidence`
+ids; `gold_substring_recall` is the older substring diagnostic. Scorecards also
+report `rerank_skipped_pct` when the ambiguity gate skips LLM rerank.
+
+For stronger answers with a cheap judge, leave the model pin on flash for
+judge/rerank roles and set a capable answer model via your agent CLI’s role
+mapping (memlayer answer uses the `capable`/`sonnet` role; judge uses `fast`).
+
+Pin the same provider the AWS stack uses when several CLIs are on `PATH`:
 
 ```bash
 export MEMLAYER_LLM_PROVIDER=gemini   # or claude / opencode
 export MEMLAYER_LLM_BIN=gemini
 ```
+
+OpenCode on the CFN AMI is out of scope until there is a supported install
+recipe; keep Gemini/Claude on the stack and run OpenCode locally.
 
 ## Files
 
