@@ -36,7 +36,7 @@ fully integrating these three crates, and in what order?**
 
 **What it is today:** `BgeSmallEmbedder` (BGE-small-en-v1.5, 384-dim,
 candle-rs CPU inference) + `EmbeddingCache` (SQLite, sha256-keyed BLOB
-storage) + `quantize` module stubbed for int8 compression.
+storage) + int8 `quantize` via `embed.quantize` / `memlayer reindex`.
 
 **What full production integration adds:**
 
@@ -46,7 +46,7 @@ storage) + `quantize` module stubbed for int8 compression.
 | Better supersession candidate detection | V3's BM25 picks lexical neighbor; embedding picks semantic neighbor — fewer false negatives where prior obs uses different vocabulary | Multi-hop / adversarial categories: +1-2 pts |
 | `memlayer obs similar <id>` | Cosine top-K against any observation as anchor | New UX, no benchmark category |
 | Cross-language fuzz match | "auth", "authentification", "authn" all collide in embedding space | Real-world session usability lift |
-| Hybrid + RRF default | RRF(BM25 top-30, dense top-30) — implemented in `memlayer-eval/retrieve_hybrid.rs`, just needs daemon wiring | Composite +10-15 pts on LoCoMo overall |
+| Hybrid + RRF default | RRF(BM25 top-30, dense top-30) — production default via `search.mode = "hybrid"` | Composite +10-15 pts on LoCoMo overall |
 
 **Costs:**
 

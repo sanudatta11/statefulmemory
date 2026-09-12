@@ -8,6 +8,7 @@
 //! still lack flags below will gain them in those follow-up tasks.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -60,6 +61,8 @@ pub enum Command {
     Project(ProjectArgs),
     /// Sync state (export/import wired in Spec 3).
     Sync(SyncArgs),
+    /// Portable memlayer archive (.mem).
+    Mem(MemArgs),
     /// Daemon lifecycle.
     Daemon(DaemonArgs),
     /// Team / TCP-mode setup (CA generation + token admin).
@@ -80,21 +83,33 @@ pub enum Command {
     /// embed). Backed by `~/.memlayer/config.toml` (global) and
     /// `~/.memlayer/projects/<name>.config.toml` (per-project).
     Config(ConfigArgs),
-    /// Re-index all observations into the vector store. Skeleton verb in
-    /// v1 — prints manual instructions; full implementation in a follow-up
-    /// spec.
+    /// Re-index all observations into the vector store (`memlayer reindex`).
     Reindex(ReindexArgs),
     /// Run the local stdio MCP server, exposing memory tools to MCP-capable
     /// agents (Claude Code, Windsurf). Speaks MCP on stdout; logs to stderr.
     Mcp,
     /// Run accuracy and latency retrieval evaluation benchmark (LoCoMo, LongMemEval, BEAM).
     Eval(EvalArgs),
+    /// Analyze stored memories and recommend a decision.
+    Decide(DecideArgs),
+    /// Re-verify code anchors against the project's git repository.
+    Verify(VerifyArgs),
     /// Run database integrity audit and auto-repair routines.
     Doctor(DoctorArgs),
     /// Launch interactive TUI observation browser.
     Tui(TuiArgs),
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    /// Only verify this observation id (default: all anchored observations).
+    #[arg(long)]
+    pub id: Option<i64>,
+    /// Suppress stdout (for git hooks). Errors still set a non-zero exit.
+    #[arg(long, short = 'q')]
+    pub quiet: bool,
 }
 
 #[derive(Args, Debug)]
@@ -113,7 +128,7 @@ pub struct TuiArgs {
 
 #[derive(Args, Debug)]
 pub struct EvalArgs {
-    /// Benchmark to evaluate: locomo, longmemeval, beam1m, beam10m. Default: locomo.
+    /// Benchmark to evaluate: locomo, longmemeval, beam1m, beam10m, staleness.
     #[arg(long, default_value = "locomo")]
     pub benchmark: String,
 
@@ -128,6 +143,22 @@ pub struct EvalArgs {
     /// Save JSON benchmark scorecard to specified file path.
     #[arg(long)]
     pub save_scorecard: Option<std::path::PathBuf>,
+
+    /// Ingest without supersession (staleness baseline arm).
+    #[arg(long)]
+    pub no_supersede: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DecideArgs {
+    /// Question to decide from stored memories.
+    pub question: String,
+    /// Retrieval k (default 12, max 30).
+    #[arg(long, default_value_t = 12)]
+    pub limit: i32,
+    /// Retrieval mode: bm25 or hybrid. Omit to use config `search.mode`.
+    #[arg(long)]
+    pub mode: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -141,6 +172,15 @@ pub struct InstallArgs {
     /// kimi-code, zcode, agents, vscode, copilot-cli, copilot, gemini, codex, amazon-q.
     #[arg(long = "agent", short = 'a', value_name = "AGENT")]
     pub agents: Vec<String>,
+
+    /// Install post-commit / post-merge / post-checkout hooks that run
+    /// `memlayer verify --quiet`. Default: on when cwd is a git repo.
+    #[arg(long)]
+    pub git_hooks: bool,
+
+    /// Skip git-hook installation even when cwd is a git repo.
+    #[arg(long)]
+    pub no_git_hooks: bool,
 }
 
 #[derive(Args, Debug)]
@@ -212,7 +252,7 @@ pub enum ObsVerb {
     CapturePassive(ObsCapturePassiveArgs),
     /// Print atomic facts attached to an observation (retrieval-promotion).
     Facts(ObsFactsArgs),
-    /// Stub: re-extract facts from observations since a date.
+    /// Re-extract facts from observations since a date (needs extract.enabled).
     Reextract(ObsReextractArgs),
     /// Print the full supersession history of an observation (oldest → newest).
     History(ObsHistoryArgs),
@@ -255,9 +295,9 @@ pub struct ObsSaveArgs {
     /// Session id this observation belongs to.
     #[arg(long)]
     pub session: Option<String>,
-    /// Optional code anchor (e.g. "src/auth.rs::validate_token::42").
-    #[arg(long)]
-    pub anchor: Option<String>,
+    /// Optional code anchor (repeatable). Example: `src/auth.rs::validate_token`.
+    #[arg(long = "anchor", action = clap::ArgAction::Append)]
+    pub anchor: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -304,15 +344,17 @@ pub struct ObsSearchArgs {
     /// Search across all projects (capped at 32 per EC-10).
     #[arg(long)]
     pub all_projects: bool,
-    /// Retrieval mode: `bm25` (default for v1.x back-compat) or `hybrid`
-    /// (BM25 + dense ANN top-30 fused via RRF). Retrieval-promotion SC-3,
-    /// SC-4.
-    #[arg(long, default_value = "bm25", value_parser = ["bm25", "hybrid"])]
+    /// Retrieval mode: `hybrid` (default; BM25 + dense ANN fused via RRF)
+    /// or `bm25`.
+    #[arg(long, default_value = "hybrid", value_parser = ["bm25", "hybrid"])]
     pub mode: String,
-    /// Optional reranker model: `haiku` or `sonnet`. Hard 5s timeout per
-    /// SC-5; on timeout the un-reranked hybrid result is returned.
-    #[arg(long, value_parser = ["haiku", "sonnet"])]
+    /// Optional reranker: `fast`/`capable` (aliases haiku/sonnet). Timeout
+    /// then the un-reranked hybrid result is returned.
+    #[arg(long, value_parser = ["haiku", "sonnet", "fast", "capable"])]
     pub rerank: Option<String>,
+    /// Soft token budget for returned observations (estimated chars/4).
+    #[arg(long)]
+    pub max_tokens: Option<i32>,
 }
 
 #[derive(Args, Debug)]
@@ -343,20 +385,27 @@ pub struct ObsListArgs {
 pub struct ObsContextArgs {
     #[arg(long, default_value_t = 10)]
     pub limit: i32,
-    /// Optional query to focus the context window on. When set together
-    /// with `--mode hybrid`, the daemon RRF-fuses BM25 and dense matches.
+    /// Optional query to focus the context window on. When set, the daemon
+    /// retrieves for that query (default `--mode hybrid`).
     #[arg(long)]
     pub query: Option<String>,
-    /// Retrieval mode for the context window: `bm25` (default) or `hybrid`.
-    #[arg(long, default_value = "bm25", value_parser = ["bm25", "hybrid"])]
+    /// Retrieval mode for the context window: `hybrid` (default) or `bm25`.
+    #[arg(long, default_value = "hybrid", value_parser = ["bm25", "hybrid"])]
     pub mode: String,
-    /// Optional reranker model: `haiku` or `sonnet`. 5s timeout, falls
-    /// back on error.
-    #[arg(long, value_parser = ["haiku", "sonnet"])]
+    /// Optional reranker: `fast`/`capable` (aliases haiku/sonnet). Timeout
+    /// then the un-reranked result is returned.
+    #[arg(long, value_parser = ["haiku", "sonnet", "fast", "capable"])]
     pub rerank: Option<String>,
     /// Optional code anchor to filter context by code path/symbol.
     #[arg(long)]
     pub anchor: Option<String>,
+    /// Include stale / invalidated / unprovable observations in context
+    /// (overrides `verify.serve_stale = false`).
+    #[arg(long)]
+    pub include_stale: bool,
+    /// Soft token budget for returned observations (estimated chars/4).
+    #[arg(long)]
+    pub max_tokens: Option<i32>,
 }
 
 #[derive(Args, Debug)]
@@ -368,7 +417,7 @@ pub struct ObsFactsArgs {
 #[derive(Args, Debug)]
 pub struct ObsReextractArgs {
     /// Re-extract facts from observations created on or after this date
-    /// (RFC-3339). Skeleton verb in v1; emits a deferred-feature notice.
+    /// (RFC-3339). Requires `extract.enabled = true`.
     #[arg(long)]
     pub since: Option<String>,
 }
@@ -467,8 +516,7 @@ pub struct ConfigSetArgs {
 
 #[derive(Args, Debug)]
 pub struct ReindexArgs {
-    /// Reserved for future use; the v1 stub ignores all flags and prints
-    /// manual reindex instructions.
+    /// Clear existing embeddings and re-queue every observation.
     #[arg(long)]
     pub force: bool,
 }
@@ -488,7 +536,7 @@ pub enum SessionVerb {
     /// Save a structured summary onto an existing session.
     Summary(SessionSummaryArgs),
     /// Generate a rolled-up session summary from observations and persist
-    /// it as a project-scoped note (Engram-style auto-rollup).
+    /// it as a project-scoped note (session-rollup markdown).
     Summarize(SessionSummarizeArgs),
     /// List recent sessions, paginated.
     List(SessionListArgs),
@@ -669,6 +717,55 @@ pub struct SyncStatusArgs {
     /// Filter to a single project; defaults to the detected project.
     #[arg(long)]
     pub project: Option<String>,
+}
+
+/// Portable memlayer archive (.mem).
+#[derive(Args, Debug)]
+pub struct MemArgs {
+    #[command(subcommand)]
+    pub verb: MemVerb,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemVerb {
+    /// Write a compressed .mem snapshot of the project.
+    /// Default is obfuscated only. Pass --seed-file or --seed-phrase to encrypt.
+    Export(MemExportArgs),
+    /// Read a .mem snapshot into the project.
+    /// Seed-encrypted files require --seed-file or --seed-phrase.
+    Import(MemImportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct MemExportArgs {
+    /// Destination path; must end with .mem.
+    #[arg(long)]
+    pub out: PathBuf,
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Encrypt the archive with this seed phrase (same phrase decrypts on import).
+    #[arg(long, conflicts_with = "seed_file")]
+    pub seed_phrase: Option<String>,
+    /// Read the seed phrase from a file (preferred; avoids `ps` leakage).
+    #[arg(long)]
+    pub seed_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct MemImportArgs {
+    /// Archive path; must end with .mem.
+    pub file: PathBuf,
+    #[arg(long)]
+    pub project: Option<String>,
+    /// merge (default): upsert by sync_id; replace: wipe project then insert.
+    #[arg(long, default_value = "merge")]
+    pub mode: String,
+    /// Decrypt a seed-encrypted archive (same phrase used at export).
+    #[arg(long, conflicts_with = "seed_file")]
+    pub seed_phrase: Option<String>,
+    /// Read the seed phrase from a file (preferred; avoids `ps` leakage).
+    #[arg(long)]
+    pub seed_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -858,9 +955,9 @@ mod tests {
     }
 
     #[test]
-    fn obs_search_default_mode_bm25() {
+    fn obs_search_default_mode_hybrid() {
         let a = parse_obs_search(&["the query"]);
-        assert_eq!(a.mode, "bm25", "back-compat default per SC-4");
+        assert_eq!(a.mode, "hybrid");
         assert!(a.rerank.is_none());
     }
 
@@ -1006,5 +1103,63 @@ mod tests {
     fn hook_session_start_rejects_non_integer_limit() {
         let res = Cli::try_parse_from(["memlayer", "hook", "session-start", "--limit", "abc"]);
         assert!(res.is_err(), "non-integer limit must be rejected by clap");
+    }
+
+    #[test]
+    fn mem_export_parses() {
+        let cli = Cli::try_parse_from(["memlayer", "mem", "export", "--out", "x.mem"]).unwrap();
+        match cli.command {
+            Command::Mem(a) => match a.verb {
+                MemVerb::Export(e) => assert_eq!(e.out.as_os_str(), "x.mem"),
+                _ => panic!("expected export"),
+            },
+            _ => panic!("expected mem"),
+        }
+    }
+
+    #[test]
+    fn mem_export_seed_file_parses() {
+        let cli = Cli::try_parse_from([
+            "memlayer",
+            "mem",
+            "export",
+            "--out",
+            "x.mem",
+            "--seed-file",
+            "phrase.txt",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Mem(a) => match a.verb {
+                MemVerb::Export(e) => {
+                    assert_eq!(
+                        e.seed_file.as_deref(),
+                        Some(std::path::Path::new("phrase.txt"))
+                    );
+                    assert!(e.seed_phrase.is_none());
+                }
+                _ => panic!("expected export"),
+            },
+            _ => panic!("expected mem"),
+        }
+    }
+
+    #[test]
+    fn decide_parses_question() {
+        let cli = Cli::try_parse_from([
+            "memlayer",
+            "decide",
+            "Should we keep SQLite?",
+            "--limit",
+            "8",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Decide(a) => {
+                assert_eq!(a.question, "Should we keep SQLite?");
+                assert_eq!(a.limit, 8);
+            }
+            _ => panic!("expected decide"),
+        }
     }
 }

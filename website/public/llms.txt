@@ -1,0 +1,28 @@
+# memlayer
+
+> Persistent memory for AI coding agents: local, per-project, no cloud.
+> SQLite under ~/.memlayer/, CLI + gRPC daemon, MCP tools, hybrid BM25 + dense search.
+
+memlayer is open source (MIT). Source: https://github.com/sanudatta11/memlayer
+
+## Docs
+
+- [Overview](https://memlayer.org/): What memlayer is and how to install in one minute
+- [Install](https://memlayer.org/docs/install/): Build from source (Rust), PATH, doctor
+- [Getting started](https://memlayer.org/docs/getting-started/): Save, search, and pull context
+- [Wire into your agent](https://memlayer.org/docs/agents/): MCP install for Claude Code, Cursor, OpenCode, Codex, Gemini CLI, and peers; local LLM env vars
+- [Everyday commands](https://memlayer.org/docs/commands/): obs save/search/context/verify, decide, mem export
+- [Config](https://memlayer.org/docs/config/): TOML overlays, hybrid search, verify.serve_stale, token budget
+- [LoCoMo eval](https://memlayer.org/docs/locomo/): Smoke, full, and staleness benchmarks
+- [Troubleshooting](https://memlayer.org/docs/troubleshooting/): Doctor and common failures
+
+## For coding agents (repo)
+
+- [AGENTS.md](https://github.com/sanudatta11/memlayer/blob/main/AGENTS.md): OpenCode / Codex / local LLM contributor instructions
+- [CLAUDE.md](https://github.com/sanudatta11/memlayer/blob/main/CLAUDE.md): Claude Code / Cursor contributor notes
+- [llms-full.txt](https://memlayer.org/llms-full.txt): Longer plain-text summary for LLM ingestion
+
+## Optional
+
+- [Sitemap](https://memlayer.org/sitemap-index.xml)
+- [robots.txt](https://memlayer.org/robots.txt)

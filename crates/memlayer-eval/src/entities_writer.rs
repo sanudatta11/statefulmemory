@@ -8,7 +8,7 @@
 //! * [`bulk_upsert_entities`] — orchestrator wrapper that does all three in
 //!   one transaction for efficiency.
 //!
-//! Mem0's design (spec §3 audit): entities are project-scoped with a UNIQUE
+//! Entities are project-scoped with a UNIQUE
 //! constraint on (project, name) so the same person mentioned across many
 //! facts dedupes to one row. Embeddings are computed once at extraction
 //! time and reused for every query at retrieval time (SC-12).

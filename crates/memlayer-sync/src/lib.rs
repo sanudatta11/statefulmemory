@@ -11,5 +11,7 @@
 pub mod chunk;
 pub mod error;
 pub mod manifest;
+pub mod mem_archive;
+pub mod snapshot;
 
 pub use error::{Result, SyncError};

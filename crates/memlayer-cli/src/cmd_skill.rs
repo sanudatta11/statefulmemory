@@ -186,6 +186,31 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    match memlayer_core::config::ensure_config_toml(&home.join(".memlayer")) {
+        Ok(r) => {
+            if r.created {
+                println!(
+                    "Wrote ~/.memlayer/config.toml (search.mode={}, extract={}, conflict={}, storage={})",
+                    r.search_mode, r.extract, r.conflict, r.backend
+                );
+            } else if !r.merged_keys.is_empty() {
+                println!(
+                    "Updated ~/.memlayer/config.toml (filled: {})",
+                    r.merged_keys.join(", ")
+                );
+            } else {
+                println!("~/.memlayer/config.toml already complete");
+            }
+        }
+        Err(e) => eprintln!("  warn: could not write ~/.memlayer/config.toml: {e}"),
+    }
+    if !memlayer_extract::agent_cli::llm_cli_available() {
+        eprintln!(
+            "  warn: no agent CLI on PATH for extract/judge/rerank \
+             (looked for {}). Install your agent's CLI or set MEMLAYER_LLM_BIN.",
+            memlayer_extract::agent_cli::known_binaries().join(", ")
+        );
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
 
     let selection = match agents::resolve_selection(&home, &cwd, args.all, &args.agents) {
@@ -393,6 +418,31 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     println!("        Re-run with --all or --agent <id> to target more agents.");
     println!("        or run `tail -f ~/.memlayer/queries.log` after the new session starts");
     println!("        — you should see an `obs.context` line within a second.");
+
+    // ── Git hooks (re-verify anchors after commit) ───────────────────────────
+    let want_hooks = if args.no_git_hooks {
+        false
+    } else if args.git_hooks {
+        true
+    } else {
+        memlayer_core::git::is_repo(&cwd)
+    };
+    if want_hooks {
+        match crate::git_hooks::install_git_hooks(&cwd) {
+            Ok(0) => {
+                if memlayer_core::git::is_repo(&cwd) {
+                    println!();
+                    println!("Git hooks already up-to-date (.git/hooks post-commit/merge/checkout).");
+                }
+            }
+            Ok(n) => {
+                println!();
+                println!("Installed {n} git hook(s) (post-commit / post-merge / post-checkout).");
+                println!("  They run `memlayer verify --quiet` in the background after each commit.");
+            }
+            Err(e) => eprintln!("  warn: could not install git hooks: {e}"),
+        }
+    }
 
     // ── Daemon restart ──────────────────────────────────────────────────────
     let socket = memlayer_core::paths::socket_path();

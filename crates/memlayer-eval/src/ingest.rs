@@ -37,6 +37,7 @@ pub async fn ingest_memories(
     data_dir: &Path,
     memories: &[EvalMemory],
     _batch_size_hint: usize,
+    no_supersede: bool,
 ) -> Result<usize> {
     // Point the storage layer at our eval data dir.
     std::env::set_var("MEMLAYER_DATA_DIR", data_dir);
@@ -123,6 +124,7 @@ pub async fn ingest_memories(
                     code_anchor: None,
                     dedupe_window_secs: 0, // disable dedup in eval
                     max_content_chars: 8192,
+                    skip_supersede: no_supersede,
                 },
                 reply: reply_tx,
             })
@@ -163,7 +165,7 @@ where
     while iter.peek().is_some() {
         buf.clear();
         buf.extend(iter.by_ref().take(batch_size));
-        total += ingest_memories(data_dir, &buf, batch_size).await?;
+        total += ingest_memories(data_dir, &buf, batch_size, false).await?;
     }
     Ok(total)
 }

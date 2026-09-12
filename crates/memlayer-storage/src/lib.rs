@@ -28,7 +28,9 @@ pub mod sessions;
 pub mod stats;
 pub mod sync_state;
 pub mod write;
+pub mod anchor;
 
+pub use anchor::{Anchor, VerifyState};
 pub use db::{open_read, open_write, Migrate};
 pub use doctor::{audit_and_repair, DoctorFinding};
 pub use global::{GlobalDb, GlobalHit, ManifestRow};

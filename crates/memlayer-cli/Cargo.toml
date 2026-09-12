@@ -23,7 +23,9 @@ memlayer-client = { path = "../memlayer-client" }
 memlayer-daemon = { path = "../memlayer-daemon" }
 memlayer-mcp = { path = "../memlayer-mcp" }
 memlayer-eval = { path = "../memlayer-eval" }
+memlayer-extract = { path = "../memlayer-extract" }
 memlayer-storage = { path = "../memlayer-storage" }
+memlayer-sync = { path = "../memlayer-sync" }
 
 tempfile = "3"
 clap.workspace = true

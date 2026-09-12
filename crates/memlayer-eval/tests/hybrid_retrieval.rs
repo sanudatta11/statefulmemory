@@ -65,7 +65,7 @@ async fn ts5_paintings_finds_art_on_canvas() {
             "We had pasta for lunch yesterday.",
         ),
     ];
-    ingest_memories(&data_dir, &mems, 1024)
+    ingest_memories(&data_dir, &mems, 1024, false)
         .await
         .expect("ingest");
 

@@ -117,6 +117,8 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
                 question: value_to_string(&qa.question),
                 gold_answer: value_to_string(answer),
                 judge_context: qa.category.as_ref().map(|c| format!("category: {c}")),
+                category: qa.category.as_ref().map(value_to_string),
+                anti_answer: None,
             });
         }
     }

@@ -67,6 +67,8 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
             question: record.question.clone(),
             gold_answer: record.answer.clone(),
             judge_context: record.question_type.as_ref().map(|t| format!("type: {t}")),
+            category: None,
+            anti_answer: None,
         });
     }
 

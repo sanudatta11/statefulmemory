@@ -85,5 +85,12 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             rerank: false,
             decay_lambda: 0.0,
         },
+        BenchmarkKind::Staleness => RetrievalConfig {
+            mode: RetrievalMode::Bm25,
+            k: 10,
+            evidence_window: 0,
+            rerank: false,
+            decay_lambda: 0.0,
+        },
     }
 }

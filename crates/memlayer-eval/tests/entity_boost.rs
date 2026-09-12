@@ -115,7 +115,7 @@ async fn ts21_entity_name_match_boosts_linked_fact_above_unlinked() {
         mk_mem(project, &session_id, "Melanie hobby", "Melanie enjoys painting on weekends"),
         mk_mem(project, &session_id, "Generic note", "Painting is a relaxing hobby"),
     ];
-    ingest_memories(&data_dir, &mems, 1024)
+    ingest_memories(&data_dir, &mems, 1024, false)
         .await
         .expect("ingest test memories");
 

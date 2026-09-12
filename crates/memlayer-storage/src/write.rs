@@ -159,6 +159,9 @@ pub struct SaveObservationInput {
     pub dedupe_window_secs: u64,
     /// Maximum content length (EC-2).
     pub max_content_chars: usize,
+    /// When true, insert without topic upsert or conflict supersession.
+    /// Used by the staleness benchmark baseline (add-only memory arm).
+    pub skip_supersede: bool,
 }
 
 /// Handle to a running write thread.
@@ -420,10 +423,11 @@ fn handle_save_observation(
 
     // 2. Topic-key upsert: if (topic_key, scope) match a non-deleted row,
     //    update it in place and return. (SC-5, EC-9)
-    if let Some(topic_key) = &input.topic_key {
-        if let Some(existing) = fetch_active_obs_by_topic(tx, topic_key, &input.scope)? {
-            tx.execute(
-                "UPDATE observations
+    if !input.skip_supersede {
+        if let Some(topic_key) = &input.topic_key {
+            if let Some(existing) = fetch_active_obs_by_topic(tx, topic_key, &input.scope)? {
+                tx.execute(
+                    "UPDATE observations
                     SET title = ?2,
                         content = ?3,
                         normalized_hash = ?4,
@@ -433,19 +437,20 @@ fn handle_save_observation(
                         review_after = COALESCE(?6, review_after),
                         code_anchor = COALESCE(?7, code_anchor)
                   WHERE id = ?1",
-                params![
-                    existing.id,
-                    &input.title,
-                    &input.content,
-                    &normalized_hash,
-                    &now,
-                    &review_after,
-                    &input.code_anchor,
-                ],
-            )
-            .map_err(|e| Error::internal(format!("topic upsert update: {e}")))?;
-            return fetch_observation_by_id(tx, existing.id)?
-                .ok_or_else(|| Error::internal("topic upsert: row vanished"));
+                    params![
+                        existing.id,
+                        &input.title,
+                        &input.content,
+                        &normalized_hash,
+                        &now,
+                        &review_after,
+                        &input.code_anchor,
+                    ],
+                )
+                .map_err(|e| Error::internal(format!("topic upsert update: {e}")))?;
+                return fetch_observation_by_id(tx, existing.id)?
+                    .ok_or_else(|| Error::internal("topic upsert: row vanished"));
+            }
         }
     }
 
@@ -516,7 +521,11 @@ fn handle_save_observation(
     //    If found, optionally consult the LLM conflict judge before deciding
     //    whether to supersede. On judge error/timeout fall back to the BM25
     //    heuristic (unconditional supersession).
-    let superseded_id = find_conflict_candidate(tx, id, &input)?;
+    let superseded_id = if input.skip_supersede {
+        None
+    } else {
+        find_conflict_candidate(tx, id, &input)?
+    };
     let do_supersede = if let Some(old_id) = superseded_id {
         should_supersede(old_id, id, tx, &input, conflict_classifier)
     } else {
@@ -964,8 +973,9 @@ fn find_conflict_candidate(
 /// Decide whether to supersede `old_id` given the new `input`.
 ///
 /// 1. If a `conflict_classifier` is present and `cfg.conflict.enabled` is
-///    true for this project, ask the LLM. `Supersedes` or `ConflictsWith`
-///    → supersede; `Compatible` or `NotConflict` → keep both.
+///    true for this project, ask the LLM. `Supersedes` → supersede;
+///    `ConflictsWith` → keep both and record `conflicts_with`;
+///    `Compatible` or `NotConflict` → keep both.
 /// 2. On any error (timeout, network, parse) fall back to heuristic
 ///    (supersede unconditionally, matching pre-Spec-4 behavior).
 /// 3. If no classifier is wired, always supersede (current default).
@@ -987,7 +997,7 @@ fn should_supersede(
     // project name from the normalized DB path; storage doesn't know it, but
     // the write thread was spawned with it as `project_id`. Rather than
     // threading the name here we just call load_resolved(None) — that gives
-    // the global config, which is sufficient for the default-off guard.
+    // the global config, which is sufficient for the default-on judge.
     let cfg = memlayer_core::config::load_resolved(None);
     if !cfg.conflict.enabled {
         return true; // feature disabled: heuristic
@@ -1014,7 +1024,12 @@ fn should_supersede(
         }
         Ok(ConflictVerdict::ConflictsWith) => {
             let _ = crate::relations::add_relation(tx, new_id, old_id, "conflicts_with", 0.95);
-            true
+            tracing::debug!(
+                old_id,
+                new_title = %input.title,
+                "conflict judge: keeping both (ConflictsWith)"
+            );
+            false
         }
         Ok(ConflictVerdict::Compatible) => {
             let _ = crate::relations::add_relation(tx, new_id, old_id, "compatible", 0.85);
@@ -1081,6 +1096,7 @@ mod tests {
             code_anchor: None,
             dedupe_window_secs: 60 * 60 * 24 * 30,
             max_content_chars: 50_000,
+                    skip_supersede: false,
         }
     }
 
@@ -1097,6 +1113,54 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fetched.content, "hello");
+    }
+
+    struct ConflictsWithClassifier;
+    impl crate::conflict_judge::ConflictClassifier for ConflictsWithClassifier {
+        fn classify(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<crate::conflict_judge::ConflictVerdict> {
+            Ok(crate::conflict_judge::ConflictVerdict::ConflictsWith)
+        }
+    }
+
+    #[test]
+    fn conflicts_with_keeps_both_rows() {
+        std::env::set_var("MEMLAYER_CONFLICT_ENABLED", "true");
+        let (_d, mut conn) = open_test_db();
+        let mut a = save_input("use redis for sessions");
+        a.title = "session store".into();
+        a.sync_id = Some("sync-old".into());
+        let mut b = save_input("use postgres for sessions");
+        b.title = "session store".into();
+        b.sync_id = Some("sync-new".into());
+        let tx = conn.transaction().unwrap();
+        let o1 = handle_save_observation(&tx, a, Some(&ConflictsWithClassifier)).unwrap();
+        let o2 = handle_save_observation(&tx, b, Some(&ConflictsWithClassifier)).unwrap();
+        let n_active: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM observations WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let n_rel: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM observation_relations WHERE relation_type = 'conflicts_with'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        tx.commit().unwrap();
+        std::env::remove_var("MEMLAYER_CONFLICT_ENABLED");
+        assert_eq!(n_active, 2, "both rows stay active");
+        assert_eq!(o1.deleted_at, None);
+        assert_eq!(o2.deleted_at, None);
+        assert_eq!(n_rel, 1);
     }
 
     #[test]

@@ -32,6 +32,27 @@ pub enum SyncError {
 
     #[error("task join error: {0}")]
     Join(String),
+
+    #[error("not a memlayer archive (bad magic)")]
+    NotArchive,
+
+    #[error("unsupported memlayer archive version {0}")]
+    UnsupportedVersion(u16),
+
+    #[error("memlayer archive truncated")]
+    Truncated,
+
+    #[error("memlayer archive checksum mismatch")]
+    ChecksumMismatch,
+
+    #[error("seed phrase must be at least 12 characters after trim")]
+    SeedTooShort,
+
+    #[error("this archive is seed-encrypted and cannot be imported without the seed phrase")]
+    SeedRequired,
+
+    #[error("invalid seed phrase or corrupt archive")]
+    InvalidSeed,
 }
 
 impl SyncError {

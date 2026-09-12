@@ -151,6 +151,20 @@ pub async fn run(cfg: Config) -> Result<()> {
         ))
     };
 
+    let resolve_pool = {
+        tracing::info!("spawning resolve worker pool");
+        Some(crate::resolve_worker::ResolveWorkerPool::spawn(
+            claude_client.clone(),
+            registry.clone(),
+            1,
+        ))
+    };
+
+    let verify_pool = {
+        tracing::info!("spawning verify worker pool");
+        Some(crate::verify_worker::VerifyWorkerPool::spawn(registry.clone(), 1))
+    };
+
     // Daemon shared state.
     let in_flight = Arc::new(AtomicU64::new(0));
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
@@ -171,6 +185,8 @@ pub async fn run(cfg: Config) -> Result<()> {
         query_embedder,
         extract_pool,
         claude_client,
+        resolve_pool,
+        verify_pool,
     });
     let svc = MemlayerService::new(state.clone());
 

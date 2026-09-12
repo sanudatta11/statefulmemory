@@ -5,7 +5,7 @@ import sitemap from '@astrojs/sitemap';
 
 const site = 'https://memlayer.org';
 const description =
-	'Persistent memory for AI coding agents — local, per-project, no cloud.';
+	'Persistent memory for AI coding agents: local, per-project, no cloud.';
 
 // https://astro.build/config
 export default defineConfig({
@@ -53,11 +53,30 @@ export default defineConfig({
 					items: [
 						{ label: 'Everyday commands', slug: 'docs/commands' },
 						{ label: 'Config', slug: 'docs/config' },
+						{ label: 'LoCoMo eval', slug: 'docs/locomo' },
 						{ label: 'Troubleshooting', slug: 'docs/troubleshooting' },
 					],
 				},
 			],
 			head: [
+				{
+					tag: 'link',
+					attrs: {
+						rel: 'alternate',
+						type: 'text/plain',
+						title: 'llms.txt',
+						href: `${site}/llms.txt`,
+					},
+				},
+				{
+					tag: 'link',
+					attrs: {
+						rel: 'alternate',
+						type: 'text/plain',
+						title: 'llms-full.txt',
+						href: `${site}/llms-full.txt`,
+					},
+				},
 				{
 					tag: 'meta',
 					attrs: {
@@ -90,7 +109,7 @@ export default defineConfig({
 					tag: 'meta',
 					attrs: {
 						property: 'og:image:alt',
-						content: 'memlayer — persistent memory for AI coding agents',
+						content: 'memlayer: persistent memory for AI coding agents',
 					},
 				},
 				{
@@ -149,6 +168,25 @@ export default defineConfig({
 								url: site,
 								description,
 								inLanguage: 'en',
+								sameAs: [
+									'https://github.com/sanudatta11/memlayer',
+								],
+							},
+							{
+								'@type': 'SoftwareApplication',
+								name: 'memlayer',
+								description,
+								url: site,
+								applicationCategory: 'DeveloperApplication',
+								operatingSystem: 'Linux, macOS',
+								offers: {
+									'@type': 'Offer',
+									price: '0',
+									priceCurrency: 'USD',
+								},
+								sameAs: [
+									'https://github.com/sanudatta11/memlayer',
+								],
 							},
 							{
 								'@type': 'SoftwareSourceCode',
@@ -161,6 +199,35 @@ export default defineConfig({
 								applicationCategory: 'DeveloperApplication',
 								operatingSystem: 'Linux, macOS',
 							},
+							{
+								'@type': 'FAQPage',
+								mainEntity: [
+									{
+										'@type': 'Question',
+										name: 'What is memlayer?',
+										acceptedAnswer: {
+											'@type': 'Answer',
+											text: 'memlayer is persistent memory for AI coding agents: local, per-project SQLite under ~/.memlayer/, with a CLI, gRPC daemon, and MCP tools. No cloud is required for core save, search, and context.',
+										},
+									},
+									{
+										'@type': 'Question',
+										name: 'Which AI coding agents work with memlayer?',
+										acceptedAnswer: {
+											'@type': 'Answer',
+											text: 'Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code / Copilot, Codex, Gemini CLI, Amazon Q, and any agent that can speak MCP or shell out to the memlayer CLI.',
+										},
+									},
+									{
+										'@type': 'Question',
+										name: 'Does memlayer work with local or open-source LLMs?',
+										acceptedAnswer: {
+											'@type': 'Answer',
+											text: 'Yes. Hybrid BM25 + dense search runs locally. Optional LLM steps (extract, conflict judge, Decide) use whichever agent CLI is on PATH. Pin with MEMLAYER_LLM_BIN, MEMLAYER_LLM_PROVIDER, and MEMLAYER_LLM_MODEL (for example OpenCode + qwen).',
+										},
+									},
+								],
+							},
 						],
 					}),
 				},
@@ -168,6 +235,17 @@ export default defineConfig({
 		}),
 		sitemap({
 			filter: (page) => !page.includes('/404'),
+			changefreq: 'weekly',
+			priority: 0.7,
+			lastmod: new Date(),
+			serialize(item) {
+				// Home page gets highest priority; docs share the default.
+				const url = item.url.replace(/\/$/, '') || item.url;
+				if (url === site || url === `${site}/`) {
+					return { ...item, priority: 1.0, changefreq: 'weekly' };
+				}
+				return item;
+			},
 		}),
 	],
 });

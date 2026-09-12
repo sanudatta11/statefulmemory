@@ -50,7 +50,7 @@ memlayer session summarize "$CLAUDE_SESSION_ID" --auto
 ```
 
 Groups the session's observations by `topic_key`, picks the latest per
-group, and saves an Engram-shaped markdown rollup with
+group, and saves a session-rollup markdown note with
 `topic_key="session-summary/<id>"`. The next session's `obs context`
 surfaces it as `# Last session summary`.
 

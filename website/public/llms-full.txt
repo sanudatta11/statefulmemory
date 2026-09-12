@@ -1,0 +1,90 @@
+# memlayer — LLM-oriented product summary
+
+Canonical site: https://memlayer.org
+Repository: https://github.com/sanudatta11/memlayer
+License: MIT
+
+## Definition
+
+memlayer is persistent memory for AI coding agents. It stores decisions, fixes,
+and notes in local SQLite under ~/.memlayer/, scoped per project. A thin CLI
+talks to a user-local gRPC daemon. Agents reach memory through MCP tools
+(memory_search, memory_add, memory_context, memory_recent, memory_facts,
+memory_health, memory_decide) or by shelling out to the memlayer CLI.
+
+Search and context retrieval are local by default: hybrid BM25 + BGE-small
+dense vectors fused with reciprocal rank fusion (RRF). Optional LLM steps
+(fact extract, conflict/supersession judge, rerank, Decide) shell out to
+whichever agent CLI is on PATH (OpenCode, Cursor Agent, Claude Code, Gemini
+CLI, Codex, Kilo, and others). No cloud account is required for core memory.
+
+## Install (short)
+
+```
+git clone https://github.com/sanudatta11/memlayer && cd memlayer
+make prereqs && make install
+export PATH="$HOME/.local/bin:$PATH"
+memlayer --version
+memlayer install                 # auto-detect agents; registers MCP + skills
+```
+
+## Everyday usage
+
+```
+memlayer obs save --type decision --title "..." --content "..." --session "$SID"
+memlayer obs save --anchor src/auth.rs::login --title "..." --content "..."
+memlayer obs search "auth" --mode hybrid
+memlayer obs context --query "deploy" --limit 20 --max-tokens 500
+memlayer verify                  # re-check code anchors against git HEAD
+memlayer decide "Should we keep SQLite?"
+```
+
+Context withdraws stale / invalidated / unprovable anchored claims by default
+(verify.serve_stale = false). Search still returns them flagged. Unanchored
+observations are never hidden.
+
+## Local and open-source LLM backends
+
+Pin or discover the agent CLI used for extract / judge / rerank / Decide:
+
+- MEMLAYER_LLM_BIN=/path/to/opencode
+- MEMLAYER_LLM_PROVIDER=opencode
+- MEMLAYER_LLM_MODEL=qwen   or   opencode/glm-5.3
+- Host hints: OPENCODE_MODEL, CURSOR_MODEL, GEMINI_MODEL, ANTHROPIC_MODEL
+
+Disable LLM features while keeping local hybrid search:
+
+```
+memlayer config set extract.enabled false
+memlayer config set conflict.enabled false
+```
+
+## Config locations
+
+- Global: ~/.memlayer/config.toml
+- Per-project: ~/.memlayer/projects/<name>.config.toml
+- Precedence: env > project overlay > global > code defaults
+
+Notable keys: search.mode (hybrid|bm25), verify.serve_stale, search.max_per_type,
+search.decay_lambda, search.evidence_window, embed.quantize, conflict.enabled,
+extract.enabled.
+
+## Supported install targets
+
+claude-code, cursor, windsurf, antigravity, opencode, kimi-code, zcode, agents,
+vscode, copilot-cli, copilot, gemini, codex, amazon-q.
+
+OpenCode MCP config: ~/.config/opencode/opencode.json
+Shared skills: .agents/ when the agents target is selected.
+
+## Documentation index
+
+https://memlayer.org/
+https://memlayer.org/docs/install/
+https://memlayer.org/docs/getting-started/
+https://memlayer.org/docs/agents/
+https://memlayer.org/docs/commands/
+https://memlayer.org/docs/config/
+https://memlayer.org/docs/locomo/
+https://memlayer.org/docs/troubleshooting/
+https://memlayer.org/llms.txt

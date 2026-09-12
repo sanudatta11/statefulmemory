@@ -211,7 +211,9 @@ mod tests {
             deleted_at: None,
             review_after: None,
             code_anchor: None,
+            superseded_count: 0,
             superseded_ids: vec![],
+            verify_state: "unanchored".into(),
         }
     }
 

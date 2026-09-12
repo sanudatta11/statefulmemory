@@ -155,7 +155,7 @@ nav[aria-labelledby='starlight__on-this-page'] a[aria-current='true'] {
 	color: var(--sl-color-accent);
 }
 
-/* Home guide links — compact docs index */
+/* Home guide links: compact docs index */
 .ml-guide-list {
 	list-style: none;
 	padding: 0;
@@ -195,5 +195,34 @@ nav[aria-labelledby='starlight__on-this-page'] a[aria-current='true'] {
 @media (max-width: 40rem) {
 	.ml-guide-list a {
 		padding: 0.95rem 0.9rem;
+	}
+}
+
+/* Narrow viewports: never clip the brand. Starlight's .site-title
+   overflow:hidden + flex-shrink lets search overlap the last glyph. */
+@media (max-width: 50rem) {
+	header.header {
+		padding-inline: 0.75rem;
+		gap: 0.35rem;
+	}
+
+	header.header .site-title,
+	header.header a.site-title {
+		flex-shrink: 0;
+		overflow: visible;
+		min-width: max-content;
+		max-width: none;
+		font-size: 1rem;
+		letter-spacing: -0.03em;
+	}
+
+	header.header .site-title span {
+		overflow: visible;
+		text-overflow: clip;
+		white-space: nowrap;
+	}
+
+	header.header .social-icons {
+		display: none;
 	}
 }

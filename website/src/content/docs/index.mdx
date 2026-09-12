@@ -1,18 +1,18 @@
 ---
 title: Overview
-description: Persistent memory for AI coding agents — local, per-project, no cloud. Install, wire your agent, and start saving context.
+description: "Persistent memory for AI coding agents: local, per-project, no cloud. Install, wire your agent, and start saving context."
 head:
   - tag: meta
     attrs:
       name: keywords
-      content: memlayer, AI coding agents, persistent memory, MCP, Claude Code, Cursor, local SQLite
+      content: memlayer, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, llms.txt
 ---
 
 import { LinkButton } from '@astrojs/starlight/components';
 
 # memlayer
 
-Persistent memory for AI coding agents — **local**, per-project, no cloud.
+Persistent memory for AI coding agents: **local**, per-project, no cloud.
 
 Save decisions and fixes once. Next session, your agent can search and pull the
 right context through MCP or the CLI.
@@ -48,7 +48,16 @@ Full walkthrough: [Getting started](/docs/getting-started/) · Agent setup: [Wir
 
 Works with Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code,
 ZCode, VS Code / Copilot, Codex, Gemini CLI, and any agent that can shell out
-or speak MCP.
+or speak MCP. Local and open-source models: pin
+`MEMLAYER_LLM_*` (see [Wire into your agent](/docs/agents/)).
+
+## For LLMs and AI crawlers
+
+Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
+[llms-full.txt](/llms-full.txt). Coding agents cloning the repo should read
+[AGENTS.md](https://github.com/sanudatta11/memlayer/blob/main/AGENTS.md)
+(OpenCode / Codex / local) or
+[CLAUDE.md](https://github.com/sanudatta11/memlayer/blob/main/CLAUDE.md).
 
 ## Guides
 
@@ -74,13 +83,19 @@ or speak MCP.
   <li>
     <a href="/docs/commands/">
       <strong>Everyday commands</strong>
-      <span>Save, search, context, history, and session helpers.</span>
+      <span>Save, search, context, verify, history, and session helpers.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/locomo/">
+      <strong>LoCoMo eval</strong>
+      <span>Smoke vs full e2e, staleness benchmark, and published score bands.</span>
     </a>
   </li>
   <li>
     <a href="/docs/config/">
       <strong>Config</strong>
-      <span>Global and per-project TOML, env overrides, workers.</span>
+      <span>Verify, hybrid search, token budget, and env overrides.</span>
     </a>
   </li>
   <li>

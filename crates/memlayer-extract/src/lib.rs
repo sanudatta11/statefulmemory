@@ -2,20 +2,22 @@
 //! memlayer-extract — LLM-based fact extraction for the eval pipeline.
 //!
 //! This crate turns raw conversation turns into atomic, searchable facts via
-//! a claude-haiku call (per spec retrieval-upgrade-v1 §3, §4). Output flows
-//! through the eval-side facts.db (sqlite-vec virtual tables for semantic
-//! retrieval; FTS5 for lexical) and feeds the hybrid retrieval pipeline.
+//! the detected agent CLI (fast model role; spec retrieval-upgrade-v1 §3, §4).
+//! Output flows through the eval-side facts.db (sqlite-vec + FTS5) and feeds
+//! hybrid retrieval.
 //!
 //! API surface:
 //! * [`Fact`] — extracted (subject, predicate, object, ...) record.
 //! * [`Extractor`] trait — abstract entry point.
-//! * [`HaikuExtractor`] (spec-task-14) — claude-4.5-haiku impl.
-//! * [`ClaudeClient`] trait + impls (this task).
+//! * [`HaikuEntityExtractor`] — fast-role entity extract.
+//! * [`ClaudeClient`] trait + agent-CLI impls.
 
+pub mod agent_cli;
 pub mod cache;
 pub mod claude_cli;
 pub mod entities;
 pub mod extractor;
+pub mod opencode_models;
 pub mod prompt;
 
 pub use cache::{CachedExtraction, ExtractionCache};

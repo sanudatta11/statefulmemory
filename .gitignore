@@ -63,8 +63,9 @@ Cargo.lock.bak
 .agents/
 skills-lock.json
 
-# Local evaluation output
+# Local evaluation output (scorecards) and downloaded datasets
 /eval/
+/data/
 
 # Impeccable / Cursor harness (large binaries; product design lives in PRODUCT.md / DESIGN.md)
 .cursor/

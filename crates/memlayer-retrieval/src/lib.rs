@@ -15,6 +15,7 @@
 //! Pure file-move from `memlayer-eval` plus thin shared types. `memlayer-eval`
 //! re-exports `rrf` and `rerank` so its existing callers keep working.
 
+pub mod facts_fuse;
 pub mod hybrid;
 pub mod rerank;
 pub mod rrf;

@@ -2,19 +2,20 @@
 //! Per-project extraction orchestrator (spec-task-18).
 //!
 //! Reads raw observations out of a single storage-side project DB, slices
-//! them into overlapping 6-turn windows, fans out cache misses to claude-haiku
-//! through [`ClaudeClient`], embeds the resulting facts via the supplied
-//! [`Embedder`], and bulk-writes the rows into the eval-side `facts.db`.
+//! them into overlapping 6-turn windows, fans out cache misses to the
+//! fast-role agent CLI through [`ClaudeClient`], embeds the resulting facts
+//! via the supplied [`Embedder`], and bulk-writes the rows into the eval-side
+//! `facts.db`.
 //!
 //! Two caches keep this idempotent across re-runs:
-//!   * [`ExtractionCache`] keyed by `sha256(window_json)` — successful Haiku
+//!   * [`ExtractionCache`] keyed by `sha256(window_json)` — successful
 //!     output and EH-4 "permanently failed" markers both land here so a
 //!     resumed run skips work that already burned model spend.
 //!   * [`EmbeddingCache`] keyed by `sha256(text)` — re-embedding identical
 //!     `(subject predicate object)` strings is wasted CPU on a repeat run.
 //!
 //! Concurrency:
-//!   The Haiku fan-out is bounded by `concurrency` (default 4) via a
+//!   The LLM fan-out is bounded by `concurrency` (default 4) via a
 //!   `tokio::sync::Semaphore`. `Arc<dyn ClaudeClient>` and `Vec<Turn>` are
 //!   `Send`/`Clone`, so each window runs in its own `tokio::spawn`.
 //!

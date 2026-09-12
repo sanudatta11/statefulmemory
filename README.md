@@ -26,7 +26,7 @@ out or speak MCP.
 |---|---|---|
 | **Save** | `obs save` / `memory_add` | Capture a decision or fix with context |
 | **Brief** | `obs context` / `memory_context` | Topic-ranked memory for the current task |
-| **Search** | `obs search` / `memory_search` | BM25 (optional hybrid + rerank) |
+| **Search** | `obs search` / `memory_search` | Hybrid (BM25 + dense) or BM25; optional agent rerank |
 
 Data lives under `~/.memlayer/` as plain SQLite you can inspect, back up, or delete.
 
@@ -70,7 +70,9 @@ This installs skills/rules, Claude Code hooks (where applicable), and MCP
 registration for detected agents. Restart the agent afterward.
 
 **MCP tools:** `memory_search`, `memory_recent`, `memory_context`,
-`memory_add`, `memory_facts`, `memory_health` — launched as `memlayer mcp`.
+`memory_add`, `memory_facts`, `memory_health`, `memory_decide` — launched as
+`memlayer mcp`. Extract / judge / rerank / Decide use the invoking agent's
+current model unless you pin `MEMLAYER_LLM_MODEL` or a concrete id.
 
 | Agent | Config touched by install |
 |---|---|

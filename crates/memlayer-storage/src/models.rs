@@ -35,9 +35,19 @@ pub struct Observation {
     pub deleted_at: Option<String>,
     pub review_after: Option<String>,
     pub code_anchor: Option<String>,
+    /// Denormalized count of observations this row has replaced.
+    #[serde(default)]
+    pub superseded_count: i32,
     /// IDs of observations superseded (soft-deleted) when this one was saved.
     #[serde(default)]
     pub superseded_ids: Vec<i64>,
+    /// Freshness vs repository (`unanchored` default).
+    #[serde(default = "default_verify_state")]
+    pub verify_state: String,
+}
+
+fn default_verify_state() -> String {
+    "unanchored".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,7 +93,13 @@ impl Observation {
             deleted_at: row.get("deleted_at")?,
             review_after: row.get("review_after")?,
             code_anchor: row.get("code_anchor").unwrap_or(None),
+            superseded_count: row.get("superseded_count").unwrap_or(0),
             superseded_ids: vec![],
+            verify_state: row
+                .get::<_, Option<String>>("verify_state")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "unanchored".into()),
         })
     }
 }

@@ -23,7 +23,8 @@ pub const ALL_PROJECTS_CAP: usize = 32;
 
 const SELECT_COLS: &str = "id, sync_id, session_id, type, title, content, tool_name, scope,
     created_by, topic_key, normalized_hash, revision_count, duplicate_count,
-    last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor";
+    last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor,
+    superseded_count, verify_state";
 
 /// `GetObservation` — fetch a single row by id or sync_id.
 pub fn get(conn: &Connection, key: &ObservationKey) -> Result<Observation> {
@@ -620,15 +621,51 @@ pub fn history_chain(conn: &Connection, anchor_id: i64) -> Result<Vec<HistoryEnt
         .map_err(|e| Error::internal(format!("history_chain prepare: {e}")))?;
     let rows = stmt
         .query_map(params![anchor_id], |row| {
-            // SELECT_COLS has 18 columns (indices 0-17); superseded_by_id is column 18.
             let obs = Observation::from_row(row)?;
-            let superseded_by_id: Option<i64> = row.get(18)?;
+            // Named lookup — SELECT_COLS grows over migrations; positional
+            // indices silently corrupt the chain.
+            let superseded_by_id: Option<i64> = row.get("superseded_by_id")?;
             Ok(HistoryEntry { observation: obs, superseded_by_id })
         })
         .map_err(|e| Error::internal(format!("history_chain query: {e}")))?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r.map_err(|e| Error::internal(format!("history_chain row: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// For each observation id in `ids`, return the ids of rows it superseded
+/// (`observations.superseded_by_id IN ids`). One round-trip for search/context.
+pub fn supersedes_ids_for(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<i64>>> {
+    use std::collections::HashMap;
+    let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT id, superseded_by_id FROM observations
+         WHERE superseded_by_id IN ({placeholders})
+         ORDER BY id ASC"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("supersedes_ids_for prepare: {e}")))?;
+    let params: Vec<&dyn ToSql> = ids.iter().map(|id| id as &dyn ToSql).collect();
+    let rows = stmt
+        .query_map(params_from_iter(params), |row| {
+            let id: i64 = row.get(0)?;
+            let superseded_by: i64 = row.get(1)?;
+            Ok((superseded_by, id))
+        })
+        .map_err(|e| Error::internal(format!("supersedes_ids_for query: {e}")))?;
+    for r in rows {
+        let (parent, child) = r.map_err(|e| Error::internal(format!("supersedes_ids_for row: {e}")))?;
+        out.entry(parent).or_default().push(child);
     }
     Ok(out)
 }
@@ -672,6 +709,48 @@ pub fn search_dense_multi(
                 warn!(project = %project_name, error = %e, "search_dense_multi: dense search failed for project");
             }
         }
+    }
+    Ok(out)
+}
+
+/// Same-session neighbors of `obs_id` within ±`window` ids (inclusive of the
+/// seed). `window = 0` returns just the seed when present. Soft-deleted rows
+/// are skipped. Used by context evidence-window expansion.
+pub fn neighbors_in_session(
+    conn: &Connection,
+    obs_id: i64,
+    window: u32,
+) -> Result<Vec<Observation>> {
+    let seed_session: Option<String> = conn
+        .query_row(
+            "SELECT session_id FROM observations
+              WHERE id = ?1 AND deleted_at IS NULL",
+            params![obs_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::internal(format!("neighbors_in_session session: {e}")))?;
+    let Some(session_id) = seed_session else {
+        return Ok(Vec::new());
+    };
+    let lo = obs_id.saturating_sub(window as i64);
+    let hi = obs_id.saturating_add(window as i64);
+    let sql = format!(
+        "SELECT {SELECT_COLS} FROM observations
+          WHERE id BETWEEN ?1 AND ?2
+            AND session_id = ?3
+            AND deleted_at IS NULL
+          ORDER BY id ASC"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("neighbors_in_session prepare: {e}")))?;
+    let rows = stmt
+        .query_map(params![lo, hi, session_id], Observation::from_row)
+        .map_err(|e| Error::internal(format!("neighbors_in_session query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("neighbors_in_session row: {e}")))?);
     }
     Ok(out)
 }
@@ -736,6 +815,7 @@ mod tests {
                 code_anchor: None,
                 dedupe_window_secs: 0, // disable dedupe so each row inserts
                 max_content_chars: 50_000,
+                    skip_supersede: false,
             },
         )
         .unwrap();
@@ -823,6 +903,7 @@ mod tests {
                     code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
+                    skip_supersede: false,
                 },
             )
             .unwrap();
@@ -870,6 +951,7 @@ mod tests {
                     code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
+                    skip_supersede: false,
                 },
             )
             .unwrap();
@@ -1055,6 +1137,7 @@ mod tests {
                     code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
+                    skip_supersede: false,
                 },
             )
             .unwrap();
@@ -1137,6 +1220,7 @@ mod tests {
                 code_anchor: None,
                 dedupe_window_secs: 0,
                 max_content_chars: 50_000,
+                    skip_supersede: false,
             },
         )
         .unwrap();
@@ -1156,6 +1240,17 @@ mod tests {
         let chain = history_chain(&conn, v1).unwrap();
         let has_deleted = chain.iter().any(|e| e.observation.deleted_at.is_some());
         assert!(has_deleted, "chain must include soft-deleted entries");
+    }
+
+    #[test]
+    fn supersedes_ids_for_batches_children() {
+        let (_d, conn, v1, v2, v3) = make_chain_3();
+        let map = supersedes_ids_for(&conn, &[v2, v3]).unwrap();
+        assert_eq!(map.get(&v2).map(|v| v.as_slice()), Some(&[v1][..]));
+        assert_eq!(map.get(&v3).map(|v| v.as_slice()), Some(&[v2][..]));
+        // SELECT_COLS includes superseded_count (may be 0 when links are wired manually).
+        let newest = get(&conn, &ObservationKey::Id(v3)).unwrap();
+        let _ = newest.superseded_count;
     }
 
     // ---------------------------------------------------------------------------
@@ -1199,6 +1294,7 @@ mod tests {
                     code_anchor: None,
                     dedupe_window_secs: 0,
                     max_content_chars: 50_000,
+                    skip_supersede: false,
                 },
             )
             .unwrap();
@@ -1237,6 +1333,7 @@ mod tests {
                     title: format!("t-{content}"), content: content.into(),
                     tool_name: None, scope: "project".into(), created_by: None,
                     topic_key: None, code_anchor: None, dedupe_window_secs: 0, max_content_chars: 50_000,
+                    skip_supersede: false,
                 },
             ).unwrap();
             tx.commit().unwrap();

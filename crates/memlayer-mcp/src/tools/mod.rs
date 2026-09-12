@@ -1,4 +1,4 @@
-//! Typed argument structs for the six `memory_*` MCP tools.
+//! Typed argument structs for the seven `memory_*` MCP tools.
 //!
 //! Each derives `serde::Deserialize` (for decoding tool-call arguments) and
 //! `schemars::JsonSchema` (so rmcp can advertise a JSON-Schema to the agent).
@@ -17,12 +17,15 @@ use serde::Deserialize;
 pub struct SearchArgs {
     /// Full-text query to search stored memory for.
     pub query: String,
-    /// Retrieval mode: "bm25" (default) or "hybrid" (BM25 + dense, RRF-fused).
+    /// Retrieval mode: "hybrid" (default from config) or "bm25".
     pub mode: Option<String>,
-    /// Optional reranker model: "haiku" or "sonnet".
+    /// Optional reranker. Omit to use the invoking agent's current model.
+    /// Pass a concrete id (e.g. `opencode/glm-5.3`) to pin one.
     pub rerank: Option<String>,
     /// Maximum number of results (default 10).
     pub limit: Option<i32>,
+    /// Soft token budget (estimated chars/4). Omit for unlimited.
+    pub max_tokens: Option<i32>,
     /// Filter by observation type (e.g. "decision", "fix", "pattern").
     #[serde(rename = "type")]
     pub type_: Option<String>,
@@ -57,10 +60,13 @@ pub struct ContextArgs {
     pub query: Option<String>,
     /// Retrieval mode: "bm25" (default) or "hybrid".
     pub mode: Option<String>,
-    /// Optional reranker model: "haiku" or "sonnet".
+    /// Optional reranker. Omit to use the invoking agent's current model.
+    /// Pass a concrete id (e.g. `opencode/glm-5.3`) to pin one.
     pub rerank: Option<String>,
     /// Maximum number of recent observations to include (default 10).
     pub limit: Option<i32>,
+    /// Soft token budget (estimated chars/4). Omit for unlimited.
+    pub max_tokens: Option<i32>,
     /// Project to read; defaults to the server's working-directory project.
     pub project: Option<String>,
 }
@@ -92,27 +98,39 @@ pub struct HealthArgs {
     pub project: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct DecideArgs {
+    /// Decision question to answer from stored memories.
+    pub question: String,
+    /// Maximum memories to retrieve (default 12).
+    pub limit: Option<i32>,
+    /// Project to read; defaults to the cwd project.
+    pub project: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::server::MemoryServer;
 
-    const EXPECTED: [&str; 6] = [
+    const EXPECTED: [&str; 7] = [
         "memory_search",
         "memory_add",
         "memory_context",
         "memory_facts",
         "memory_recent",
         "memory_health",
+        "memory_decide",
     ];
 
     #[test]
-    fn registry_lists_exactly_six_tools() {
+    fn registry_lists_exactly_seven_tools() {
         let names: Vec<String> = MemoryServer::tool_router()
             .list_all()
             .into_iter()
             .map(|t| t.name.to_string())
             .collect();
-        assert_eq!(names.len(), 6, "got {names:?}");
+        assert_eq!(names.len(), 7, "got {names:?}");
         for want in EXPECTED {
             assert!(names.iter().any(|n| n == want), "missing tool {want}");
         }
@@ -144,11 +162,8 @@ mod tests {
         assert_eq!(args.mode.as_deref(), Some("hybrid"));
         assert_eq!(args.limit, Some(5));
 
-        let add: super::AddArgs = serde_json::from_str(
-            r#"{"title":"t","content":"c","type":"decision"}"#,
-        )
-        .unwrap();
+        let add: super::AddArgs =
+            serde_json::from_str(r#"{"title":"t","content":"c","type":"decision"}"#).unwrap();
         assert_eq!(add.type_, "decision");
     }
 }
-

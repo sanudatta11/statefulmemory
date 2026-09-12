@@ -19,11 +19,11 @@ cross-project global mirror DB), the platform looks like this:
 | Supersession | Synchronous BM25 | V3 — top BM25 hit in same `type+scope` is soft-deleted on save. |
 | Audit log | Production | `~/.memlayer/queries.log`, JSONL, fail-silent, opt-in full mode. |
 | Agent integration | 4 hooks + skill | SessionStart, Stop, PreToolUse[Grep], PreToolUse[Read]. |
-| MCP server | **Shipped** | `memlayer mcp` + six `memory_*` tools; `memlayer install` registers Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code, Copilot CLI, Gemini CLI, Codex, Amazon Q, `.agents`. |
+| MCP server | **Shipped** | `memlayer mcp` + seven `memory_*` tools; `memlayer install` registers Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code, Copilot CLI, Gemini CLI, Codex, Amazon Q, `.agents`. |
 | CI Scorecard & Eval | **Shipped** | `memlayer eval [--smoke] [--save-scorecard <file>]` and `.github/workflows/eval.yml`. |
 | Code Anchors | **Shipped** | V7 `code_anchor` schema, CLI `--anchor` & Graphify call-graph bridge. |
 | TUI & Doctor | **Shipped** | `memlayer tui` observation browser and `memlayer doctor [--repair]` auto-repair. |
-| LLM judge | **Shipped** | Engram-style relation classifier (`observation_relations`). |
+| LLM judge | **Shipped** | Relation classifier (`observation_relations`). |
 
 The agent-side surface is sound. The *retrieval substrate* is where the
 gap to the published research benchmarks lives.
@@ -138,7 +138,7 @@ historical context for the design rationale.
 **What landed:** `BgeSmallEmbedder` async-wired into the daemon save path,
 V4 migration adds `observations_vec` (vec0 vtable) + `observation_embedding_meta`,
 `obs search --mode hybrid` and `obs context --mode hybrid` route through
-BM25 + dense + RRF, optional `--rerank haiku|sonnet` with 5s timeout +
+BM25 + dense + RRF, optional `--rerank fast|capable` with 5s timeout +
 graceful fallback, V5 migration adds atomic-fact storage + `obs facts <id>`
 verb, config-gated extract worker (Haiku/Sonnet) writes facts off the hot
 path, new `memlayer config show/get/set` CLI for managing the
@@ -200,20 +200,25 @@ tools instead of shell-out hooks. Hooks remain for non-MCP fallback.
 
 ### Spec 3 — Code anchors + graphify bridge  *(answers the AST question)*
 
-**Status today:** unscoped.
+**Status today:** partial. Anchors + verify shipped (`observation_anchors`,
+`verify_state`, `memlayer verify`, install git hooks, stale withdrawal from
+context). The graphify / AST bridge did **not** ship.
 
-**Scope:**
+**Shipped:**
 
-1. Migration V5: add `code_anchor TEXT` to `observations`; index for
-   prefix matching.
-2. CLI: `memlayer obs save --anchor "src/auth/middleware.rs::validate_token"`.
-3. Auto-anchor heuristic: when invoked from a Claude Code Edit/Write
-   hook, infer anchor from `$CLAUDE_TOOL_INPUT_file_path` + nearest
-   enclosing fn name (parsed by ripgrep + simple regex, not tree-sitter).
-4. New CLI verb: `memlayer ctx <file>::<symbol>` returns prior
-   observations matching that anchor + (if graphify on PATH) shells out
-   to `graphify query "<symbol>"` and merges.
-5. README section explaining the pairing.
+1. Migrations V9/V10: multi-anchor table + `verify_state` /
+   `verified_commit` / `verified_at` (legacy `code_anchor` column remains
+   for prefix search).
+2. CLI: `memlayer obs save --anchor …` (repeatable), `memlayer verify`,
+   `obs context --include-stale`.
+3. Install writes post-commit / post-merge / post-checkout hooks that
+   background `memlayer verify --quiet`.
+
+**Still open:**
+
+1. Auto-anchor heuristic from Edit/Write hooks.
+2. `memlayer ctx <file>::<symbol>` + optional `graphify query` merge.
+3. README section on the graphify pairing.
 
 **Why third:** answers the AST question directly. ~500 LOC vs. 36k for a
 from-scratch AST layer. Doesn't depend on graphify being installed —
@@ -224,14 +229,14 @@ co-installed, vs. ~2-3× memlayer-alone today.
 
 ### Spec 4 — LLM judge for relation classification  *(deferred Part C)*
 
-**Status today:** scoped in prior plan as "Part C — Judge upgrade
-(DEFERRED)". Not implemented.
+**Status today:** supersession judge shipped (`conflict.enabled` +
+`ConflictsWith` / resolve worker). Locked-vocabulary multi-relation
+classifier and `obs judge` verb remain deferred.
 
-**Scope:** Engram-style locked-vocabulary classifier
+**Scope (remaining):** locked-vocabulary relation classifier
 (`conflicts_with | supersedes | scoped | related | compatible | not_conflict`),
-new `observation_relations` table, opt-in `memlayer obs judge` verb. New
-table is a strict superset of the current `superseded_by_id` FK — that
-column becomes a denormalized cache of relations where
+opt-in `memlayer obs judge` verb. `observation_relations` already exists;
+`superseded_by_id` stays a denormalized cache of relations where
 `relation = supersedes`.
 
 **Why fourth:** lifts multi-hop and adversarial categories on LoCoMo.
@@ -243,15 +248,13 @@ multi-hop.
 
 ### Spec 5 — `memlayer obs history` + minor polish
 
-**Status today:** `obs history` was scoped in a prior plan, only the
-skill-text portion shipped. The actual command is unimplemented.
+**Status today:** shipped (`obs history` walks `superseded_by_id`; int8
+quantize via `embed.quantize` + `memlayer reindex`).
 
-**Scope:** small CLI verb walking the `superseded_by_id` chain. ~30 LOC.
-Plus:
+**Remaining polish:**
 
 - Auto-anchor heuristic refinement (from Spec 3).
-- Quantization promotion (the `quantize` int8 module from `memlayer-embed`
-  activated in production for 10M+ scale).
+- Graphify bridge (`memlayer ctx` + optional `graphify query`).
 
 **Why last:** small, polish-tier. Nice to ship together once the big
 specs are in.

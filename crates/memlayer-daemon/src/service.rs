@@ -96,6 +96,11 @@ pub struct DaemonState {
     /// the daemon's rerank path. Same `Arc` instance, so configuration
     /// (proxy strip, environment) is consistent across the two callers.
     pub claude_client: std::sync::Arc<dyn memlayer_extract::claude_cli::ClaudeClient>,
+    /// Async resolution worker for `conflicts_with` pairs. `try_queue`
+    /// never blocks save.
+    pub resolve_pool: Option<crate::resolve_worker::ResolveWorkerPool>,
+    /// Async anchor verification worker. `try_queue` never blocks save.
+    pub verify_pool: Option<crate::verify_worker::VerifyWorkerPool>,
 }
 
 #[derive(Clone)]
@@ -126,11 +131,33 @@ impl MemlayerService {
         Ok(())
     }
 
-    fn open_project(&self, name: &str) -> Result<Arc<ProjectState>> {
+    pub(crate) fn open_project(&self, name: &str) -> Result<Arc<ProjectState>> {
         if name.trim().is_empty() {
             return Err(Error::invalid("project_name is required"));
         }
         self.state.registry.get_or_open(name)
+    }
+
+    pub(crate) fn resolved_search_mode(&self, wire: Option<&str>, project_name: &str) -> memlayer_retrieval::hybrid::HybridMode {
+        let cfg = memlayer_core::config::load_resolved(Some(project_name));
+        memlayer_retrieval::hybrid::HybridMode::parse_wire_or_default(wire, &cfg.search.mode)
+    }
+
+    /// Wire `rerank` if set; otherwise honor `search.rerank` config (model role).
+    pub(crate) fn resolved_rerank(
+        &self,
+        wire: Option<&str>,
+        project_name: &str,
+    ) -> Option<String> {
+        if let Some(m) = wire.map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(m.to_string());
+        }
+        let cfg = memlayer_core::config::load_resolved(Some(project_name));
+        if cfg.search.rerank {
+            Some(cfg.rerank.model.as_lowercase().to_string())
+        } else {
+            None
+        }
     }
 
     /// Run hybrid retrieval: BM25 top-30 + dense top-30, RRF-fused, then
@@ -141,59 +168,62 @@ impl MemlayerService {
     /// - the per-project `observations_vec` table is missing/empty.
     ///
     /// Spec: retrieval-promotion SC-3, SC-11, P8.
-    fn hybrid_search(
+    pub(crate) fn hybrid_search(
         &self,
         conn: &rusqlite::Connection,
         query: &str,
         type_filter: Option<&str>,
         scope_filter: Option<&str>,
         limit: i32,
+        project_name: &str,
     ) -> Result<Vec<Observation>> {
         const RRF_DEPTH: i32 = 30;
         const RRF_K: u32 = 60;
 
+        let cfg = memlayer_core::config::load_resolved(Some(project_name));
+        let decay_lambda = cfg.search.decay_lambda;
+
         let bm25_hits = read_q::search(conn, query, type_filter, scope_filter, RRF_DEPTH)?;
+        let fact_ids = fact_parent_ids(conn, query, RRF_DEPTH as i64);
 
         // Embed the query. If the daemon has no embedder (cold-start
         // fallback or candle init failure), or embedding errors, fall
-        // back to BM25-only.
-        let embedder = match &self.state.query_embedder {
-            Some(e) => e,
+        // back to BM25 (+ facts) only.
+        let dense_hits = match &self.state.query_embedder {
             None => {
                 tracing::info!(
-                    "hybrid requested but no query embedder loaded — using BM25 only",
+                    "hybrid requested but no query embedder loaded — using BM25 (+ facts if any)",
                 );
-                return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+                Vec::new()
             }
-        };
-        let q_vec = match embedder.embed(&[query]) {
-            Ok(mut vs) => match vs.pop() {
-                Some(v) => v,
-                None => {
-                    tracing::warn!("embedder returned no vectors for query — using BM25 only");
-                    return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+            Some(embedder) => match embedder.embed(&[query]) {
+                Ok(mut vs) => match vs.pop() {
+                    Some(q_vec) => match read_q::search_dense(conn, &q_vec, RRF_DEPTH as i64) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "dense search failed — using BM25 (+ facts)");
+                            Vec::new()
+                        }
+                    },
+                    None => {
+                        tracing::warn!("embedder returned no vectors for query — using BM25 (+ facts)");
+                        Vec::new()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, "query embed failed — using BM25 (+ facts)");
+                    Vec::new()
                 }
             },
-            Err(e) => {
-                tracing::warn!(error = %e, "query embed failed — using BM25 only");
-                return Ok(bm25_hits.into_iter().take(limit as usize).collect());
-            }
         };
 
-        let dense_hits = match read_q::search_dense(conn, &q_vec, RRF_DEPTH as i64) {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::warn!(error = %e, "dense search failed — using BM25 only");
-                return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+        if dense_hits.is_empty() && fact_ids.is_empty() {
+            let mut hits: Vec<Observation> =
+                bm25_hits.into_iter().take(limit as usize).collect();
+            if decay_lambda > 0.0 {
+                apply_time_decay(&mut hits, decay_lambda);
             }
-        };
-
-        if dense_hits.is_empty() {
-            // Vec table empty (no embeddings landed yet for this project).
-            tracing::info!(
-                "hybrid requested but vec table empty — using BM25 only (embed worker is catching up)",
-            );
-            return Ok(bm25_hits.into_iter().take(limit as usize).collect());
+            return Ok(hits);
         }
 
         // Apply the same type/scope filter to dense hits that BM25 honored.
@@ -215,11 +245,11 @@ impl MemlayerService {
             })
             .collect();
 
-        // Build id-rank lists for RRF.
+        // Build id-rank lists for RRF (BM25 + dense + fact parents).
         let bm25_ids: Vec<u64> = bm25_hits.iter().map(|o| o.id as u64).collect();
         let dense_ids: Vec<u64> = dense_hits.iter().map(|o| o.id as u64).collect();
-        let fused = memlayer_retrieval::rrf::reciprocal_rank_fusion(
-            &[bm25_ids, dense_ids],
+        let fused = memlayer_retrieval::facts_fuse::fuse_observation_lists_scored(
+            &[bm25_ids, dense_ids, fact_ids],
             RRF_K,
         );
 
@@ -232,18 +262,43 @@ impl MemlayerService {
             by_id.entry(o.id).or_insert(o);
         }
 
-        let merged: Vec<Observation> = fused
+        let mut scored: Vec<(Observation, f64)> = fused
             .into_iter()
-            .filter_map(|id| by_id.remove(&(id as i64)))
-            .take(limit as usize)
+            .filter_map(|(id, score)| {
+                let oid = id as i64;
+                let o = if let Some(o) = by_id.remove(&oid) {
+                    o
+                } else {
+                    read_q::get(conn, &ObservationKey::Id(oid)).ok()?
+                };
+                Some((o, score))
+            })
             .collect();
-        Ok(merged)
+
+        if decay_lambda > 0.0 {
+            let now = chrono::Utc::now();
+            for (o, score) in &mut scored {
+                let age = age_days_since(&o.created_at, now);
+                *score *= (-decay_lambda * age).exp();
+            }
+            scored.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+
+        Ok(scored
+            .into_iter()
+            .map(|(o, _)| o)
+            .take(limit as usize)
+            .collect())
     }
 
     /// LLM rerank wrapper around `memlayer_retrieval::rerank::ClaudeReranker`.
     /// Hard 5s timeout (SC-5); on timeout or error, the un-reranked input
     /// list is returned with a tracing warning. `model` is the wire string
-    /// (`"haiku"` | `"sonnet"`); anything else returns the input unchanged.
+    /// Roles inherit the invoking agent's current model; a concrete id is
+    /// passed through to the agent CLI.
     async fn rerank_hits(
         &self,
         model: &str,
@@ -253,18 +308,14 @@ impl MemlayerService {
         if hits.len() <= 1 {
             return hits;
         }
-        let kind = match model.trim().to_ascii_lowercase().as_str() {
-            "haiku" => memlayer_core::config::ModelKind::Haiku,
-            "sonnet" => memlayer_core::config::ModelKind::Sonnet,
-            other => {
-                tracing::warn!(model = other, "unknown rerank model; returning hits as-is");
-                return hits;
-            }
-        };
-
-        // Build candidate strings the reranker can score: title + first
-        // chunk of content. Cap at ~6KB total preview budget so the
-        // prompt stays under the model's context window.
+        let model_id = model.trim();
+        if model_id.is_empty() {
+            return hits;
+        }
+        let reranker = memlayer_retrieval::rerank::ClaudeReranker::with_model_id(
+            self.state.claude_client.clone(),
+            model_id,
+        );
         let candidates: Vec<String> = hits
             .iter()
             .map(|o| {
@@ -276,11 +327,6 @@ impl MemlayerService {
                 format!("{}\n{}", o.title, body)
             })
             .collect();
-
-        let reranker = memlayer_retrieval::rerank::ClaudeReranker::new(
-            self.state.claude_client.clone(),
-            kind,
-        );
 
         let top_k = hits.len();
         let fut = async {
@@ -385,7 +431,230 @@ fn obs_to_proto(o: Observation) -> memlayer_proto::Observation {
         review_after: o.review_after,
         project_name: None,
         code_anchor: o.code_anchor,
+        supersedes_ids: o.superseded_ids,
+        superseded_count: o.superseded_count,
+        verify_state: Some(o.verify_state).filter(|s| !s.is_empty()),
     }
+}
+
+fn filter_context_observations(
+    observations: &mut Vec<memlayer_proto::Observation>,
+    project_name: &str,
+    include_stale: bool,
+) {
+    let cfg = memlayer_core::config::load_resolved(Some(project_name));
+    observations.retain(|o| {
+        let state = o.verify_state.as_deref().unwrap_or("unanchored");
+        crate::context_filter::context_allows(state, cfg.verify.serve_stale, include_stale)
+    });
+}
+
+/// Age in days since `created_at` (RFC3339 or SQLite `datetime('now')` form).
+fn age_days_since(created_at: &str, now: chrono::DateTime<chrono::Utc>) -> f64 {
+    let parsed = chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%dT%H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+        });
+    match parsed {
+        Ok(dt) => {
+            let secs = (now - dt).num_seconds().max(0) as f64;
+            secs / 86_400.0
+        }
+        Err(_) => 0.0,
+    }
+}
+
+fn apply_time_decay(hits: &mut Vec<Observation>, decay_lambda: f64) {
+    if decay_lambda <= 0.0 || hits.len() < 2 {
+        return;
+    }
+    let now = chrono::Utc::now();
+    let mut scored: Vec<(Observation, f64)> = hits
+        .drain(..)
+        .enumerate()
+        .map(|(i, o)| {
+            let base = 1.0 / (1.0 + i as f64);
+            let age = age_days_since(&o.created_at, now);
+            (o, base * (-decay_lambda * age).exp())
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    *hits = scored.into_iter().map(|(o, _)| o).collect();
+}
+
+/// Expand context hits with same-session neighbors; never exceed `limit`.
+fn expand_evidence_window(
+    conn: &rusqlite::Connection,
+    hits: Vec<Observation>,
+    window: u32,
+    limit: i32,
+) -> Vec<Observation> {
+    if window == 0 {
+        return hits.into_iter().take(limit as usize).collect();
+    }
+    let limit = limit.max(1) as usize;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for seed in hits {
+        if out.len() >= limit {
+            break;
+        }
+        let neighbors = read_q::neighbors_in_session(conn, seed.id, window).unwrap_or_default();
+        // Prefer seed first, then neighbors by id order.
+        let mut batch = vec![seed];
+        for n in neighbors {
+            if n.id != batch[0].id {
+                batch.push(n);
+            }
+        }
+        for o in batch {
+            if seen.insert(o.id) {
+                out.push(o);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Apply per-type quota, stale filter, then token budget to context hits.
+fn finalize_context_hits(
+    conn: &rusqlite::Connection,
+    hits: Vec<Observation>,
+    project_name: &str,
+    include_stale: bool,
+    max_per_type: u32,
+    max_tokens: u32,
+) -> (Vec<memlayer_proto::Observation>, i32) {
+    let hits = crate::token_budget::apply_max_per_type(hits, max_per_type);
+    let mut recent = observations_to_proto(conn, hits);
+    filter_context_observations(&mut recent, project_name, include_stale);
+    let (recent, tokens_used) =
+        crate::token_budget::pack_proto_by_token_budget(recent, max_tokens);
+    (recent, tokens_used as i32)
+}
+
+/// Parse and stamp anchors for a just-saved observation. Returns an optional
+/// warning when the directory is not a git repo (save still succeeds).
+#[allow(clippy::result_large_err)]
+async fn stamp_observation_anchors(
+    project: &memlayer_storage::ProjectState,
+    repo: Option<&std::path::Path>,
+    observation_id: i64,
+    raw: &[String],
+) -> std::result::Result<Option<String>, Status> {
+    use memlayer_core::git;
+    use memlayer_storage::anchor::{digest_slice, Anchor, VerifyState};
+    use memlayer_storage::write::WriteRequest;
+
+    let mut parsed: Vec<Anchor> = Vec::new();
+    for s in raw {
+        match Anchor::parse(s.trim()) {
+            Ok(a) => parsed.push(a),
+            Err(e) => tracing::warn!(anchor = %s, error = %e, "skipping invalid --anchor"),
+        }
+    }
+    if parsed.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(repo) = repo.filter(|p| git::is_repo(p)) else {
+        let anchors = parsed.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        map(project.write.send(WriteRequest::Custom {
+            f: Box::new(move |conn| {
+                memlayer_storage::anchor::insert_anchors(conn, observation_id, &anchors)?;
+                memlayer_storage::anchor::set_verify_state(
+                    conn,
+                    observation_id,
+                    VerifyState::Unanchored,
+                    None,
+                )?;
+                Ok(())
+            }),
+            reply: tx,
+        }))?;
+        await_write_reply(rx).await?;
+        return Ok(Some(
+            "not a git repo; anchors saved as unanchored".into(),
+        ));
+    };
+
+    let head = match git::head_sha(repo) {
+        Ok(h) => h,
+        Err(_) => {
+            return Ok(Some(
+                "could not read HEAD; anchors saved as unanchored".into(),
+            ));
+        }
+    };
+
+    for a in &mut parsed {
+        a.anchor_commit = Some(head.clone());
+        let path = a.path.replace('\\', "/");
+        if let Ok(Some(text)) = git::file_at_commit(repo, &head, &path) {
+            a.content_digest = Some(digest_slice(&text, a));
+        }
+    }
+
+    let anchors = parsed;
+    let head_for_write = head.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    map(project.write.send(WriteRequest::Custom {
+        f: Box::new(move |conn| {
+            memlayer_storage::anchor::insert_anchors(conn, observation_id, &anchors)?;
+            memlayer_storage::anchor::set_verify_state(
+                conn,
+                observation_id,
+                VerifyState::Verified,
+                Some(&head_for_write),
+            )?;
+            if let Some(first) = anchors.first() {
+                conn.execute(
+                    "UPDATE observations SET code_anchor = ?2 WHERE id = ?1",
+                    rusqlite::params![observation_id, first.to_canonical_string()],
+                )
+                .map_err(|e| memlayer_core::Error::internal(format!("code_anchor: {e}")))?;
+            }
+            Ok(())
+        }),
+        reply: tx,
+    }))?;
+    await_write_reply(rx).await?;
+    Ok(None)
+}
+
+/// Batch-fill `supersedes_ids` for search/context/recent results (one query).
+fn attach_supersedes(
+    conn: &rusqlite::Connection,
+    observations: &mut [memlayer_proto::Observation],
+) {
+    let ids: Vec<i64> = observations.iter().map(|o| o.id).collect();
+    let Ok(map) = read_q::supersedes_ids_for(conn, &ids) else {
+        return;
+    };
+    for o in observations.iter_mut() {
+        if let Some(ids) = map.get(&o.id) {
+            o.supersedes_ids = ids.clone();
+        }
+    }
+}
+
+fn observations_to_proto(
+    conn: &rusqlite::Connection,
+    hits: Vec<Observation>,
+) -> Vec<memlayer_proto::Observation> {
+    let mut out: Vec<_> = hits.into_iter().map(obs_to_proto).collect();
+    attach_supersedes(conn, &mut out);
+    out
 }
 
 fn fact_to_proto(f: facts_q::Fact) -> memlayer_proto::Fact {
@@ -423,6 +692,31 @@ fn prompt_to_proto(p: Prompt) -> memlayer_proto::Prompt {
     }
 }
 
+fn fact_parent_ids(conn: &rusqlite::Connection, query: &str, limit: i64) -> Vec<u64> {
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM facts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if n == 0 {
+        return Vec::new();
+    }
+    match facts_q::search_facts(conn, query, limit) {
+        Ok(facts) => {
+            let mut ids = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for f in facts {
+                if seen.insert(f.obs_id) {
+                    ids.push(f.obs_id as u64);
+                }
+            }
+            ids
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "facts search skipped");
+            Vec::new()
+        }
+    }
+}
+
 fn proto_cursor(c: StorageCursor) -> Result<ProtoCursor> {
     Ok(ProtoCursor { token: c.encode()? })
 }
@@ -451,6 +745,21 @@ impl Memlayer for MemlayerService {
         map(self.check_writeable())?;
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        let scope = if r.scope.is_empty() {
+            "project".into()
+        } else {
+            r.scope.clone()
+        };
+        let mut topic_key = r.topic_key.clone().filter(|s| !s.trim().is_empty());
+        if topic_key.is_none() {
+            if let Ok(conn) = project.open_read_conn() {
+                if let Ok(k) =
+                    crate::suggest_topic_key::suggest(&conn, &r.r#type, &r.title, &scope)
+                {
+                    topic_key = Some(k);
+                }
+            }
+        }
         let input = SaveObservationInput {
             sync_id: r.sync_id,
             session_id: r.session_id,
@@ -458,17 +767,64 @@ impl Memlayer for MemlayerService {
             title: r.title,
             content: r.content,
             tool_name: r.tool_name,
-            scope: if r.scope.is_empty() { "project".into() } else { r.scope },
+            scope,
             created_by: r.created_by,
-            topic_key: r.topic_key,
-            code_anchor: r.code_anchor,
+            topic_key,
+            code_anchor: r.code_anchor.clone().or_else(|| r.anchors.first().cloned()),
             dedupe_window_secs: self.state.dedupe_window.as_secs(),
             max_content_chars: self.state.max_content_chars,
+                    skip_supersede: false,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::SaveObservation { input, reply: tx }))?;
         let obs = rx.await.map_err(|_| Status::internal("write thread crashed"))?;
-        let obs = map(obs)?;
+        let mut obs = map(obs)?;
+        let mut warnings_pending: Vec<String> = Vec::new();
+
+        // Stamp multi-anchors + digests. Never fail the save if git / stamping fails.
+        let mut anchor_strings: Vec<String> = r.anchors.clone();
+        if anchor_strings.is_empty() {
+            if let Some(c) = r.code_anchor.clone().filter(|s| !s.trim().is_empty()) {
+                anchor_strings.push(c);
+            }
+        }
+        if !anchor_strings.is_empty() {
+            let repo = self
+                .state
+                .registry
+                .get_repo_path(&r.project_name)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    let cwd = std::env::current_dir().ok()?;
+                    if memlayer_core::git::is_repo(&cwd) {
+                        Some(cwd)
+                    } else {
+                        None
+                    }
+                });
+            match stamp_observation_anchors(
+                &project,
+                repo.as_deref(),
+                obs.id,
+                &anchor_strings,
+            )
+            .await
+            {
+                Ok(Some(w)) => warnings_pending.push(w),
+                Ok(None) => {
+                    if let Ok(conn) = project.open_read_conn() {
+                        if let Ok(fresh) = read_q::get(&conn, &ObservationKey::Id(obs.id)) {
+                            obs = fresh;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, obs_id = obs.id, "anchor stamp failed");
+                    warnings_pending.push(format!("anchor_stamp_failed: {}", e.message()));
+                }
+            }
+        }
 
         // Mirror into the global DB so --all-projects search has a single
         // BM25-ranked view across every memlayer-tracked repo. Failure here
@@ -490,26 +846,63 @@ impl Memlayer for MemlayerService {
         // synchronous save commits — never on the critical path (SC-1).
         // Both pools `try_send`; full queue / disconnected pool drops the
         // task silently and logs.
+        let mut warnings: Vec<String> = warnings_pending;
         if let Some(pool) = &self.state.embed_pool {
-            pool.try_queue(crate::embed_worker::EmbedTask {
+            match pool.try_queue(crate::embed_worker::EmbedTask {
                 project_name: r.project_name.clone(),
                 obs_id: obs.id,
                 title: obs.title.clone(),
                 content: obs.content.clone(),
-            });
+            }) {
+                crate::embed_worker::QueueResult::Dropped => warnings.push("embed_dropped".into()),
+                crate::embed_worker::QueueResult::Disconnected => {
+                    warnings.push("embed_dropped".into())
+                }
+                crate::embed_worker::QueueResult::Queued => {}
+            }
         }
         // Extract is opt-in: only queue when this project's resolved
         // config has extract.enabled = true. SC-7 guarantees zero LLM
         // calls otherwise.
         if let Some(pool) = &self.state.extract_pool {
             if crate::extract_worker::resolved_model_for(&r.project_name).is_some() {
-                pool.try_queue(crate::extract_worker::ExtractTask {
+                match pool.try_queue(crate::extract_worker::ExtractTask {
                     project_name: r.project_name.clone(),
                     obs_id: obs.id,
                     title: obs.title.clone(),
                     content: obs.content.clone(),
                     session_id: Some(obs.session_id.clone()),
-                });
+                }) {
+                    crate::extract_worker::QueueResult::Dropped => {
+                        warnings.push("extract_dropped".into())
+                    }
+                    crate::extract_worker::QueueResult::Disconnected => {
+                        warnings.push("extract_dropped".into())
+                    }
+                    crate::extract_worker::QueueResult::Queued => {}
+                }
+            }
+        }
+
+        if let Some(pool) = &self.state.resolve_pool {
+            if let Ok(conn) = project.open_read_conn() {
+                if let Ok(rels) =
+                    memlayer_storage::get_relations_for_observation(&conn, obs.id)
+                {
+                    for rel in rels.into_iter().filter(|r| r.relation_type == "conflicts_with")
+                    {
+                        let old_id = if rel.source_id == obs.id {
+                            rel.target_id
+                        } else {
+                            rel.source_id
+                        };
+                        let _ = pool.try_queue(crate::resolve_worker::ResolveJob {
+                            project: r.project_name.clone(),
+                            old_id,
+                            new_id: obs.id,
+                        });
+                    }
+                }
             }
         }
 
@@ -526,6 +919,7 @@ impl Memlayer for MemlayerService {
         Ok(Response::new(SaveObservationResponse {
             observation: Some(obs_to_proto(obs)),
             similar_observations: superseded,
+            warnings,
         }))
     }
 
@@ -615,7 +1009,7 @@ impl Memlayer for MemlayerService {
         let limit = if r.limit == 0 { read_q::DEFAULT_LIMIT } else { r.limit };
         let conn = map(project.open_read_conn())?;
         if r.all_projects {
-            let mode = memlayer_retrieval::hybrid::HybridMode::parse_wire(r.mode.as_deref());
+            let mode = self.resolved_search_mode(r.mode.as_deref(), &r.project_name);
 
             if mode == memlayer_retrieval::hybrid::HybridMode::Hybrid {
                 // Hybrid cross-project: BM25 via global DB + dense fan-out to
@@ -676,6 +1070,9 @@ impl Memlayer for MemlayerService {
                                         created_at: h.created_at.clone(), updated_at: h.created_at,
                                         deleted_at: None, review_after: None, project_name: Some(h.project),
                                         code_anchor: None,
+                                        supersedes_ids: vec![],
+                                        superseded_count: 0,
+                                    verify_state: None,
                                     });
                                 }
                             }
@@ -695,7 +1092,7 @@ impl Memlayer for MemlayerService {
                             .filter_map(|k| obs_map.remove(&k))
                             .collect();
 
-                        return Ok(Response::new(SearchObservationsResponse { observations, warning: None }));
+                        return Ok(Response::new(SearchObservationsResponse { observations, warning: None, tokens_used: None }));
                     }
                 }
                 // Fall through to BM25-only if no embedder.
@@ -729,11 +1126,15 @@ impl Memlayer for MemlayerService {
                         review_after: None,
                         project_name: Some(h.project),
                         code_anchor: None,
+                        supersedes_ids: vec![],
+                        superseded_count: 0,
+                    verify_state: None,
                     })
                     .collect();
                 return Ok(Response::new(SearchObservationsResponse {
                     observations,
                     warning: None,
+                    tokens_used: None,
                 }));
             }
 
@@ -754,10 +1155,20 @@ impl Memlayer for MemlayerService {
             return Ok(Response::new(SearchObservationsResponse {
                 observations: hits.into_iter().map(obs_to_proto).collect(),
                 warning,
+                tokens_used: None,
             }));
         }
-        let hits = if matches!(r.mode.as_deref(), Some("hybrid")) {
-            map(self.hybrid_search(&conn, &r.query, r.r#type.as_deref(), r.scope.as_deref(), limit))?
+        let hits = if self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
+            == memlayer_retrieval::hybrid::HybridMode::Hybrid
+        {
+            map(self.hybrid_search(
+                &conn,
+                &r.query,
+                r.r#type.as_deref(),
+                r.scope.as_deref(),
+                limit,
+                &r.project_name,
+            ))?
         } else {
             map(read_q::search(
                 &conn,
@@ -767,15 +1178,19 @@ impl Memlayer for MemlayerService {
                 limit,
             ))?
         };
-        // Optional LLM rerank (SC-5). 5s hard cap; on timeout / error
-        // we fall back to the un-reranked hybrid order.
-        let hits = match r.rerank.as_deref() {
-            Some(model) if !model.is_empty() => self.rerank_hits(model, &r.query, hits).await,
-            _ => hits,
+        // Optional LLM rerank (SC-5). Wire field wins; else search.rerank config.
+        let hits = match self.resolved_rerank(r.rerank.as_deref(), &r.project_name) {
+            Some(model) => self.rerank_hits(&model, &r.query, hits).await,
+            None => hits,
         };
+        let cfg = memlayer_core::config::load_resolved(Some(&r.project_name));
+        let hits = crate::token_budget::apply_max_per_type(hits, cfg.search.max_per_type);
+        let max_tokens = r.max_tokens.unwrap_or(0).max(0) as u32;
+        let (hits, tokens_used) = crate::token_budget::pack_by_token_budget(hits, max_tokens);
         Ok(Response::new(SearchObservationsResponse {
-            observations: hits.into_iter().map(obs_to_proto).collect(),
+            observations: observations_to_proto(&conn, hits),
             warning: None,
+            tokens_used: Some(tokens_used as i32),
         }))
     }
 
@@ -822,7 +1237,7 @@ impl Memlayer for MemlayerService {
         let conn = map(project.open_read_conn())?;
         let rows = map(read_q::recent(&conn, limit, r.scope.as_deref()))?;
         Ok(Response::new(RecentObservationsResponse {
-            observations: rows.into_iter().map(obs_to_proto).collect(),
+            observations: observations_to_proto(&conn, rows),
         }))
     }
 
@@ -840,33 +1255,63 @@ impl Memlayer for MemlayerService {
         let limit = if r.recent_limit <= 0 { 10 } else { r.recent_limit };
         let conn = map(project.open_read_conn())?;
 
+        let cfg = memlayer_core::config::load_resolved(Some(&r.project_name));
+        let evidence_window = cfg.search.evidence_window;
+        let max_per_type = cfg.search.max_per_type;
+        let max_tokens = r.max_tokens.unwrap_or(0).max(0) as u32;
+
         if let Some(anchor) = r.anchor.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
             let hits = map(read_q::search_by_anchor(&conn, anchor, limit))?;
+            let hits = expand_evidence_window(&conn, hits, evidence_window, limit);
+            let (recent, tokens_used) = finalize_context_hits(
+                &conn,
+                hits,
+                &r.project_name,
+                r.include_stale,
+                max_per_type,
+                max_tokens,
+            );
             let snapshot = ContextSnapshot {
-                recent_observations: hits.into_iter().map(obs_to_proto).collect(),
+                recent_observations: recent,
                 active_topics: vec![],
             };
             return Ok(Response::new(ContextResponse {
                 snapshot: Some(snapshot),
+                tokens_used: Some(tokens_used),
             }));
         }
 
-        // Spec retrieval-promotion: when caller provides --query alongside
-        // --mode hybrid, the context window is the hybrid retrieval result
-        // for that query (still bounded by `recent_limit`). Without a query
-        // we fall back to the existing recent + active-topics view.
+        // When the caller provides a query, retrieve for that query using the
+        // resolved search mode (config default hybrid). Empty query keeps the
+        // recent + active-topics briefing.
         let recents = match r.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-            Some(q) if matches!(r.mode.as_deref(), Some("hybrid")) => {
-                let hits = map(self.hybrid_search(&conn, q, None, None, limit))?;
-                match r.rerank.as_deref() {
-                    Some(model) if !model.is_empty() => self.rerank_hits(model, q, hits).await,
-                    _ => hits,
-                }
+            Some(q) => {
+                let hits = if self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
+                    == memlayer_retrieval::hybrid::HybridMode::Hybrid
+                {
+                    map(self.hybrid_search(&conn, q, None, None, limit, &r.project_name))?
+                } else {
+                    map(read_q::search(&conn, q, None, None, limit))?
+                };
+                let hits = match self.resolved_rerank(r.rerank.as_deref(), &r.project_name) {
+                    Some(model) => self.rerank_hits(&model, q, hits).await,
+                    None => hits,
+                };
+                expand_evidence_window(&conn, hits, evidence_window, limit)
             }
             _ => {
                 let (recents, topics) = map(read_q::recent_active(&conn, limit))?;
+                let recents = expand_evidence_window(&conn, recents, evidence_window, limit);
+                let (recent, tokens_used) = finalize_context_hits(
+                    &conn,
+                    recents,
+                    &r.project_name,
+                    r.include_stale,
+                    max_per_type,
+                    max_tokens,
+                );
                 let snapshot = ContextSnapshot {
-                    recent_observations: recents.into_iter().map(obs_to_proto).collect(),
+                    recent_observations: recent,
                     active_topics: topics
                         .into_iter()
                         .map(|t| TopicSummary {
@@ -879,15 +1324,25 @@ impl Memlayer for MemlayerService {
                 };
                 return Ok(Response::new(ContextResponse {
                     snapshot: Some(snapshot),
+                    tokens_used: Some(tokens_used),
                 }));
             }
         };
+        let (recent, tokens_used) = finalize_context_hits(
+            &conn,
+            recents,
+            &r.project_name,
+            r.include_stale,
+            max_per_type,
+            max_tokens,
+        );
         let snapshot = ContextSnapshot {
-            recent_observations: recents.into_iter().map(obs_to_proto).collect(),
+            recent_observations: recent,
             active_topics: vec![],
         };
         Ok(Response::new(ContextResponse {
             snapshot: Some(snapshot),
+            tokens_used: Some(tokens_used),
         }))
     }
 
@@ -945,9 +1400,19 @@ impl Memlayer for MemlayerService {
         Ok(Response::new(CapturePassiveResponse { snippets }))
     }
 
+    #[instrument(skip(self, req), fields(rpc = "Decide"))]
+    async fn decide(
+        &self,
+        req: Request<DecideRequest>,
+    ) -> Result<Response<DecideResponse>, Status> {
+        let _g = self.enter_rpc();
+        map(self.check_writeable())?;
+        let inner = req.into_inner();
+        let resp = crate::decide::handle(self, inner).await?;
+        Ok(Response::new(resp))
+    }
+
     /// `obs facts <id>` — return atomic facts attached to an observation.
-    /// Real implementation lands in rp-t10; this stub keeps the trait
-    /// surface intact so rp-t7 (proto + CLI flag wiring) can land.
     async fn get_facts(
         &self,
         req: Request<GetFactsRequest>,
@@ -1140,6 +1605,90 @@ impl Memlayer for MemlayerService {
             }
         }
         Ok(Response::new(ReindexObservationsResponse { queued, skipped, cleared }))
+    }
+
+    /// Re-verify code anchors against the project's git repo.
+    #[instrument(skip(self, req), fields(rpc = "VerifyAnchors"))]
+    async fn verify_anchors(
+        &self,
+        req: Request<VerifyAnchorsRequest>,
+    ) -> Result<Response<VerifyAnchorsResponse>, Status> {
+        let _g = self.enter_rpc();
+        map(self.check_writeable())?;
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+
+        let repo = map(self.state.registry.get_repo_path(&r.project_name))?
+            .filter(|p| memlayer_core::git::is_repo(p))
+            .or_else(|| {
+                let cwd = std::env::current_dir().ok()?;
+                if memlayer_core::git::is_repo(&cwd) {
+                    Some(cwd)
+                } else {
+                    None
+                }
+            });
+        let Some(repo) = repo else {
+            return Ok(Response::new(VerifyAnchorsResponse::default()));
+        };
+        let head = match memlayer_core::git::head_sha(&repo) {
+            Ok(h) => h,
+            Err(_) => {
+                return Ok(Response::new(VerifyAnchorsResponse::default()));
+            }
+        };
+
+        let conn = map(project.open_read_conn())?;
+        let pairs = match r.observation_id {
+            Some(id) => {
+                let anchors = map(memlayer_storage::anchor::anchors_for(&conn, id))?;
+                anchors.into_iter().map(|a| (id, a)).collect::<Vec<_>>()
+            }
+            None => {
+                let listed = map(memlayer_storage::anchor::list_anchored(&conn, 10_000))?;
+                listed
+                    .into_iter()
+                    .flat_map(|(id, anchors)| anchors.into_iter().map(move |a| (id, a)))
+                    .collect()
+            }
+        };
+        let titles: std::collections::HashMap<i64, String> = {
+            let ids: Vec<i64> = pairs.iter().map(|(id, _)| *id).collect();
+            let mut map = std::collections::HashMap::new();
+            for id in ids {
+                if map.contains_key(&id) {
+                    continue;
+                }
+                if let Ok(obs) = read_q::get(&conn, &ObservationKey::Id(id)) {
+                    map.insert(id, obs.title);
+                }
+            }
+            map
+        };
+        drop(conn);
+
+        let verdicts = crate::verify::verify_anchors(&repo, &head, &pairs);
+        map(crate::verify_worker::apply_verdicts_with_head(
+            &project, &verdicts, &head,
+        ))?;
+
+        let mut resp = VerifyAnchorsResponse::default();
+        for v in &verdicts {
+            resp.changed_ids.push(v.observation_id);
+            match v.state {
+                memlayer_storage::VerifyState::Verified => resp.verified += 1,
+                memlayer_storage::VerifyState::Stale => resp.stale += 1,
+                memlayer_storage::VerifyState::Invalidated => resp.invalidated += 1,
+                memlayer_storage::VerifyState::Unprovable => resp.unprovable += 1,
+                memlayer_storage::VerifyState::Unanchored => resp.unanchored += 1,
+            }
+            resp.results.push(VerifyResult {
+                id: v.observation_id,
+                state: v.state.as_str().to_string(),
+                title: titles.get(&v.observation_id).cloned().unwrap_or_default(),
+            });
+        }
+        Ok(Response::new(resp))
     }
 
     // ---- Sessions ----
@@ -1719,6 +2268,26 @@ impl Memlayer for MemlayerService {
         _req: Request<SyncImportMdRequest>,
     ) -> Result<Response<SyncImportMdResponse>, Status> {
         Err(Status::unimplemented("SyncImportMd: implemented in Spec 3"))
+    }
+
+    async fn export_mem(
+        &self,
+        req: Request<ExportMemRequest>,
+    ) -> Result<Response<ExportMemResponse>, Status> {
+        let _guard = self.enter_rpc();
+        map(self.check_writeable())?;
+        let resp = crate::mem_export::handle(&self.state, req.into_inner()).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn import_mem(
+        &self,
+        req: Request<ImportMemRequest>,
+    ) -> Result<Response<ImportMemResponse>, Status> {
+        let _guard = self.enter_rpc();
+        map(self.check_writeable())?;
+        let resp = crate::mem_import::handle(&self.state, req.into_inner()).await?;
+        Ok(Response::new(resp))
     }
 
     async fn get_observation_relations(

@@ -30,6 +30,7 @@ async fn ts6_search_returns_ranked_hits() {
             created_by: None,
             topic_key: None,
             code_anchor: None,
+            anchors: vec![],
         }).await.unwrap();
     }
 
@@ -42,6 +43,7 @@ async fn ts6_search_returns_ranked_hits() {
         limit: 10,
         mode: None,
         rerank: None,
+        max_tokens: None,
     }).await.unwrap().into_inner();
     assert_eq!(res.observations.len(), 2, "expected 2 hits for 'auth'");
 }
@@ -67,6 +69,7 @@ async fn ts10_soft_deleted_invisible() {
         created_by: None,
         topic_key: None,
         code_anchor: None,
+        anchors: vec![],
     }).await.unwrap().into_inner().observation.unwrap();
     c.delete_observation(DeleteObservationRequest {
         project_name: "p".into(),
@@ -82,6 +85,7 @@ async fn ts10_soft_deleted_invisible() {
         limit: 10,
         mode: None,
         rerank: None,
+        max_tokens: None,
     }).await.unwrap().into_inner();
     assert_eq!(res.observations.len(), 0);
 }

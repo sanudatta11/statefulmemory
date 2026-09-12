@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "benchmark": "locomo",
+  "dataset": "locomo10.json (SNAP locomo; 10 conversations, ~1540 QA items)",
+  "paper": {
+    "citation": "Maharana et al., Evaluating Very Long-Term Conversational Memory of LLM Agents, ACL 2024",
+    "arxiv": "2402.17753",
+    "metric": "token F1 on gold answers (not LLM-as-judge)"
+  },
+  "metrics": {
+    "paper_token_f1": {
+      "unit": "percent F1",
+      "comparable_to_memlayer_accuracy_pct": false,
+      "human_overall": 87.9,
+      "gpt4_turbo_128k_overall": 51.6,
+      "gpt4_turbo_by_category": {
+        "single_hop": 72.3,
+        "multi_hop": 51.5,
+        "temporal": 51.4,
+        "open_domain": 38.5,
+        "adversarial": 15.7
+      }
+    },
+    "llm_judge_accuracy": {
+      "unit": "percent pass rate",
+      "comparable_to_memlayer_accuracy_pct": true,
+      "note": "Public locomo10 leaderboards use an answer LLM plus a judge LLM. Protocols differ: judge model, top-k, whether adversarial items are dropped, partial credit. Published overall scores commonly fall around 67–80 when adversarial is excluded; some re-runs exceed 90 with a stronger judge or a different harness. Do not treat those as paper F1.",
+      "typical_published_range": [67, 80],
+      "high_end_with_protocol_drift": 92
+    },
+    "retrieval_recall": {
+      "unit": "R@k percent",
+      "comparable_to_memlayer_accuracy_pct": false,
+      "note": "Whether gold evidence appears in the retrieved set. Strong hybrid systems report R@5 in the low-to-mid 90s. That is not end-to-end QA accuracy.",
+      "typical_strong_r_at_5": 90
+    }
+  },
+  "memlayer_scorecard": {
+    "smoke": "BM25 plus lexical contain on a one-query fixture. Wiring check only; not a LoCoMo score.",
+    "full": "Ingest locomo10.json, hybrid-rerank retrieval, LLM answer plus LLM judge. accuracy_pct is the judge pass rate. Scorecard 2.0 reports recall_at_k and MRR as retrieval metrics; token-F1 is not emitted."
+  },
+  "how_to_beat_or_compare": [
+    "Smoke (`make eval-locomo-smoke`) only proves the CLI harness. Never quote it against published numbers.",
+    "Full (`make eval-locomo`) is the local analysis run. Optional LIMIT=N for a cheaper slice.",
+    "Compare accuracy_pct only to other LLM-judge locomo10 runs that disclose judge model, k, and whether adversarial questions are included.",
+    "To beat paper F1 (51.6 overall / 87.9 human), you need token-overlap F1 on gold answers. memlayer does not emit that metric.",
+    "Use recall_at_k / MRR to diagnose retrieval; they are independent of the judge.",
+    "To land in the published LLM-judge band (~67–80+), use the default LoCoMo profile (hybrid + rerank + evidence window), ingest speaker-prefixed turns, keep fact fusion on, and use a capable answer/judge model. Match the other system's category filter.",
+    "Retrieval R@k is the right metric if you only care whether evidence was fetched; it will look stronger than judged QA."
+  ]
+}

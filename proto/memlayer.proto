@@ -42,6 +42,37 @@ message Observation {
   optional string project_name = 19;
   // Optional code anchor (e.g. "<file>::<symbol>::<line>") for code-structure linking.
   optional string code_anchor = 20;
+  // Set when this observation replaced an earlier one. Lets a client render
+  // "current value, supersedes #N" so the agent knows adjudication happened.
+  repeated int64 supersedes_ids = 21;
+  // Number of observations this one has replaced (denormalized counter).
+  int32 superseded_count = 22;
+  // Freshness vs repository: unanchored | verified | stale | invalidated | unprovable.
+  optional string verify_state = 23;
+}
+
+message VerifyAnchorsRequest {
+  string project_name = 1;
+  // When set, only verify this observation; otherwise all anchored rows.
+  optional int64 observation_id = 2;
+}
+
+message VerifyAnchorsResponse {
+  int32 verified = 1;
+  int32 stale = 2;
+  int32 invalidated = 3;
+  int32 unprovable = 4;
+  int32 unanchored = 5;
+  // Observation ids whose verify_state changed.
+  repeated int64 changed_ids = 6;
+  // Per-observation outcomes (same order as processing).
+  repeated VerifyResult results = 7;
+}
+
+message VerifyResult {
+  int64 id = 1;
+  string state = 2;
+  string title = 3;
 }
 
 message Session {
@@ -95,12 +126,17 @@ message SaveObservationRequest {
   optional string created_by = 9;
   optional string topic_key = 10;
   optional string code_anchor = 11;
+  // Optional multi-anchor list (path::symbol::line). First entry also
+  // populates code_anchor for backward-compatible search_by_anchor.
+  repeated string anchors = 12;
 }
 
 message SaveObservationResponse {
   Observation observation = 1;
   // Hash-window collisions found during save, in case the agent wants to surface them.
   repeated Observation similar_observations = 2;
+  // Non-fatal save-path notes, e.g. "embed_dropped" / "extract_dropped".
+  repeated string warnings = 3;
 }
 
 message GetObservationRequest {
@@ -161,12 +197,16 @@ message SearchObservationsRequest {
   // Optional reranker model: "haiku" or "sonnet". Empty/absent = no rerank.
   // Hard 5s timeout; on timeout the un-reranked hybrid result is returned.
   optional string rerank = 8;
+  // Soft token budget (estimate_tokens). 0 / absent = unlimited.
+  optional int32 max_tokens = 9;
 }
 
 message SearchObservationsResponse {
   repeated Observation observations = 1;
   // Set when all_projects was capped at 32 (EC-10).
   optional string warning = 2;
+  // Estimated tokens used by the returned observations.
+  optional int32 tokens_used = 3;
 }
 
 message ListObservationsRequest {
@@ -211,9 +251,16 @@ message ContextRequest {
   optional string query = 5;
   // Optional code anchor string to retrieve context tied to a specific symbol/file.
   optional string anchor = 6;
+  // When true, include stale/invalidated/unprovable observations even if
+  // verify.serve_stale is false. Unanchored observations are never filtered.
+  bool include_stale = 7;
+  // Soft token budget (estimate_tokens). 0 / absent = unlimited.
+  optional int32 max_tokens = 8;
 }
 message ContextResponse {
   ContextSnapshot snapshot = 1;
+  // Estimated tokens used by snapshot.recent_observations.
+  optional int32 tokens_used = 2;
 }
 
 // ---
@@ -631,6 +678,38 @@ message SyncImportMdResponse {
   int64 files_skipped = 4;
 }
 
+// Portable memlayer archive (.mem)
+message ExportMemRequest {
+  string project_name = 1;
+  string file = 2;           // destination path; must end with .mem
+  optional string seed_phrase = 3;
+}
+message ExportMemResponse {
+  string file = 1;
+  int64 observations = 2;
+  int64 sessions = 3;
+  int64 prompts = 4;
+  int64 facts = 5;
+  int64 relations = 6;
+  int64 bytes = 7;
+}
+message ImportMemRequest {
+  string project_name = 1;
+  string file = 2;
+  string mode = 3;           // "merge" (default) | "replace"
+  optional string seed_phrase = 4;
+}
+message ImportMemResponse {
+  int64 observations_imported = 1;
+  int64 sessions_imported = 2;
+  int64 prompts_imported = 3;
+  int64 facts_imported = 4;
+  int64 relations_imported = 5;
+  int64 skipped = 6;
+  bool seed_encrypted = 7;
+  bool seed_ignored = 8;
+}
+
 // ---
 // Doctor (Spec 4)
 // ---
@@ -672,6 +751,41 @@ message GetObservationRelationsResponse {
 }
 
 // ---
+// Decide (resolution over retrieved memories)
+// ---
+
+message DecideRequest {
+  string project_name = 1;
+  string question = 2;
+  int32 limit = 3;             // retrieval k, default 12, max 30
+  optional string mode = 4;    // bm25 | hybrid (default hybrid)
+}
+
+message DecideEvidence {
+  int64 observation_id = 1;
+  string title = 2;
+  string content = 3;
+  string role = 4;             // "supports" | "opposes" | "context"
+}
+
+message DecideConflict {
+  int64 a_id = 1;
+  int64 b_id = 2;
+  string relation = 3;
+  string status = 4;           // "open" | "resolved"
+}
+
+message DecideResponse {
+  string recommendation = 1;
+  string rationale = 2;
+  float confidence = 3;        // 0..1
+  repeated DecideEvidence evidence = 4;
+  repeated DecideConflict conflicts = 5;
+  optional int64 resolution_observation_id = 6;  // if a resolution row was written
+  bool wrote_resolution = 7;
+}
+
+// ---
 // Service
 // ---
 
@@ -691,6 +805,7 @@ service Memlayer {
   rpc Timeline               (TimelineRequest)               returns (TimelineResponse);
   rpc SuggestTopicKey        (SuggestTopicKeyRequest)        returns (SuggestTopicKeyResponse);
   rpc CapturePassive         (CapturePassiveRequest)         returns (CapturePassiveResponse);
+  rpc Decide                 (DecideRequest)                 returns (DecideResponse);
 
   // Atomic facts (retrieval-promotion spec).
   rpc GetFacts               (GetFactsRequest)               returns (GetFactsResponse);
@@ -701,6 +816,7 @@ service Memlayer {
   // Bulk background operations (Specs 1c, 1d).
   rpc ReextractObservations  (ReextractObservationsRequest)  returns (ReextractObservationsResponse);
   rpc ReindexObservations    (ReindexObservationsRequest)    returns (ReindexObservationsResponse);
+  rpc VerifyAnchors          (VerifyAnchorsRequest)          returns (VerifyAnchorsResponse);
 
   // Sessions
   rpc StartSession           (StartSessionRequest)           returns (StartSessionResponse);
@@ -742,6 +858,8 @@ service Memlayer {
   rpc SyncImportJson         (SyncImportJsonRequest)         returns (SyncImportJsonResponse);
   rpc SyncExportMd           (SyncExportMdRequest)           returns (SyncExportMdResponse);
   rpc SyncImportMd           (SyncImportMdRequest)           returns (SyncImportMdResponse);
+  rpc ExportMem              (ExportMemRequest)              returns (ExportMemResponse);
+  rpc ImportMem              (ImportMemRequest)              returns (ImportMemResponse);
 
   // Doctor
   rpc Doctor                 (DoctorRequest)                 returns (DoctorResponse);

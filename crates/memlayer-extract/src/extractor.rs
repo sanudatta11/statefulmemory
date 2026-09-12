@@ -1,12 +1,10 @@
-//! `ClaudeCliExtractor` — a generic extractor that shells out to the
-//! `claude` CLI for any supported model id (`claude-haiku-4-5`,
-//! `claude-sonnet-4-6`). Replaces the per-model wrappers; the daemon's
-//! extract worker pool (rp-t6) selects between Haiku and Sonnet purely by
-//! constructor arg.
+//! `ClaudeCliExtractor` — extractor that shells out to the detected agent
+//! CLI. The daemon extract worker picks a model *role* (`fast` / `capable`;
+//! `haiku` / `sonnet` still parse) and [`crate::agent_cli`] maps it.
 //!
 //! Pipeline per call:
 //!   1. Build the extraction prompt from the turn(s).
-//!   2. Send to `claude --model <id>` via the [`ClaudeClient`] trait.
+//!   2. Send via the [`ClaudeClient`] trait (agent CLI).
 //!   3. Parse the JSON-ish response into `Vec<Fact>` via [`parse_facts`].
 //!
 //! Errors at any stage are returned to the caller; the daemon worker
@@ -22,8 +20,8 @@ use crate::claude_cli::ClaudeClient;
 use crate::prompt::{build_extraction_prompt, parse_facts};
 use crate::{Fact, Turn};
 
-/// Extractor that produces facts via a `claude` shell-out using a
-/// caller-supplied model id and timeout. Cheaply cloneable (Arc inside).
+/// Extractor that produces facts via the agent LLM CLI using a
+/// caller-supplied model role/id and timeout. Cheaply cloneable (Arc inside).
 #[derive(Clone)]
 pub struct ClaudeCliExtractor {
     client: Arc<dyn ClaudeClient>,
@@ -35,7 +33,11 @@ pub struct ClaudeCliExtractor {
 }
 
 impl ClaudeCliExtractor {
-    pub fn new(client: Arc<dyn ClaudeClient>, model_id: impl Into<String>, timeout: Duration) -> Self {
+    pub fn new(
+        client: Arc<dyn ClaudeClient>,
+        model_id: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
         Self {
             client,
             model_id: model_id.into(),
@@ -76,7 +78,7 @@ mod tests {
         // The Haiku format expected by parse_facts uses {"facts": [...]}.
         // An empty array is valid; should produce zero facts, not error.
         let client = Arc::new(MockClaudeClient::with_responses(vec![
-            r#"{"facts":[]}"#.to_string(),
+            r#"{"facts":[]}"#.to_string()
         ]));
         let ex = ClaudeCliExtractor::new(client, "claude-haiku-4-5", Duration::from_secs(5));
         let facts = ex.extract(&turn()).await.unwrap();

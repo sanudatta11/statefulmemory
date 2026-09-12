@@ -227,13 +227,15 @@ mod tests {
 
 /// Tunables for the retrieval-promotion pipeline (embed worker, extract
 /// worker, optional reranker). Resolved at every save and at every query.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct MemlayerConfig {
     pub extract: ExtractConfig,
     pub rerank: RerankConfig,
     pub embed: EmbedConfig,
     pub conflict: ConflictConfig,
+    pub search: SearchConfig,
+    pub verify: VerifyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -290,14 +292,15 @@ impl Default for EmbedConfig {
 }
 
 /// Config for the LLM-based conflict / supersession classifier (Spec 4).
-/// Off by default — the existing BM25-title-match heuristic is the fallback.
+/// On by default; disable with `memlayer config set conflict.enabled false`.
+/// If the judge errors, the FTS5 title-match heuristic still runs.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ConflictConfig {
     /// When false the LLM judge is never called; the existing FTS5 heuristic
     /// runs unconditionally.
     pub enabled: bool,
-    /// Which Claude model to use for classification.
+    /// Which model *role* to use (`fast` / `capable`; `haiku` / `sonnet` still parse).
     pub model: ModelKind,
     /// Hard timeout per LLM call. On timeout the heuristic wins.
     pub timeout_secs: u64,
@@ -306,11 +309,52 @@ pub struct ConflictConfig {
 impl Default for ConflictConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             model: ModelKind::Haiku,
             timeout_secs: 5,
         }
     }
+}
+
+/// Default retrieval mode for search/context when the caller omits `mode`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// `"hybrid"` (default) or `"bm25"`.
+    pub mode: String,
+    /// When true, search/context use the configured rerank model if the
+    /// request omits an explicit `--rerank` / wire `rerank` field.
+    pub rerank: bool,
+    /// Time-decay lambda for hybrid scores: `exp(-lambda * age_days)`.
+    /// `0.0` (default) disables decay. Eval harness uses `0.005`.
+    pub decay_lambda: f64,
+    /// When > 0, `context` expands each hit with ±N same-session neighbors.
+    pub evidence_window: u32,
+    /// Cap hits per `observations.type` (0 = unlimited). Round-robins types
+    /// so one noisy type cannot crowd out the rest.
+    pub max_per_type: u32,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            mode: "hybrid".into(),
+            rerank: false,
+            decay_lambda: 0.0,
+            evidence_window: 0,
+            max_per_type: 0,
+        }
+    }
+}
+
+/// Anchor verification / stale withdrawal (code-anchored memory).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VerifyConfig {
+    /// When false (default), `context` excludes stale / invalidated /
+    /// unprovable observations. Search still returns them flagged.
+    /// Unanchored observations are never filtered.
+    pub serve_stale: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -322,11 +366,11 @@ pub enum ModelKind {
 }
 
 impl ModelKind {
-    /// CLI model id used in `claude --model <id>` shell-outs.
+    /// Role passed to the agent CLI (`fast` / `capable`), not a vendor id.
     pub fn cli_model_id(&self) -> &'static str {
         match self {
-            ModelKind::Haiku => "claude-haiku-4-5",
-            ModelKind::Sonnet => "claude-sonnet-4-6",
+            ModelKind::Haiku => "fast",
+            ModelKind::Sonnet => "capable",
         }
     }
 
@@ -338,11 +382,11 @@ impl ModelKind {
     }
 }
 
-/// Parse a model string ("haiku" | "sonnet"), case-insensitive.
+/// Parse a model role. `haiku`/`sonnet` remain as aliases for `fast`/`capable`.
 fn parse_model(s: &str) -> Option<ModelKind> {
     match s.trim().to_ascii_lowercase().as_str() {
-        "haiku" => Some(ModelKind::Haiku),
-        "sonnet" => Some(ModelKind::Sonnet),
+        "haiku" | "fast" | "flash" | "mini" | "small" => Some(ModelKind::Haiku),
+        "sonnet" | "capable" | "pro" | "large" => Some(ModelKind::Sonnet),
         _ => None,
     }
 }
@@ -423,7 +467,7 @@ pub fn load_resolved(project_name: Option<&str>) -> MemlayerConfig {
 /// Deep-merge TOML tables. Right wins for non-table values; tables merge
 /// recursively so a per-project file that only sets `[rerank]` keeps the
 /// global file's `[extract]` table intact.
-fn merge_toml_values(a: toml::Value, b: toml::Value) -> toml::Value {
+pub fn merge_toml_values(a: toml::Value, b: toml::Value) -> toml::Value {
     use toml::Value;
     match (a, b) {
         (Value::Table(mut at), Value::Table(bt)) => {
@@ -496,6 +540,38 @@ fn apply_memlayer_env_overrides(cfg: &mut MemlayerConfig) {
             cfg.conflict.timeout_secs = n;
         }
     }
+    if let Ok(v) = std::env::var("MEMLAYER_SEARCH_MODE") {
+        let m = v.trim().to_ascii_lowercase();
+        if m == "hybrid" || m == "bm25" {
+            cfg.search.mode = m;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_SEARCH_MODE: must be hybrid or bm25");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_VERIFY_SERVE_STALE") {
+        cfg.verify.serve_stale = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_SEARCH_DECAY_LAMBDA") {
+        if let Ok(n) = v.parse::<f64>() {
+            cfg.search.decay_lambda = n;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_SEARCH_DECAY_LAMBDA: not a float");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_SEARCH_EVIDENCE_WINDOW") {
+        if let Ok(n) = v.parse::<u32>() {
+            cfg.search.evidence_window = n;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_SEARCH_EVIDENCE_WINDOW: not an integer");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_SEARCH_MAX_PER_TYPE") {
+        if let Ok(n) = v.parse::<u32>() {
+            cfg.search.max_per_type = n;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_SEARCH_MAX_PER_TYPE: not an integer");
+        }
+    }
 }
 
 fn parse_bool_env(v: &str) -> bool {
@@ -503,6 +579,116 @@ fn parse_bool_env(v: &str) -> bool {
         v.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// Result of [`ensure_config_toml`]: create or deep-merge missing keys only.
+#[derive(Debug, Clone)]
+pub struct BootstrapReport {
+    pub created: bool,
+    pub merged_keys: Vec<String>,
+    pub backend: String,
+    pub search_mode: String,
+    pub extract: bool,
+    pub conflict: bool,
+}
+
+const INSTALL_DEFAULTS: &str = r#"
+[search]
+mode = "hybrid"
+rerank = false
+
+[extract]
+enabled = true
+model = "fast"
+timeout_secs = 30
+workers = 1
+
+[conflict]
+enabled = true
+model = "fast"
+timeout_secs = 5
+
+[storage]
+backend = "sqlite"
+"#;
+
+/// Create `dir/config.toml` or fill in missing keys. Existing values win.
+pub fn ensure_config_toml(memlayer_dir: &std::path::Path) -> Result<BootstrapReport> {
+    std::fs::create_dir_all(memlayer_dir)?;
+    let path = memlayer_dir.join("config.toml");
+    let defaults: toml::Value = toml::from_str(INSTALL_DEFAULTS)
+        .map_err(|e| Error::internal(format!("install defaults: {e}")))?;
+    let (existing, created) = if path.exists() {
+        let text = std::fs::read_to_string(&path)?;
+        let v: toml::Value = toml::from_str(&text)
+            .map_err(|e| Error::invalid(format!("parse {}: {e}", path.display())))?;
+        (v, false)
+    } else {
+        (toml::Value::Table(toml::map::Map::new()), true)
+    };
+    let mut merged_keys = Vec::new();
+    collect_missing_keys(&defaults, &existing, "", &mut merged_keys);
+    // Existing keys win over install defaults.
+    let merged = merge_toml_values(defaults, existing);
+    let serialized = toml::to_string_pretty(&merged)
+        .map_err(|e| Error::internal(format!("serialize config.toml: {e}")))?;
+    std::fs::write(&path, serialized)?;
+
+    let search_mode = merged
+        .get("search")
+        .and_then(|t| t.get("mode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("hybrid")
+        .to_string();
+    let extract = merged
+        .get("extract")
+        .and_then(|t| t.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let conflict = merged
+        .get("conflict")
+        .and_then(|t| t.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let backend = merged
+        .get("storage")
+        .and_then(|t| t.get("backend"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("sqlite")
+        .to_string();
+    Ok(BootstrapReport {
+        created,
+        merged_keys,
+        backend,
+        search_mode,
+        extract,
+        conflict,
+    })
+}
+
+fn collect_missing_keys(
+    defaults: &toml::Value,
+    existing: &toml::Value,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    let (Some(dt), Some(et)) = (defaults.as_table(), existing.as_table()) else {
+        return;
+    };
+    for (k, dv) in dt {
+        let path = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        match et.get(k) {
+            None => out.push(path),
+            Some(ev) if dv.is_table() && ev.is_table() => {
+                collect_missing_keys(dv, ev, &path, out);
+            }
+            Some(_) => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -522,6 +708,7 @@ mod memlayer_config_tests {
             "MEMLAYER_RERANK_MODEL",
             "MEMLAYER_RERANK_TIMEOUT_SECS",
             "MEMLAYER_EMBED_WORKERS",
+            "MEMLAYER_SEARCH_MODE",
         ] {
             std::env::remove_var(k);
         }
@@ -559,7 +746,7 @@ mod memlayer_config_tests {
             r#"
 [extract]
 enabled = true
-model = "haiku"
+model = "fast"
 timeout_secs = 30
 "#,
         )
@@ -678,5 +865,62 @@ model = "sonnet"
         assert_eq!(cfg.extract.model, ModelKind::Sonnet);
         assert_eq!(cfg.rerank.model, ModelKind::Sonnet);
         std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn search_config_default_is_hybrid() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let c = MemlayerConfig::default();
+        assert_eq!(c.search.mode, "hybrid");
+        let _d = fresh_data_dir();
+        let cfg = load_resolved(None);
+        assert_eq!(cfg.search.mode, "hybrid");
+        std::env::remove_var("MEMLAYER_DATA_DIR");
+    }
+
+    #[test]
+    fn conflict_config_default_is_enabled() {
+        let c = MemlayerConfig::default();
+        assert!(c.conflict.enabled);
+    }
+
+    #[test]
+    fn bootstrap_creates_file_with_hybrid_and_extract() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".memlayer");
+        let r = ensure_config_toml(&cfg_dir).unwrap();
+        assert!(r.created);
+        let raw = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(raw.contains("mode = \"hybrid\""));
+        assert!(raw.contains("enabled = true"));
+        assert!(r.extract);
+        assert!(r.conflict);
+        assert_eq!(r.backend, "sqlite");
+    }
+
+    #[test]
+    fn bootstrap_does_not_clobber_search_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = dir.path().join(".memlayer");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), "[search]\nmode = \"bm25\"\n").unwrap();
+        let r = ensure_config_toml(&cfg_dir).unwrap();
+        assert!(!r.created);
+        let v: toml::Value =
+            toml::from_str(&std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap()).unwrap();
+        assert_eq!(v["search"]["mode"].as_str(), Some("bm25"));
+        assert_eq!(v["conflict"]["enabled"].as_bool(), Some(true));
+        assert_eq!(v["extract"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn model_roles_map_to_fast_capable_not_vendor_ids() {
+        assert_eq!(parse_model("fast"), Some(ModelKind::Haiku));
+        assert_eq!(parse_model("capable"), Some(ModelKind::Sonnet));
+        assert_eq!(parse_model("flash"), Some(ModelKind::Haiku));
+        assert_eq!(parse_model("pro"), Some(ModelKind::Sonnet));
+        assert_eq!(ModelKind::Haiku.cli_model_id(), "fast");
+        assert_eq!(ModelKind::Sonnet.cli_model_id(), "capable");
     }
 }

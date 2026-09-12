@@ -41,7 +41,7 @@ fn mk_mem(project: &str, session: &str, title: &str, content: &str) -> EvalMemor
 }
 
 async fn ingest(data_dir: &std::path::Path, memories: &[EvalMemory]) {
-    ingest_memories(data_dir, memories, 1024)
+    ingest_memories(data_dir, memories, 1024, false)
         .await
         .expect("ingest should succeed");
 }

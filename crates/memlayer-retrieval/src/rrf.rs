@@ -18,16 +18,11 @@
 
 use std::collections::HashMap;
 
-/// Fuse N ranked lists of `u64` document ids into one ranking.
+/// Fuse N ranked lists of `u64` document ids into scored rankings.
 ///
-/// * `lists` — each inner `Vec<u64>` is a ranking from one retriever, most
-///   relevant first. Lists may have different lengths.
-/// * `k_const` — the RRF smoothing constant; 60 is the canonical default.
-///
-/// Returns a `Vec<u64>` of distinct document ids sorted by descending RRF
-/// score. Ties are broken by **first appearance order across the input
-/// lists** (stable, deterministic).
-pub fn rrf_fuse(lists: &[Vec<u64>], k_const: u32) -> Vec<u64> {
+/// Same semantics as [`rrf_fuse`], but returns `(id, rrf_score)` pairs sorted
+/// by descending score (ties broken by first-appearance order).
+pub fn rrf_fuse_scored(lists: &[Vec<u64>], k_const: u32) -> Vec<(u64, f64)> {
     if lists.is_empty() {
         return Vec::new();
     }
@@ -60,7 +55,23 @@ pub fn rrf_fuse(lists: &[Vec<u64>], k_const: u32) -> Vec<u64> {
             .then(a.2.cmp(&b.2))
     });
 
-    merged.into_iter().map(|(id, _, _)| id).collect()
+    merged.into_iter().map(|(id, s, _)| (id, s)).collect()
+}
+
+/// Fuse N ranked lists of `u64` document ids into one ranking.
+///
+/// * `lists` — each inner `Vec<u64>` is a ranking from one retriever, most
+///   relevant first. Lists may have different lengths.
+/// * `k_const` — the RRF smoothing constant; 60 is the canonical default.
+///
+/// Returns a `Vec<u64>` of distinct document ids sorted by descending RRF
+/// score. Ties are broken by **first appearance order across the input
+/// lists** (stable, deterministic).
+pub fn rrf_fuse(lists: &[Vec<u64>], k_const: u32) -> Vec<u64> {
+    rrf_fuse_scored(lists, k_const)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// Spec-prefered name for `rrf_fuse`. Plan rp-t4 calls out
@@ -117,6 +128,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scored_matches_id_order() {
+        let lists = vec![vec![1u64, 2], vec![1]];
+        let scored = rrf_fuse_scored(&lists, 60);
+        let ids: Vec<u64> = scored.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, rrf_fuse(&lists, 60));
+        assert!(scored[0].1 > scored[1].1);
+    }
 
     #[test]
     fn empty_input_returns_empty() {

@@ -38,6 +38,16 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
     ];
     let settings_path = home.join(".claude").join("settings.json");
     let existing_mcp = crate::mcp_install::existing_registrations(&home, &cwd);
+    let git_hooks_present = crate::git_hooks::hooks_dir(&cwd)
+        .map(|d| {
+            ["post-commit", "post-merge", "post-checkout"].iter().any(|n| {
+                d.join(n)
+                    .exists()
+                    .then(|| fs::read_to_string(d.join(n)).unwrap_or_default())
+                    .is_some_and(|t| t.contains(crate::git_hooks::HOOK_START))
+            })
+        })
+        .unwrap_or(false);
 
     let existing_files: Vec<&PathBuf> = file_targets.iter().filter(|p| p.exists()).collect();
     let existing_blocks: Vec<&PathBuf> = block_targets.iter().filter(|p| p.exists()).collect();
@@ -46,6 +56,7 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
         && existing_blocks.is_empty()
         && existing_mcp.is_empty()
         && !settings_path.exists()
+        && !git_hooks_present
     {
         println!("Nothing to uninstall — no memlayer files found.");
         return ExitCode::SUCCESS;
@@ -63,6 +74,9 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
     }
     if settings_path.exists() {
         println!("  undo patches in  {}", settings_path.display());
+    }
+    if git_hooks_present {
+        println!("  remove memlayer block from  .git/hooks/{{post-commit,post-merge,post-checkout}}");
     }
     println!();
 
@@ -107,6 +121,14 @@ pub async fn dispatch_uninstall(_fmt: Formatter) -> ExitCode {
             Ok(true)  => removed.push(format!("unpatched  {}", settings_path.display())),
             Ok(false) => {}
             Err(e)    => failed.push(format!("failed   {} ({e})", settings_path.display())),
+        }
+    }
+
+    if git_hooks_present {
+        match crate::git_hooks::remove_git_hooks(&cwd) {
+            Ok(n) if n > 0 => removed.push(format!("removed memlayer blocks from {n} git hook(s)")),
+            Ok(_) => {}
+            Err(e) => failed.push(format!("failed   git hooks ({e})")),
         }
     }
 

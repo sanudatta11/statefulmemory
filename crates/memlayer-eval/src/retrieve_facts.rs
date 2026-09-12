@@ -49,7 +49,7 @@ use crate::scoring::{
 use crate::vec_index::open_with_vec;
 
 /// Over-fetch policy: pull `max(k * 4, 60)` candidates per retriever before
-/// rescoring. Mirrors Mem0's design (audit, spec §3) — recall improves
+/// rescoring. Mirrors a fact-centric retrieval design (audit, spec §3) — recall improves
 /// roughly free at this scale because additive scoring rebalances the
 /// inflated candidate pool. spec-task-19e / TS-23 pins this formula.
 fn over_fetch_n(k: i32) -> i32 {
@@ -199,7 +199,7 @@ pub async fn retrieve_facts(
 
     // 6. Build the additive score map and rank.
     //    P5 spec-task-28: BM25 normalization is now an adaptive sigmoid
-    //    (Mem0 formula) keyed off query token count. P5 spec-task-27/29/30:
+    //    (published LoCoMo formula) keyed off query token count. P5 spec-task-27/29/30:
     //    salience multiplier (0.3 floor) + time-decay (λ from config) +
     //    contradiction penalty (0.5× both, +0.25 to higher-salience).
     //    P5 spec-task-31: entity-walk 2-hop adds entity_walk_boost to

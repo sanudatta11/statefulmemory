@@ -5,7 +5,7 @@
 //! lightweight pass to pull canonical entity names out of each fact's
 //! `subject` and `object` strings. The names are stored in the eval-side
 //! `entities` + `entity_links` tables (spec §5) and exposed at query time
-//! to boost facts whose entities match query entities (Mem0-style; spec
+//! to boost facts whose entities match query entities (spec
 //! §3 audit, SC-12 / SC-13).
 //!
 //! This module ships **two** extractors so callers can choose:
@@ -19,7 +19,7 @@
 //!   on a flaky LLM response). Slightly more accurate for free-form
 //!   conversational text (LoCoMo, LongMemEval).
 //!
-//! Spec links: TS-19, SC-12. Plan: P2 §4.5 (Mem0 audit follow-up).
+//! Spec links: TS-19, SC-12. Plan: P2 §4.5 (entity-match follow-up).
 
 use std::collections::HashSet;
 use std::sync::Arc;

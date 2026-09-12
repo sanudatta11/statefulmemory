@@ -27,6 +27,7 @@ pub enum BenchmarkKind {
     Longmemeval,
     Beam1m,
     Beam10m,
+    Staleness,
 }
 
 impl BenchmarkKind {
@@ -36,6 +37,7 @@ impl BenchmarkKind {
             Self::Longmemeval => "lme-",
             Self::Beam1m      => "beam-1m",
             Self::Beam10m     => "beam-10m",
+            Self::Staleness   => "staleness-",
         }
     }
 }
@@ -65,6 +67,15 @@ pub struct RunConfig {
     /// — extract routes by `ShardRouter::shard_for(obs_id)`, retrieval
     /// fans out per-shard then merges via `merge_shard_results`.
     pub shards: usize,
+    /// When true, skip answer/judge LLM calls. `model_answer` is the
+    /// concatenated retrieval hits; `correct` is whether `gold_answer`
+    /// appears in those hits (case-insensitive). Used by `memlayer eval
+    /// --smoke` so CI needs no Claude CLI.
+    pub lexical_judge: bool,
+    /// When true, ingest without supersession so both the stale and current
+    /// statements remain retrievable. Baseline arm for the staleness
+    /// benchmark; mirrors an add-only memory design.
+    pub no_supersede: bool,
 }
 
 /// Per-query result.
@@ -82,6 +93,24 @@ pub struct QueryResult {
     /// disabled for the run; spec-task-23 / SC-7.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_us: Option<u64>,
+    /// Benchmark-provided category label, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// 0-based rank of the first hit containing the gold answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gold_rank: Option<usize>,
+    pub hits_count: usize,
+    /// True when the superseded (anti) value was served without the gold.
+    #[serde(default)]
+    pub stale_served: bool,
+}
+
+/// Per-category accuracy rollup.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CategoryStats {
+    pub total: usize,
+    pub correct: usize,
+    pub accuracy_pct: f64,
 }
 
 /// Aggregated benchmark report.
@@ -92,6 +121,20 @@ pub struct RunReport {
     pub correct: usize,
     pub accuracy_pct: f64,
     pub mean_prompt_tokens: f64,
+    /// Sum of per-query prompt token estimates.
+    pub total_prompt_tokens: usize,
+    /// Fraction of queries whose gold answer appeared anywhere in the
+    /// retrieved set. Retrieval metric, independent of the judge verdict.
+    pub recall_at_k: f64,
+    /// Mean reciprocal rank of the gold answer within the retrieved set.
+    pub mrr: f64,
+    /// Per-category totals, sorted by category name.
+    #[serde(default)]
+    pub by_category: std::collections::BTreeMap<String, CategoryStats>,
+    /// Fraction of queries where the superseded value was served. Staleness
+    /// benchmark only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_served_pct: Option<f64>,
     pub retrieval_p50_ms: f64,
     pub retrieval_p95_ms: f64,
     pub end_to_end_p50_ms: f64,
@@ -113,7 +156,10 @@ impl RunReport {
         md.push_str("| Metric | Value |\n|---|---|\n");
         md.push_str(&format!("| Accuracy | {:.1}% ({}/{}) |\n",
             self.accuracy_pct, self.correct, self.total_queries));
+        md.push_str(&format!("| Recall@k | {:.4} |\n", self.recall_at_k));
+        md.push_str(&format!("| MRR | {:.4} |\n", self.mrr));
         md.push_str(&format!("| Mean prompt tokens | {:.0} |\n", self.mean_prompt_tokens));
+        md.push_str(&format!("| Total prompt tokens | {} |\n", self.total_prompt_tokens));
         md.push_str(&format!("| Retrieval p50 | {:.2}ms |\n", self.retrieval_p50_ms));
         md.push_str(&format!("| Retrieval p95 | {:.2}ms |\n", self.retrieval_p95_ms));
         md.push_str(&format!("| End-to-end p50 | {:.2}ms |\n", self.end_to_end_p50_ms));
@@ -123,6 +169,20 @@ impl RunReport {
         }
         if let Some(p95) = self.rerank_p95_ms {
             md.push_str(&format!("| Rerank p95 | {:.2}ms |\n", p95));
+        }
+        if let Some(pct) = self.superseded_served_pct {
+            md.push_str(&format!("| Superseded served | {:.1}% |\n", pct));
+        }
+        if !self.by_category.is_empty() {
+            md.push('\n');
+            md.push_str("## By category\n\n");
+            md.push_str("| category | correct | total | accuracy |\n|---|---|---|---|\n");
+            for (name, stats) in &self.by_category {
+                md.push_str(&format!(
+                    "| {} | {} | {} | {:.1}% |\n",
+                    name, stats.correct, stats.total, stats.accuracy_pct
+                ));
+            }
         }
         md.push('\n');
         md.push_str("## Per-query results\n\n");
@@ -150,17 +210,22 @@ pub async fn run(
     // --- Ingest ---
     if !cfg.skip_ingest {
         info!(count = memories.len(), "ingesting memories");
-        crate::ingest::ingest_memories(&cfg.data_dir, &memories, 500).await
+        crate::ingest::ingest_memories(&cfg.data_dir, &memories, 500, cfg.no_supersede)
+            .await
             .context("ingest")?;
     }
 
     // --- Evaluate ---
-    let judge = JudgeClient::new().context("create judge client")?;
+    let judge = if cfg.lexical_judge {
+        None
+    } else {
+        Some(JudgeClient::new().context("create judge client")?)
+    };
 
     // Reuse the same shell-out client used by extraction so rerank shares
     // the proxy-strip + timeout machinery. Built once and reused per query.
     let rerank_claude: Option<std::sync::Arc<dyn memlayer_extract::claude_cli::ClaudeClient>> =
-        if cfg.retrieval.rerank {
+        if cfg.retrieval.rerank && !cfg.lexical_judge {
             Some(std::sync::Arc::new(
                 memlayer_extract::claude_cli::ClaudeCliClient::new(),
             ))
@@ -174,6 +239,19 @@ pub async fn run(
     };
 
     info!(count = queries_to_run.len(), k = cfg.k, "running queries");
+
+    if matches!(
+        cfg.retrieval.mode,
+        RetrievalMode::Hybrid | RetrievalMode::HybridRerank
+    ) {
+        let facts_path = facts_db_path_for(cfg.benchmark, &cfg.data_dir);
+        if !facts_path.exists() {
+            info!(
+                path = %facts_path.display(),
+                "facts.db missing; using observation-level hybrid (no extract)"
+            );
+        }
+    }
 
     // Lazily initialise the hybrid retrieval stack only when --mode demands it.
     // Loading BGE-small + opening the cache is expensive; bm25 mode skips it.
@@ -224,6 +302,7 @@ pub async fn run(
 
         // Determine project name for this query (inferred from id prefix).
         let project = infer_project(cfg.benchmark, &q.id);
+        let evidence_window = evidence_window_for_question(cfg.retrieval.evidence_window, &q.question);
 
         // Retrieve — branch on mode. HybridRerank uses Hybrid for now;
         // the rerank stage lands in spec-task-21 (P3).
@@ -252,7 +331,7 @@ pub async fn run(
                         &project,
                         &q.question,
                         retrieve_k,
-                        cfg.retrieval.evidence_window,
+                        evidence_window,
                         embedder.clone(),
                         cache.clone(),
                         cfg.retrieval.decay_lambda,
@@ -339,29 +418,60 @@ pub async fn run(
 
         // Build answer prompt and count tokens.
         let (system, user_msg, prompt_tokens) = build_answer_prompt(&hits, &q.question);
+        let gold_hit_rank = gold_rank(&q.gold_answer, &hits);
 
-        // Answer LLM call.
-        let model_answer = match judge.answer(&system, &user_msg).await {
-            Ok(a) => a,
-            Err(e) => {
-                warn!(query_id = %q.id, error = %e, "answer LLM failed, skipping query");
-                continue;
-            }
+        let (model_answer, judge_prompt, correct) = if cfg.lexical_judge {
+            let joined = hits.join("\n");
+            let model_answer = if joined.is_empty() {
+                String::new()
+            } else {
+                joined.clone()
+            };
+            let correct = gold_in_hits(&q.gold_answer, &hits);
+            (model_answer, String::new(), correct)
+        } else {
+            let judge = judge.as_ref().expect("JudgeClient when lexical_judge is false");
+            let model_answer = match judge.answer(&system, &user_msg).await {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(query_id = %q.id, error = %e, "answer LLM failed, skipping query");
+                    continue;
+                }
+            };
+            let judge_prompt = build_judge_prompt(
+                &q.question,
+                &q.gold_answer,
+                &model_answer,
+                q.judge_context.as_deref(),
+            );
+            let correct = match judge.judge(&judge_prompt).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(query_id = %q.id, error = %e, "judge LLM failed, marking incorrect");
+                    false
+                }
+            };
+            (model_answer, judge_prompt, correct)
         };
 
-        // Judge call.
-        let judge_prompt = build_judge_prompt(
-            &q.question,
-            &q.gold_answer,
-            &model_answer,
-            q.judge_context.as_deref(),
-        );
-        let correct = match judge.judge(&judge_prompt).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(query_id = %q.id, error = %e, "judge LLM failed, marking incorrect");
-                false
+        let stale_served = match &q.anti_answer {
+            Some(anti) if !anti.trim().is_empty() => {
+                let anti_hit_rank = gold_rank(anti, &hits);
+                let anti_l = anti.trim().to_ascii_lowercase();
+                let gold_l = q.gold_answer.trim().to_ascii_lowercase();
+                let anti_in_answer = model_answer.to_ascii_lowercase().contains(&anti_l);
+                let gold_in_answer = !gold_l.is_empty()
+                    && model_answer.to_ascii_lowercase().contains(&gold_l);
+                match (anti_hit_rank, gold_hit_rank) {
+                    // Superseded value retrieved and gold missing.
+                    (Some(_), None) => true,
+                    // Both retrieved: count when the superseded value ranks higher.
+                    (Some(a), Some(g)) => a < g,
+                    // No anti in hits: fall back to model answer (LLM path).
+                    (None, _) => anti_in_answer && !gold_in_answer,
+                }
             }
+            _ => false,
         };
 
         let end_to_end_us = t_start.elapsed().as_micros() as u64;
@@ -402,7 +512,7 @@ pub async fn run(
                     RetrievalMode::HybridRerank => "hybrid-rerank",
                 },
                 "k": cfg.k,
-                "evidence_window": cfg.retrieval.evidence_window,
+                "evidence_window": evidence_window,
                 "rerank_enabled": cfg.retrieval.rerank,
                 "retrieval_us": retrieval_us,
                 "rerank_us": rerank_us,
@@ -431,6 +541,10 @@ pub async fn run(
             end_to_end_us,
             prompt_tokens,
             rerank_us,
+            category: q.category.clone(),
+            gold_rank: gold_hit_rank,
+            hits_count: hits.len(),
+            stale_served,
         });
     }
 
@@ -456,6 +570,29 @@ pub async fn run(
     Ok(report)
 }
 
+/// Widen the evidence window for temporal questions (eval-only).
+pub fn evidence_window_for_question(base: u8, question: &str) -> u8 {
+    let q = question.to_ascii_lowercase();
+    if q.contains("when") || q.contains("before") || q.contains("after") || q.contains("date") {
+        base.max(4)
+    } else {
+        base
+    }
+}
+
+/// 0-based rank of the first hit containing the gold answer, if any.
+fn gold_rank(gold: &str, hits: &[String]) -> Option<usize> {
+    let g = gold.trim().to_ascii_lowercase();
+    if g.is_empty() {
+        return None;
+    }
+    hits.iter().position(|h| h.to_ascii_lowercase().contains(&g))
+}
+
+fn gold_in_hits(gold: &str, hits: &[String]) -> bool {
+    gold_rank(gold, hits).is_some()
+}
+
 fn infer_project(kind: BenchmarkKind, query_id: &str) -> String {
     match kind {
         BenchmarkKind::Locomo => {
@@ -469,6 +606,10 @@ fn infer_project(kind: BenchmarkKind, query_id: &str) -> String {
         }
         BenchmarkKind::Beam1m  => "beam-1m".to_string(),
         BenchmarkKind::Beam10m => "beam-10m".to_string(),
+        BenchmarkKind::Staleness => {
+            let tid = query_id.strip_suffix("-q").unwrap_or(query_id);
+            format!("staleness-{tid}")
+        }
     }
 }
 
@@ -481,6 +622,7 @@ pub fn facts_db_path_for(kind: BenchmarkKind, data_dir: &std::path::Path) -> Pat
         BenchmarkKind::Longmemeval => "longmemeval",
         BenchmarkKind::Beam1m => "beam-1m",
         BenchmarkKind::Beam10m => "beam-10m",
+        BenchmarkKind::Staleness => "staleness",
     };
     data_dir.join(name).join("facts.db")
 }
@@ -495,10 +637,62 @@ fn build_report(
     let correct = results.iter().filter(|r| r.correct).count();
     let accuracy_pct = if total == 0 { 0.0 } else { correct as f64 / total as f64 * 100.0 };
 
+    let total_prompt_tokens: usize = results.iter().map(|r| r.prompt_tokens).sum();
     let mean_tokens = if total == 0 {
         0.0
     } else {
-        results.iter().map(|r| r.prompt_tokens as f64).sum::<f64>() / total as f64
+        total_prompt_tokens as f64 / total as f64
+    };
+
+    let recall_hits = results.iter().filter(|r| r.gold_rank.is_some()).count();
+    let recall_at_k = if total == 0 {
+        0.0
+    } else {
+        recall_hits as f64 / total as f64
+    };
+    let mrr = if total == 0 {
+        0.0
+    } else {
+        results
+            .iter()
+            .map(|r| r.gold_rank.map(|rank| 1.0 / (rank as f64 + 1.0)).unwrap_or(0.0))
+            .sum::<f64>()
+            / total as f64
+    };
+
+    let mut by_category: std::collections::BTreeMap<String, CategoryStats> =
+        std::collections::BTreeMap::new();
+    for r in &results {
+        let Some(cat) = r.category.as_ref() else { continue };
+        let entry = by_category.entry(cat.clone()).or_default();
+        entry.total += 1;
+        if r.correct {
+            entry.correct += 1;
+        }
+    }
+    for stats in by_category.values_mut() {
+        stats.accuracy_pct = if stats.total == 0 {
+            0.0
+        } else {
+            stats.correct as f64 / stats.total as f64 * 100.0
+        };
+    }
+
+    let stale_count = results.iter().filter(|r| r.stale_served).count();
+    let has_anti = results.iter().any(|r| {
+        // Staleness runs always set anti via QueryResult path; detect via category
+        // or any stale_served / anti was possible — use superseded_served when
+        // any query had the staleness category.
+        r.category.as_deref() == Some("staleness")
+    });
+    let superseded_served_pct = if has_anti {
+        Some(if total == 0 {
+            0.0
+        } else {
+            stale_count as f64 / total as f64 * 100.0
+        })
+    } else {
+        None
     };
 
     let retrieval_p50 = percentile_ms(&mut results.iter().map(|r| r.retrieval_us).collect::<Vec<_>>(), 50);
@@ -522,6 +716,11 @@ fn build_report(
         correct,
         accuracy_pct,
         mean_prompt_tokens: mean_tokens,
+        total_prompt_tokens,
+        recall_at_k,
+        mrr,
+        by_category,
+        superseded_served_pct,
         retrieval_p50_ms: retrieval_p50,
         retrieval_p95_ms: retrieval_p95,
         end_to_end_p50_ms: e2e_p50,
@@ -538,3 +737,25 @@ fn percentile_ms(values: &mut [u64], p: usize) -> f64 {
     let idx = ((p as f64 / 100.0) * (values.len() - 1) as f64).round() as usize;
     values[idx.min(values.len() - 1)] as f64 / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporal_questions_widen_evidence_window() {
+        assert_eq!(evidence_window_for_question(2, "When did Caroline go?"), 4);
+        assert_eq!(evidence_window_for_question(2, "What is her job?"), 2);
+        assert_eq!(evidence_window_for_question(5, "the date of the trip"), 5);
+    }
+
+    #[test]
+    fn gold_match_is_case_insensitive_substring() {
+        let hits = vec!["Caroline went to the Park on Saturday.".into()];
+        assert_eq!(gold_rank("the park", &hits), Some(0));
+        assert!(gold_in_hits("the park", &hits));
+        assert!(!gold_in_hits("the zoo", &hits));
+        assert_eq!(gold_rank("the zoo", &hits), None);
+    }
+}
+

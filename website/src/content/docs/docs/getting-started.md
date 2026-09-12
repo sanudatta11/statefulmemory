@@ -37,6 +37,8 @@ The daemon auto-starts on first use.
 
 ## Next steps
 
-- [Wire into your agent](/docs/agents/) — MCP / skills so the agent uses memory
-- [Everyday commands](/docs/commands/) — day-to-day CLI surface
-- [GitHub](https://github.com/sanudatta11/memlayer) — source and issues
+- [Install](/docs/install/) if you have not built the binary yet
+- [Wire into your agent](/docs/agents/): MCP / skills so the agent uses memory
+- [Everyday commands](/docs/commands/): day-to-day CLI surface
+- [LoCoMo eval](/docs/locomo/): smoke, full, and staleness benchmarks
+- [GitHub](https://github.com/sanudatta11/memlayer): source and issues

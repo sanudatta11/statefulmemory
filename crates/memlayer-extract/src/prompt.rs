@@ -4,7 +4,7 @@
 //! This module owns two responsibilities for the P2 extraction pipeline:
 //!
 //! 1. [`build_extraction_prompt`] — assembles the Haiku prompt that turns a
-//!    window of conversation [`Turn`]s into atomic facts. Mem0-inspired:
+//!    window of conversation [`Turn`]s into atomic facts. Fact-extract inspired:
 //!    asks for `(subject, predicate, object)` plus an optional resolved
 //!    `temporal` field and a forward-compat `entities` array (parsed in
 //!    spec-task-19a, ignored here).

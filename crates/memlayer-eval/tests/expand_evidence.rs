@@ -47,7 +47,7 @@ async fn expand_evidence_returns_window_clamped_to_session() {
         .collect();
     // Different session afterward — must NOT bleed into expansion.
     mems.extend((0..5).map(|i| mk_mem("ee-proj", &session_b, &format!("b{i}"), &format!("session-B turn {i}"))));
-    ingest_memories(&data_dir, &mems, 1024).await.unwrap();
+    ingest_memories(&data_dir, &mems, 1024, false).await.unwrap();
 
     // Open the project DB read-only to find a seed obs id.
     std::env::set_var("MEMLAYER_DATA_DIR", &data_dir);
@@ -82,7 +82,7 @@ async fn expand_evidence_window_zero_returns_seed_only() {
     let mems: Vec<EvalMemory> = (0..3)
         .map(|i| mk_mem("ee0-proj", &session, &format!("t{i}"), &format!("turn {i}")))
         .collect();
-    ingest_memories(&data_dir, &mems, 1024).await.unwrap();
+    ingest_memories(&data_dir, &mems, 1024, false).await.unwrap();
 
     std::env::set_var("MEMLAYER_DATA_DIR", &data_dir);
     paths::ensure_dirs(&data_dir).ok();

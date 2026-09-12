@@ -60,7 +60,8 @@ jobs:
             - **Benchmark**: ${card.benchmark}
             - **Commit**: \`${card.commit_hash}\`
             - **Accuracy**: **${card.accuracy_pct.toFixed(2)}%**
-            - **F1 Score**: **${card.f1_score.toFixed(4)}**
+            - **Recall@k**: **${(card.recall_at_k ?? 0).toFixed(4)}**
+            - **MRR**: **${(card.mrr ?? 0).toFixed(4)}**
             - **Retrieval Latency (p50)**: ${card.retrieval_p50_ms.toFixed(2)} ms
             - **Retrieval Latency (p95)**: ${card.retrieval_p95_ms.toFixed(2)} ms
             - **End-to-End Latency (p50)**: ${card.end_to_end_p50_ms.toFixed(2)} ms

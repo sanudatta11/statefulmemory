@@ -75,6 +75,8 @@ pub fn generate_queries(scale: BeamScale, num_queries: usize) -> Vec<EvalQuery> 
             question: format!("What is {name}'s {prop}?"),
             gold_answer: value.to_string(),
             judge_context: None,
+            category: None,
+            anti_answer: None,
         });
     }
     queries

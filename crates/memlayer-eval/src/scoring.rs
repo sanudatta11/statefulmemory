@@ -18,7 +18,7 @@
 //! ```
 //!
 //! BM25 normalization itself is upgraded from min-max to an adaptive
-//! sigmoid (P5 spec-task-28) tuned by query token count — Mem0's
+//! sigmoid (P5 spec-task-28) tuned by query token count — the
 //! published values that proved out across LoCoMo / LongMemEval.
 //!
 //! Spec: retrieval-upgrade-v1 §6, TS-15/16/17/18, SC-13. Plan: P5.
@@ -130,7 +130,7 @@ fn all_equal(xs: &[f32]) -> bool {
 /// BM25 normalization strategy (spec-task-28).
 ///
 /// Min-max keeps the original P2 behavior. AdaptiveSigmoid uses query
-/// token count to pick (midpoint, steepness) per Mem0's tuned table.
+/// token count to pick (midpoint, steepness) per the published LoCoMo table.
 /// Sigmoid is bounded [0, 1] and gracefully maps the wide raw BM25 range
 /// without depending on the largest hit in the batch.
 #[derive(Debug, Clone, Copy, Default)]
@@ -140,7 +140,7 @@ pub enum Bm25Norm {
     AdaptiveSigmoid { query_token_count: usize },
 }
 
-/// Mem0's empirically tuned (midpoint, steepness) per query length.
+/// Empirically tuned (midpoint, steepness) per query length.
 /// Short queries hit fewer terms so the BM25 dynamic range is
 /// compressed; tighter steepness keeps the sigmoid responsive.
 fn sigmoid_params(query_token_count: usize) -> (f32, f32) {

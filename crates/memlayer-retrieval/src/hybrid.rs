@@ -28,6 +28,14 @@ impl HybridMode {
         }
     }
 
+    /// Like [`parse_wire`], but empty/absent uses `default` (typically config `search.mode`).
+    pub fn parse_wire_or_default(s: Option<&str>, default: &str) -> Self {
+        match s.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(v) => Self::parse_wire(Some(v)),
+            None => Self::parse_wire(Some(default)),
+        }
+    }
+
     pub fn as_wire(&self) -> &'static str {
         match self {
             HybridMode::Bm25 => "bm25",
@@ -61,6 +69,22 @@ mod tests {
         assert_eq!(HybridMode::parse_wire(Some("hybrid")), HybridMode::Hybrid);
         assert_eq!(HybridMode::parse_wire(Some("HYBRID")), HybridMode::Hybrid);
         assert_eq!(HybridMode::parse_wire(Some("nope")), HybridMode::Bm25);
+    }
+
+    #[test]
+    fn parse_wire_or_default_uses_config_when_absent() {
+        assert_eq!(
+            HybridMode::parse_wire_or_default(None, "hybrid"),
+            HybridMode::Hybrid
+        );
+        assert_eq!(
+            HybridMode::parse_wire_or_default(Some(""), "hybrid"),
+            HybridMode::Hybrid
+        );
+        assert_eq!(
+            HybridMode::parse_wire_or_default(Some("bm25"), "hybrid"),
+            HybridMode::Bm25
+        );
     }
 
     #[test]

@@ -13,8 +13,8 @@ use tracing::error;
 
 use memlayer_cli::cli::{Cli, Command, DaemonArgs, DaemonVerb, HookVerb, OutputFormat};
 use memlayer_cli::{
-    cmd_daemon, cmd_doctor, cmd_eval, cmd_hook, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session,
-    cmd_skill, cmd_sync, cmd_team, cmd_tui, cmd_uninstall, cmd_version,
+    cmd_daemon, cmd_decide, cmd_doctor, cmd_eval, cmd_hook, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session,
+    cmd_skill, cmd_sync, cmd_team, cmd_tui, cmd_uninstall, cmd_version, cmd_verify, cmd_mem,
 };
 use memlayer_cli::{autospawn, exit};
 use memlayer_cli::formatter::Formatter;
@@ -112,6 +112,12 @@ async fn main() -> ExitCode {
             }
             Err(code) => code,
         },
+        Command::Mem(args) => match open_client(cli.output, cli.project).await {
+            Ok((mut client, detection, fmt)) => {
+                cmd_mem::dispatch(&mut client, &detection.normalized, fmt, args.verb).await
+            }
+            Err(code) => code,
+        },
         Command::Hook(args) => match args.verb {
             HookVerb::PreTool(pre) => match open_client(cli.output, cli.project).await {
                 Ok((mut client, detection, _fmt)) => {
@@ -131,6 +137,18 @@ async fn main() -> ExitCode {
         },
         Command::Config(args) => memlayer_cli::cmd_config::dispatch(args.verb).await,
         Command::Eval(args) => cmd_eval::dispatch(args, cli.output).await,
+        Command::Decide(args) => match open_client(cli.output, cli.project).await {
+            Ok((mut client, detection, fmt)) => {
+                cmd_decide::dispatch(&mut client, &detection.normalized, fmt, args).await
+            }
+            Err(code) => code,
+        },
+        Command::Verify(args) => match open_client(cli.output, cli.project).await {
+            Ok((mut client, detection, fmt)) => {
+                cmd_verify::dispatch(&mut client, &detection.normalized, fmt, args).await
+            }
+            Err(code) => code,
+        },
         Command::Doctor(args) => {
             let project = detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());
             let is_json = matches!(cli.output, Some(memlayer_cli::cli::OutputFormat::Json));

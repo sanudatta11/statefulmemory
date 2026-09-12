@@ -22,9 +22,11 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 - Sessions, observations, prompts as the core entities.
 - Git-based sync via per-repo `.memlayer/` directory.
 - Minimum-friction agent integration through prompt-level skills/rules.
-- **CLI is the only agent interface.** No MCP server. No HTTP REST.
+- **CLI + MCP.** Agents talk to the daemon over UDS gRPC (`memlayer` CLI) or
+  stdio MCP (`memlayer mcp` / `memory_*` tools). No HTTP REST.
 - **Daemon-backed.** A single user-local daemon owns SQLite; CLI talks to it over gRPC on a Unix socket.
 - **Per-project DB files** (one SQLite file per project), not a single global DB.
+- Hybrid retrieval (BM25 + optional dense embeddings via BGE-small / sqlite-vec).
 - 1000-concurrent-agent acceptance bar, batched-commit write path, simplified doctor with `--auto-repair`, prompt-level setup integrations for multiple agents, scoped observations (`project` / `personal` / `team`), read-only mode on disk-full.
 
 ---

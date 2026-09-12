@@ -636,7 +636,9 @@ mod tests {
             deleted_at: None,
             review_after: None,
             code_anchor: None,
+            superseded_count: 0,
             superseded_ids: vec![],
+            verify_state: "unanchored".into(),
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
         assert_eq!(outcome, UpsertOutcome::Inserted);
@@ -677,7 +679,9 @@ mod tests {
             deleted_at: None,
             review_after: None,
             code_anchor: None,
+            superseded_count: 0,
             superseded_ids: vec![],
+            verify_state: "unanchored".into(),
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
         assert_eq!(outcome, UpsertOutcome::OverwroteOlder);
@@ -718,7 +722,9 @@ mod tests {
             deleted_at: None,
             review_after: None,
             code_anchor: None,
+            superseded_count: 0,
             superseded_ids: vec![],
+            verify_state: "unanchored".into(),
         };
         let outcome = upsert_observation_from_remote(&conn, &incoming).unwrap();
         assert_eq!(outcome, UpsertOutcome::RetainedNewer);

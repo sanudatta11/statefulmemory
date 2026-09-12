@@ -25,7 +25,7 @@ pub struct FactWithEmbedding {
 /// transaction. Returns the count written.
 ///
 /// Caller owns dedup decisions — this writer always INSERTs (no upsert,
-/// no checksum check). Mem0's "ADD-only" design (no UPDATE/DELETE at ingest)
+/// no checksum check). ADD-only ingest (no UPDATE/DELETE at ingest)
 /// matches the eval pipeline's intent.
 pub fn insert_facts(conn: &mut Connection, batch: &[FactWithEmbedding]) -> Result<usize> {
     if batch.is_empty() {

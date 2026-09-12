@@ -32,6 +32,7 @@ async fn ts2_save_get_roundtrip() {
             created_by: None,
             topic_key: None,
             code_anchor: None,
+            anchors: vec![],
         })
         .await
         .unwrap()

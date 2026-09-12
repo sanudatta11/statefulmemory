@@ -43,6 +43,9 @@ pub(crate) fn obs_to_json(o: &p::Observation) -> Value {
         "review_after": o.review_after,
         "project_name": o.project_name,
         "code_anchor": o.code_anchor,
+        "supersedes_ids": o.supersedes_ids,
+        "superseded_count": o.superseded_count,
+        "verify_state": o.verify_state,
     })
 }
 
@@ -58,6 +61,18 @@ fn write_observation_detail(o: &p::Observation, w: &mut dyn Write) -> io::Result
     }
     if let Some(a) = &o.code_anchor {
         writeln!(w, "anchor      {a}")?;
+    }
+    if let Some(vs) = o.verify_state.as_deref().filter(|s| *s != "unanchored" && !s.is_empty()) {
+        writeln!(w, "verify      {vs}")?;
+    }
+    if !o.supersedes_ids.is_empty() {
+        let ids: Vec<String> = o.supersedes_ids.iter().map(|id| id.to_string()).collect();
+        writeln!(
+            w,
+            "current — supersedes #{} (use `memlayer obs history {}` for the chain)",
+            ids.join(", #"),
+            o.id
+        )?;
     }
     writeln!(w, "revisions   {}", o.revision_count)?;
     writeln!(w, "created_at  {}", o.created_at)?;
@@ -84,7 +99,22 @@ fn write_observation_row(o: &p::Observation, w: &mut dyn Write) -> io::Result<()
         truncate(&o.scope, 8),
         truncate(&o.title, 32),
         snippet
-    )
+    )?;
+    if let Some(vs) = o.verify_state.as_deref().filter(|s| {
+        matches!(*s, "stale" | "invalidated" | "unprovable")
+    }) {
+        writeln!(w, "         [{vs}] — withdrawn from context; run `memlayer verify`")?;
+    }
+    if !o.supersedes_ids.is_empty() {
+        let ids: Vec<String> = o.supersedes_ids.iter().map(|id| id.to_string()).collect();
+        writeln!(
+            w,
+            "         current — supersedes #{} (use `memlayer obs history {}` for the chain)",
+            ids.join(", #"),
+            o.id
+        )?;
+    }
+    Ok(())
 }
 
 fn write_table_header(w: &mut dyn Write) -> io::Result<()> {
@@ -127,6 +157,10 @@ impl Render for p::SaveObservationResponse {
                 write_observation_row(o, w)?;
             }
         }
+        if !self.warnings.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "warnings: {}", self.warnings.join(", "))?;
+        }
         Ok(())
     }
 
@@ -138,6 +172,63 @@ impl Render for p::SaveObservationResponse {
                 .iter()
                 .map(obs_to_json)
                 .collect::<Vec<_>>(),
+            "warnings": self.warnings,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DecideResponse
+// ---------------------------------------------------------------------------
+
+impl Render for p::DecideResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "recommendation: {}", self.recommendation)?;
+        writeln!(w, "confidence: {:.2}", self.confidence)?;
+        writeln!(w, "rationale: {}", self.rationale)?;
+        if !self.evidence.is_empty() {
+            writeln!(w, "evidence:")?;
+            for e in &self.evidence {
+                writeln!(w, "  - [{}] #{} {}", e.role, e.observation_id, e.title)?;
+            }
+        }
+        if !self.conflicts.is_empty() {
+            writeln!(w, "conflicts:")?;
+            for c in &self.conflicts {
+                writeln!(
+                    w,
+                    "  - #{} ~ #{} ({})",
+                    c.a_id, c.b_id, c.status
+                )?;
+            }
+        }
+        if self.wrote_resolution {
+            if let Some(id) = self.resolution_observation_id {
+                writeln!(w, "recorded resolution observation #{id}")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn to_json_value(&self) -> Value {
+        json!({
+            "recommendation": self.recommendation,
+            "rationale": self.rationale,
+            "confidence": self.confidence,
+            "evidence": self.evidence.iter().map(|e| json!({
+                "observation_id": e.observation_id,
+                "title": e.title,
+                "content": e.content,
+                "role": e.role,
+            })).collect::<Vec<_>>(),
+            "conflicts": self.conflicts.iter().map(|c| json!({
+                "a_id": c.a_id,
+                "b_id": c.b_id,
+                "relation": c.relation,
+                "status": c.status,
+            })).collect::<Vec<_>>(),
+            "resolution_observation_id": self.resolution_observation_id,
+            "wrote_resolution": self.wrote_resolution,
         })
     }
 }
@@ -1025,6 +1116,9 @@ mod tests {
             review_after: None,
             project_name: None,
             code_anchor: None,
+            supersedes_ids: vec![],
+            superseded_count: 0,
+        verify_state: None,
         }
     }
 
@@ -1077,6 +1171,7 @@ mod tests {
         let r = p::SearchObservationsResponse {
             observations: vec![],
             warning: Some("capped at 32 projects".to_string()),
+            tokens_used: None,
         };
         let mut buf = Vec::new();
         r.render_text(&mut buf).unwrap();
@@ -1134,7 +1229,10 @@ mod tests {
                 updated_at: "2026-06-03T10:00:00Z".into(),
             }],
         };
-        let resp = p::ContextResponse { snapshot: Some(snap) };
+        let resp = p::ContextResponse {
+            snapshot: Some(snap),
+            tokens_used: None,
+        };
         let v = resp.to_json_value();
         assert!(v["recent_observations"].is_array());
         assert_eq!(v["recent_observations"].as_array().unwrap().len(), 1);
@@ -1142,7 +1240,10 @@ mod tests {
         assert!(v["snapshot"].is_null(), "snapshot wrapper must not appear");
 
         // Empty-snapshot path: arrays still present, not null.
-        let resp_empty = p::ContextResponse { snapshot: None };
+        let resp_empty = p::ContextResponse {
+            snapshot: None,
+            tokens_used: None,
+        };
         let v = resp_empty.to_json_value();
         assert_eq!(v["recent_observations"], json!([]));
         assert_eq!(v["active_topics"], json!([]));
@@ -1267,6 +1368,9 @@ mod tests {
             review_after: None,
             project_name: None,
             code_anchor: None,
+            supersedes_ids: vec![],
+            superseded_count: 0,
+        verify_state: None,
         }
     }
 

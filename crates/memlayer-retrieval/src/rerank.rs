@@ -19,12 +19,12 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use memlayer_core::config::ModelKind;
-use memlayer_extract::claude_cli::ClaudeClient;
+use memlayer_extract::claude_cli::{ClaudeClient, HAIKU_MODEL};
 
 /// Default reranker model id for the legacy `rerank()` entry point. Newer
 /// callers (the daemon's `service::rerank`) pass a [`ModelKind`] explicitly
 /// via [`ClaudeReranker::new`].
-const DEFAULT_RERANK_MODEL: &str = "claude-4.5-haiku";
+const DEFAULT_RERANK_MODEL: &str = HAIKU_MODEL;
 
 /// Below this many parsed indices we treat the call as garbage and pass
 /// the original RRF order through unchanged. Five is a heuristic — most
@@ -51,22 +51,25 @@ pub trait Reranker: Send + Sync {
 /// Claude shell-out reranker selectable between Haiku and Sonnet.
 pub struct ClaudeReranker {
     claude: Arc<dyn ClaudeClient>,
-    model_id: &'static str,
+    model_id: String,
 }
 
 impl ClaudeReranker {
-    /// Build a reranker for the given model.
+    /// Build a reranker for the given model role (`fast`/`capable` inherit
+    /// the agent current model unless `MEMLAYER_LLM_MODEL` is set).
     pub fn new(claude: Arc<dyn ClaudeClient>, kind: ModelKind) -> Self {
         Self {
             claude,
-            model_id: kind.cli_model_id(),
+            model_id: kind.cli_model_id().to_string(),
         }
     }
 
-    /// Build a reranker with an explicit model id string. Used by callers
-    /// (eval) that have not migrated to [`ModelKind`].
-    pub fn with_model_id(claude: Arc<dyn ClaudeClient>, model_id: &'static str) -> Self {
-        Self { claude, model_id }
+    /// Build a reranker with an explicit model id string.
+    pub fn with_model_id(claude: Arc<dyn ClaudeClient>, model_id: impl Into<String>) -> Self {
+        Self {
+            claude,
+            model_id: model_id.into(),
+        }
     }
 }
 
@@ -78,7 +81,14 @@ impl Reranker for ClaudeReranker {
         question: &str,
         top_k: usize,
     ) -> Result<(Vec<String>, Duration)> {
-        rerank_with_model(self.claude.clone(), candidates, question, top_k, self.model_id).await
+        rerank_with_model(
+            self.claude.clone(),
+            candidates,
+            question,
+            top_k,
+            &self.model_id,
+        )
+        .await
     }
 }
 
