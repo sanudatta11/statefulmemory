@@ -1,29 +1,28 @@
 ---
 title: Overview
-description: "Persistent memory for AI coding agents: local, per-project, no cloud. Install, wire your agent, and start saving context."
+description: "Persistent memory for coding agents — self-host or Memlayer Cloud SaaS. CLI + MCP → daemon → SQLite."
 head:
   - tag: meta
     attrs:
       name: keywords
-      content: memlayer, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, llms.txt
+      content: memlayer, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, cloud SaaS, self-host, llms.txt
 ---
 
 import { LinkButton } from '@astrojs/starlight/components';
 
 # memlayer
 
-Persistent memory for AI coding agents: **local**, per-project, no cloud.
-
-Save decisions and fixes once. Next session, your agent can search and pull the
-right context through MCP or the CLI.
+Persistent memory infrastructure for coding agents: **CLI + MCP → gRPC daemon →
+per-project SQLite**. **Self-host** on your machine or team, or use
+**Memlayer Cloud** (managed SaaS).
 
 <div class="ml-cta" role="group" aria-label="Get started with memlayer">
   <div class="ml-cta-row">
     <LinkButton href="/docs/install/" variant="primary" icon="right-arrow">
       Install
     </LinkButton>
-    <LinkButton href="/docs/getting-started/" variant="secondary" icon="rocket">
-      Get started
+    <LinkButton href="/docs/why-memlayer/" variant="secondary" icon="open-book">
+      Why memlayer
     </LinkButton>
     <LinkButton href="https://github.com/sanudatta11/memlayer" variant="minimal" icon="github">
       GitHub
@@ -57,12 +56,14 @@ memlayer --version
 2. **Save something useful** — `memlayer obs save --type decision --title "…" --content "…"` (add `--anchor path::symbol` for code-tied claims)
 3. **Pull context later** — `memlayer obs context --query "…" --limit 20`
 
-Full walkthrough: [Getting started](/docs/getting-started/) · Agent setup: [Wire into your agent](/docs/agents/)
+Full walkthrough: [Getting started](/docs/getting-started/) · Agent setup:
+[Wire into your agent](/docs/agents/) · Shipped vs wishlist:
+[Integrations](/docs/integrations/).
 
 Works with Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code,
-ZCode, VS Code / Copilot, Codex, Gemini CLI, and any agent that can shell out
-or speak MCP. Local and open-source models: pin
-`MEMLAYER_LLM_*` (see [Wire into your agent](/docs/agents/)).
+ZCode, VS Code / Copilot, Codex, Gemini CLI, Amazon Q, and any agent that can
+shell out or speak MCP. There is no Python Memory SDK yet — use MCP or the
+CLI. Deployment: [Self-hosting and Cloud](/docs/self-hosting/).
 
 ## For LLMs and AI crawlers
 
@@ -75,6 +76,18 @@ Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
 ## Guides
 
 <ul class="ml-guide-list">
+  <li>
+    <a href="/docs/why-memlayer/">
+      <strong>Why memlayer</strong>
+      <span>Self-host + Cloud SaaS vs vector DBs alone.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/architecture/">
+      <strong>Architecture</strong>
+      <span>CLI, MCP, daemon, SQLite, workers.</span>
+    </a>
+  </li>
   <li>
     <a href="/docs/install/">
       <strong>Install</strong>
@@ -91,6 +104,18 @@ Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
     <a href="/docs/agents/">
       <strong>Wire into your agent</strong>
       <span>MCP tools, git verify hooks, local LLM env.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/integrations/">
+      <strong>Integrations</strong>
+      <span>14 install targets shipped; frameworks not yet.</span>
+    </a>
+  </li>
+  <li>
+    <a href="/docs/self-hosting/">
+      <strong>Self-hosting and Cloud</strong>
+      <span>UDS / team TCP self-host, or Memlayer Cloud SaaS.</span>
     </a>
   </li>
   <li>
@@ -132,7 +157,7 @@ Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
   <li>
     <a href="/docs/locomo/">
       <strong>LoCoMo eval</strong>
-      <span>Smoke, full, and staleness scorecards.</span>
+      <span>Methodology; public wins wait on stratified runs.</span>
     </a>
   </li>
   <li>

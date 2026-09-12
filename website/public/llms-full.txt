@@ -2,23 +2,32 @@
 
 Canonical site: https://memlayer.org
 Repository: https://github.com/sanudatta11/memlayer
-License: MIT OR Apache-2.0
+License: MIT OR Apache-2.0 (self-host / OSS stack)
 
 ## Definition
 
 memlayer is persistent memory for AI coding agents. It stores decisions, fixes,
-and notes in local SQLite under ~/.memlayer/, scoped per project. A thin CLI
-talks to a user-local gRPC daemon. Agents reach memory through MCP tools
-(memory_search, memory_add, memory_context, memory_recent, memory_facts,
-memory_health, memory_decide) or by shelling out to the memlayer CLI.
+and notes in per-project SQLite. A thin CLI talks to a gRPC daemon. Agents reach
+memory through MCP tools (memory_search, memory_add, memory_context,
+memory_recent, memory_facts, memory_health, memory_decide) or by shelling out to
+the memlayer CLI.
 
-Search and context retrieval are local by default: hybrid BM25 + BGE-small
-dense vectors fused with reciprocal rank fusion (RRF). Optional LLM steps
-(fact extract, conflict/supersession judge, rerank, Decide) shell out to
-whichever agent CLI is on PATH (OpenCode, Cursor Agent, Claude Code, Gemini
-CLI, Codex, Kilo, and others). No cloud account is required for core memory.
+**Deployment modes (both intentional product paths):**
 
-## Install (short)
+1. **Self-host** — daemon on your laptop (Unix domain socket under ~/.memlayer/)
+   or team TCP+TLS on infrastructure you run. Hybrid BM25 + BGE-small dense
+   search needs no third-party search API key on this path.
+2. **Memlayer Cloud** — managed SaaS: same coding-agent memory product with
+   hosting and ops handled for you. Signup/regional details publish on
+   memlayer.org as the service rolls out.
+
+Optional LLM steps (fact extract, conflict/supersession judge, rerank, Decide)
+shell out to whichever agent CLI is on PATH (OpenCode, Cursor Agent, Claude
+Code, Gemini CLI, Codex, Kilo, and others).
+
+There is no Python/TypeScript Memory SDK today — use MCP or the CLI.
+
+## Install (self-host, short)
 
 ```
 git clone https://github.com/sanudatta11/memlayer && cd memlayer
@@ -54,14 +63,14 @@ Pin or discover the agent CLI used for extract / judge / rerank / Decide:
 - MEMLAYER_LLM_MODEL=qwen   or   opencode/glm-5.3
 - Host hints: OPENCODE_MODEL, CURSOR_MODEL, GEMINI_MODEL, ANTHROPIC_MODEL
 
-Disable LLM features while keeping local hybrid search:
+Disable LLM features while keeping hybrid search on self-host:
 
 ```
 memlayer config set extract.enabled false
 memlayer config set conflict.enabled false
 ```
 
-## Config locations
+## Config locations (self-host)
 
 - Global: ~/.memlayer/config.toml
 - Per-project: ~/.memlayer/projects/<name>.config.toml
@@ -79,12 +88,18 @@ vscode, copilot-cli, copilot, gemini, codex, amazon-q.
 OpenCode MCP config: ~/.config/opencode/opencode.json
 Shared skills: .agents/ when the agents target is selected.
 
+LangGraph, CrewAI, AutoGen, LlamaIndex, Vercel AI SDK: not shipped.
+
 ## Documentation index
 
 https://memlayer.org/
+https://memlayer.org/docs/why-memlayer/
+https://memlayer.org/docs/architecture/
 https://memlayer.org/docs/install/
 https://memlayer.org/docs/getting-started/
+https://memlayer.org/docs/integrations/
 https://memlayer.org/docs/agents/
+https://memlayer.org/docs/self-hosting/
 https://memlayer.org/docs/observations/
 https://memlayer.org/docs/search-context/
 https://memlayer.org/docs/anchors-verify/

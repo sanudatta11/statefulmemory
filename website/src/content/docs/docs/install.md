@@ -14,8 +14,10 @@ export PATH="$HOME/.local/bin:$PATH"
 memlayer --version
 ```
 
-The daemon auto-starts on first use. Put `~/.local/bin` on your `PATH` permanently
-if `memlayer` is not found after install.
+The daemon auto-starts on first use (self-host default: Unix domain socket).
+Put `~/.local/bin` on your `PATH` permanently if `memlayer` is not found after
+install. Team TCP self-host and **Memlayer Cloud** (managed SaaS): see
+[Self-hosting and Cloud](/docs/self-hosting/).
 
 ## What install puts where
 

@@ -6,7 +6,8 @@ description: Hybrid BM25 + dense retrieval, token budgets, and packing memory fo
 Search finds ranked observations. Context packs a working set for a task —
 what you hand an agent before it starts coding. Both default to **hybrid**
 retrieval: BM25 fused with BGE-small dense vectors via reciprocal rank fusion
-(RRF). No cloud is required for this path.
+(RRF). On the self-host path this does not require a third-party search API
+key.
 
 <video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/save-search-context-v2.mp4" title="Save, search, and context demo">
   Your browser does not support video.

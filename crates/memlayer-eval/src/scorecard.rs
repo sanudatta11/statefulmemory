@@ -41,6 +41,12 @@ pub struct Scorecard {
     /// Staleness benchmark only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_served_pct: Option<f64>,
+    /// Answer LLM pin when disclosed via env (`MEMLAYER_LLM_MODEL` / provider).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_model: Option<String>,
+    /// Judge LLM pin when disclosed (same env family; roles may differ).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_model: Option<String>,
     pub retrieval_p50_ms: f64,
     pub retrieval_p95_ms: f64,
     pub end_to_end_p50_ms: f64,
@@ -50,6 +56,7 @@ pub struct Scorecard {
 impl Scorecard {
     pub fn from_report(report: &RunReport, commit_hash: impl Into<String>) -> Self {
         let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let (answer_model, judge_model) = llm_model_disclosure();
 
         Self {
             scorecard_version: "2.0".to_string(),
@@ -68,6 +75,8 @@ impl Scorecard {
             mean_prompt_tokens: report.mean_prompt_tokens,
             token_f1: None,
             superseded_served_pct: report.superseded_served_pct,
+            answer_model,
+            judge_model,
             retrieval_p50_ms: report.retrieval_p50_ms,
             retrieval_p95_ms: report.retrieval_p95_ms,
             end_to_end_p50_ms: report.end_to_end_p50_ms,
@@ -122,6 +131,12 @@ impl Scorecard {
         if let Some(rsp) = self.rerank_skipped_pct {
             out.push_str(&format!("Rerank skipped:    {:.1}%\n", rsp));
         }
+        if let Some(m) = &self.answer_model {
+            out.push_str(&format!("Answer model:      {m}\n"));
+        }
+        if let Some(m) = &self.judge_model {
+            out.push_str(&format!("Judge model:       {m}\n"));
+        }
         if let Some(pct) = self.superseded_served_pct {
             out.push_str(&format!("Superseded served: {:.2}%\n", pct));
         }
@@ -137,6 +152,24 @@ impl Scorecard {
         out.push_str("=====================================");
         out
     }
+}
+
+/// Disclose answer/judge model pins from env when present (measure recipe).
+fn llm_model_disclosure() -> (Option<String>, Option<String>) {
+    let model = std::env::var("MEMLAYER_LLM_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let provider = std::env::var("MEMLAYER_LLM_PROVIDER")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let pin = match (provider, model) {
+        (Some(p), Some(m)) => Some(format!("{p}/{m}")),
+        (None, Some(m)) => Some(m),
+        (Some(p), None) => Some(p),
+        (None, None) => None,
+    };
+    // Same pin for both roles unless split env is added later; disclose once each.
+    (pin.clone(), pin)
 }
 
 #[cfg(test)]

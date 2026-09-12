@@ -5,7 +5,7 @@ import sitemap from '@astrojs/sitemap';
 
 const site = 'https://memlayer.org';
 const description =
-	'Persistent memory for AI coding agents: local, per-project, no cloud.';
+	'Persistent memory for coding agents — self-host or Memlayer Cloud SaaS. CLI + MCP, daemon, per-project SQLite.';
 
 // https://astro.build/config
 export default defineConfig({
@@ -43,9 +43,13 @@ export default defineConfig({
 					label: 'Start here',
 					items: [
 						{ label: 'Overview', slug: '' },
+						{ label: 'Why memlayer', slug: 'docs/why-memlayer' },
+						{ label: 'Architecture', slug: 'docs/architecture' },
 						{ label: 'Install', slug: 'docs/install' },
 						{ label: 'Getting started', slug: 'docs/getting-started' },
 						{ label: 'Wire into your agent', slug: 'docs/agents' },
+						{ label: 'Integrations', slug: 'docs/integrations' },
+						{ label: 'Self-hosting and Cloud', slug: 'docs/self-hosting' },
 					],
 				},
 				{
@@ -220,7 +224,7 @@ export default defineConfig({
 										name: 'What is memlayer?',
 										acceptedAnswer: {
 											'@type': 'Answer',
-											text: 'memlayer is persistent memory for AI coding agents: local, per-project SQLite under ~/.memlayer/, with a CLI, gRPC daemon, and MCP tools. No cloud is required for core save, search, and context.',
+											text: 'memlayer is persistent memory for AI coding agents: CLI + MCP, gRPC daemon, and per-project SQLite. Self-host on your machine or team, or use Memlayer Cloud managed SaaS.',
 										},
 									},
 									{

@@ -20,6 +20,7 @@ cross-project global mirror DB), the platform looks like this:
 | Audit log | Production | `~/.memlayer/queries.log`, JSONL, fail-silent, opt-in full mode. |
 | Agent integration | 4 hooks + skill | SessionStart, Stop, PreToolUse[Grep], PreToolUse[Read]. |
 | MCP server | **Shipped** | `memlayer mcp` + seven `memory_*` tools; `memlayer install` registers Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code, Copilot CLI, Gemini CLI, Codex, Amazon Q, `.agents`. |
+| Deployment | **Self-host shipped; Cloud SaaS offering** | Local UDS + team TCP+TLS self-host today; Memlayer Cloud managed SaaS is a stated product path (signup on memlayer.org as it rolls out). |
 | CI Scorecard & Eval | **Shipped** | `memlayer eval [--smoke] [--save-scorecard <file>]` and `.github/workflows/eval.yml`. |
 | Code Anchors | **Shipped** | V7 `code_anchor` schema, CLI `--anchor` & Graphify call-graph bridge. |
 | TUI & Doctor | **Shipped** | `memlayer tui` observation browser and `memlayer doctor [--repair]` auto-repair. |

@@ -5,7 +5,7 @@
         daemon-start daemon-stop daemon-status logs skill-install \
         extract-locomo run-locomo \
         eval-locomo-smoke eval-locomo-fetch eval-bge-model \
-        eval-locomo-extract \
+        eval-locomo-extract eval-locomo-facts \
         eval-locomo eval-locomo-full \
         eval-locomo-e2e eval-locomo-compare eval-staleness
 
@@ -40,10 +40,22 @@ LIMIT_FLAG :=
 endif
 
 # Optional pre-extract before full LoCoMo (builds data/locomo/facts.db).
+# Default measure path wants facts: EXTRACT=1 unless explicitly EXTRACT=0.
+# If facts.db already exists, extract is skipped (see eval-locomo recipe).
+EXTRACT ?= 1
 EXTRACT_DEPS :=
-ifeq ($(EXTRACT),1)
-EXTRACT_DEPS := eval-locomo-extract
+ifneq ($(filter 1 force,$(EXTRACT)),)
+EXTRACT_DEPS := eval-locomo-facts
 endif
+
+.PHONY: eval-locomo-facts
+# Build facts.db only when missing (or EXTRACT=force).
+eval-locomo-facts: release eval-locomo-fetch eval-bge-model
+	@if [ "$(EXTRACT)" = "force" ] || [ ! -f "$(EVAL_DATA)/locomo/facts.db" ]; then \
+		$(MAKE) eval-locomo-extract; \
+	else \
+		echo "Using existing $(EVAL_DATA)/locomo/facts.db (EXTRACT=force to rebuild)"; \
+	fi
 
 # ── Default ──────────────────────────────────────────────────────────────────
 
@@ -82,7 +94,7 @@ help:
 	@echo "  eval-locomo-e2e      Smoke then full"
 	@echo "  eval-locomo-compare  Print SCORECARD vs published paper/LLM-judge bands"
 	@echo "  eval-staleness       Fixture: supersession vs --no-supersede baseline"
-	@echo "                       LIMIT=N slices the full run; EXTRACT=1 runs extract first"
+	@echo "                       LIMIT=N = stratified cats 1–4; EXTRACT=1 (default) builds facts.db if missing"
 	@echo "                       MEMLAYER_EVAL_CONCURRENCY=N parallel answer/judge (default 4)"
 	@echo ""
 	@echo "Eval (legacy eval binary in crates/memlayer-eval)"

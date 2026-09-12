@@ -243,11 +243,14 @@ fn load_dataset(
     match kind {
         BenchmarkKind::Locomo => {
             let (m, q) = locomo::load(data_dir)?;
-            Ok((m, q.into_iter().take(limit).collect()))
+            Ok((
+                m,
+                memlayer_eval::apply_query_limit(q, Some(limit), true),
+            ))
         }
         BenchmarkKind::Longmemeval => {
             let (m, q) = longmemeval::load(data_dir)?;
-            Ok((m, q.into_iter().take(limit).collect()))
+            Ok((m, memlayer_eval::apply_query_limit(q, Some(limit), false)))
         }
         BenchmarkKind::Beam1m => {
             let (m, q) = memlayer_eval::datasets::beam::generate_all(BeamScale::M1, limit.min(1000))?;
@@ -258,7 +261,7 @@ fn load_dataset(
         }
         BenchmarkKind::Staleness => {
             let (m, q) = memlayer_eval::datasets::staleness::load(data_dir)?;
-            Ok((m, q.into_iter().take(limit).collect()))
+            Ok((m, memlayer_eval::apply_query_limit(q, Some(limit), false)))
         }
     }
 }

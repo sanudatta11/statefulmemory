@@ -201,19 +201,22 @@ fn load_dataset(
     data_dir: &std::path::Path,
     limit: Option<usize>,
 ) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>), String> {
-    let cap = limit.unwrap_or(usize::MAX);
     match kind {
         BenchmarkKind::Locomo => {
             let (m, q) = memlayer_eval::datasets::locomo::load(data_dir)
                 .map_err(|e| format!("load LoCoMo: {e:#}"))?;
-            Ok((m, q.into_iter().take(cap).collect()))
+            Ok((
+                m,
+                memlayer_eval::apply_query_limit(q, limit, true),
+            ))
         }
         BenchmarkKind::Longmemeval => {
             let (m, q) = memlayer_eval::datasets::longmemeval::load(data_dir)
                 .map_err(|e| format!("load LongMemEval: {e:#}"))?;
-            Ok((m, q.into_iter().take(cap).collect()))
+            Ok((m, memlayer_eval::apply_query_limit(q, limit, false)))
         }
         BenchmarkKind::Beam1m => {
+            let cap = limit.unwrap_or(usize::MAX);
             let (m, q) = memlayer_eval::datasets::beam::generate_all(
                 memlayer_eval::datasets::beam::BeamScale::M1,
                 cap.min(1000),
@@ -227,7 +230,7 @@ fn load_dataset(
         BenchmarkKind::Staleness => {
             let (m, q) = memlayer_eval::datasets::staleness::load(data_dir)
                 .map_err(|e| format!("load staleness: {e:#}"))?;
-            Ok((m, q.into_iter().take(cap).collect()))
+            Ok((m, memlayer_eval::apply_query_limit(q, limit, false)))
         }
     }
 }

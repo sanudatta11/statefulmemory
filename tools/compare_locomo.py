@@ -80,11 +80,26 @@ def render(card: dict, baselines: dict) -> str:
         f"LLM-judge high-end (drift):     {fmt_pct(judge.get('high_end_with_protocol_drift'))}%",
         f"strong retrieval R@5 (typical): {fmt_pct(recall.get('typical_strong_r_at_5'))}%",
         "",
-        "memlayer smoke: " + ml.get("smoke", ""),
-        "memlayer full:  " + ml.get("full", ""),
-        "",
-        "How to compare / beat:",
     ]
+
+    systems = judge.get("published_systems") or []
+    if systems:
+        lines.append("--- Published LLM-judge peers (not matched harness) ---")
+        for s in systems:
+            lines.append(
+                f"{s.get('name', '?')}: {fmt_pct(s.get('overall_j'))}%  "
+                f"({s.get('source', '?')})"
+            )
+        lines.append("")
+
+    lines.extend(
+        [
+            "memlayer smoke: " + ml.get("smoke", ""),
+            "memlayer full:  " + ml.get("full", ""),
+            "",
+            "How to compare / beat:",
+        ]
+    )
     for item in how:
         lines.append(f"  - {item}")
 
@@ -187,6 +202,8 @@ def self_check() -> int:
     assert "By category:" in smoke_out
     assert "inside the typical LLM-judge band" in full_out
     assert "n/a (not emitted" in legacy_out
+    assert "Mem0:" in full_out
+    assert "engram-lite:" in full_out
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "card.json"
         p.write_text(json.dumps(smoke), encoding="utf-8")

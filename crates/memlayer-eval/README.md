@@ -20,17 +20,17 @@ make eval-locomo
 # Smoke then full
 make eval-locomo-e2e
 
-# Cheaper full slice
+# Cheaper full slice (stratified across multi_hop / temporal / open_domain / single_hop)
 LIMIT=50 make eval-locomo
 
-# Optional: extract facts.db for all conversations, then run
-EXTRACT=1 LIMIT=50 make eval-locomo
-# or: make eval-locomo-extract
+# Facts path is the default measure recipe (builds data/locomo/facts.db if missing).
+# EXTRACT=0 skips extract; EXTRACT=force rebuilds facts.db.
+EXTRACT=0 LIMIT=50 make eval-locomo
 
 # Parallel answer/judge (default 4)
 MEMLAYER_EVAL_CONCURRENCY=4 LIMIT=50 make eval-locomo
 
-# Re-print a saved scorecard against published bands
+# Re-print a saved scorecard against published bands (incl. Mem0 / Engram peers)
 make eval-locomo-compare SCORECARD=eval/locomo-full.json
 
 # Staleness: supersession vs add-only baseline (committed fixture, no network)
@@ -46,6 +46,10 @@ export MEMLAYER_LLM_MODEL=opencode-go/deepseek-v4.1-flash
 export MEMLAYER_EVAL_CONCURRENCY=4
 LIMIT=50 make eval-locomo
 ```
+
+Peers for `accuracy_pct` (not matched harness): Mem0 ~66.9, engram-lite ~68.3,
+ENGRAM paper ~77.6, Engram marketing ~80. Target Mem0 floor on a stratified
+LIMIT=50 before claiming a win.
 
 Compare `accuracy_pct`, evidence-based `recall_at_k` / `mrr`, optional
 `gold_substring_recall`, `rerank_skipped_pct`, retrieval/e2e p50, and

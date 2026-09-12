@@ -10,6 +10,9 @@
 //!   - qa: [{question, answer, evidence, category}]
 //!
 //! Download: https://github.com/snap-research/locomo
+//!
+//! SNAP JSON `category` ids (not paper prose order):
+//!   1 = multi_hop, 2 = temporal, 3 = open_domain, 4 = single_hop, 5 = adversarial
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -51,6 +54,19 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
+/// Map SNAP LoCoMo JSON category ids to human-readable names used in scorecards
+/// and Mem0/Engram-style tables.
+pub fn category_name(raw: &str) -> String {
+    match raw.trim() {
+        "1" => "multi_hop".into(),
+        "2" => "temporal".into(),
+        "3" => "open_domain".into(),
+        "4" => "single_hop".into(),
+        "5" => "adversarial".into(),
+        other => other.to_string(),
+    }
+}
+
 /// Load the LoCoMo dataset from `data_dir/locomo/locomo10.json`.
 pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
     let path = data_dir.join("locomo").join("locomo10.json");
@@ -70,7 +86,6 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
             })
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let project = format!("locomo-{conv_id}");
-        let session_id = uuid::Uuid::new_v4().to_string();
 
         if let Some(conv_map) = conv.conversation.as_object() {
             // Iterate session_N keys (skip speaker_a/b and date_time keys).
@@ -78,6 +93,9 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
                 if !key.starts_with("session_") || key.ends_with("_date_time") {
                     continue;
                 }
+                // One session_id per LoCoMo session so evidence_window expands
+                // real conversational neighbors (not the whole conversation).
+                let session_id = format!("{conv_id}-{key}");
                 // Each session_N is a list of turn objects.
                 let date = conv_map.get(&format!("{key}_date_time"))
                     .and_then(|v| v.as_str())
@@ -100,12 +118,14 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
                         } else {
                             format!("[{date}] ")
                         };
+                        // Put dia_id in content (and title) so evidence-aware
+                        // recall@k can match turn ids in retrieved hit text.
                         memories.push(EvalMemory {
                             project: project.clone(),
                             session_id: session_id.clone(),
                             obs_type: "conversation".to_string(),
                             title: format!("{date_prefix}{} ({})", turn.speaker, dia_label),
-                            content: format!("{}: {content}", turn.speaker),
+                            content: format!("[{dia_label}] {}: {content}", turn.speaker),
                             topic_key: None,
                         });
                     }
@@ -121,12 +141,14 @@ pub fn load(data_dir: &Path) -> Result<(Vec<EvalMemory>, Vec<EvalQuery>)> {
                 .map(value_to_string)
                 .filter(|s| !s.trim().is_empty())
                 .collect();
+            let cat_raw = qa.category.as_ref().map(value_to_string);
+            let category = cat_raw.as_deref().map(category_name);
             queries.push(EvalQuery {
                 id: format!("{conv_id}-q{i}"),
                 question: value_to_string(&qa.question),
                 gold_answer: value_to_string(answer),
-                judge_context: qa.category.as_ref().map(|c| format!("category: {c}")),
-                category: qa.category.as_ref().map(value_to_string),
+                judge_context: category.as_ref().map(|c| format!("category: {c}")),
+                category,
                 anti_answer: None,
                 evidence,
             });
@@ -141,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_evidence_ids_from_fixture_shape() {
+    fn loads_evidence_ids_and_session_per_session() {
         // Minimal LoCoMo-shaped JSON exercising evidence parsing.
         let dir = tempfile::tempdir().unwrap();
         let locomo_dir = dir.path().join("locomo");
@@ -156,6 +178,10 @@ mod tests {
               "session_1": [
                 {"speaker": "A", "dia_id": "D1:1", "text": "hi"},
                 {"speaker": "B", "dia_id": "D1:3", "text": "went to the park"}
+              ],
+              "session_2_date_time": "2:00 pm on 2 January, 2023",
+              "session_2": [
+                {"speaker": "A", "dia_id": "D2:1", "text": "later"}
               ]
             },
             "qa": [
@@ -170,9 +196,21 @@ mod tests {
         ]"#;
         std::fs::write(locomo_dir.join("locomo10.json"), json).unwrap();
         let (mems, qs) = load(dir.path()).unwrap();
-        assert_eq!(mems.len(), 2);
-        assert!(mems.iter().any(|m| m.title.contains("D1:3")));
+        assert_eq!(mems.len(), 3);
+        let s1: Vec<_> = mems.iter().filter(|m| m.session_id == "conv-test-session_1").collect();
+        let s2: Vec<_> = mems.iter().filter(|m| m.session_id == "conv-test-session_2").collect();
+        assert_eq!(s1.len(), 2);
+        assert_eq!(s2.len(), 1);
+        assert!(mems.iter().any(|m| m.content.contains("[D1:3]")));
         assert_eq!(qs.len(), 1);
         assert_eq!(qs[0].evidence, vec!["D1:3".to_string()]);
+        assert_eq!(qs[0].category.as_deref(), Some("multi_hop"));
+    }
+
+    #[test]
+    fn category_name_maps_snap_ids() {
+        assert_eq!(category_name("1"), "multi_hop");
+        assert_eq!(category_name("4"), "single_hop");
+        assert_eq!(category_name("5"), "adversarial");
     }
 }

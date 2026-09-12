@@ -4,57 +4,41 @@
   <img src="website/public/banner.jpg" alt="memlayer" width="100%" />
 </p>
 
-Persistent memory for AI coding agents — local, per-project, no cloud.
+**Persistent memory infrastructure for AI coding agents.**
+
+Thin CLI + MCP → gRPC daemon → per-project SQLite (FTS5 + optional hybrid
+BM25/dense). Run **self-hosted** on your machine or team, or use **Memlayer
+Cloud** (managed SaaS) when you want hosting done for you.
 
 **Docs:** [https://memlayer.org](https://memlayer.org)
-
-memlayer stores decisions, patterns, fixes, and notes in SQLite and surfaces
-the right ones when you (or your agent) start the next session. A thin CLI
-talks to a per-user daemon over gRPC; agents can also use MCP tools or
-shell hooks.
-
-Works with **Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code,
-ZCode, VS Code / Copilot, Codex, Gemini CLI**, and any agent that can shell
-out or speak MCP.
 
 [![CI](https://github.com/sanudatta11/memlayer/actions/workflows/ci.yml/badge.svg)](https://github.com/sanudatta11/memlayer/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-## Demos
+## What is Memlayer?
 
-GitHub README strips `<video>` tags, so demos are shown as clickable posters
-(full MP4s open on [memlayer.org](https://memlayer.org)).
+memlayer stores decisions, patterns, fixes, and notes under `~/.memlayer/` as
+inspectable SQLite. Agents reach it through the CLI or MCP. The daemon
+auto-starts on first use.
 
-<p align="center">
-  <a href="https://memlayer.org/videos/overview-v2.mp4">
-    <img src="website/public/videos/overview-v2-poster.jpg" alt="memlayer overview demo" width="100%" />
-  </a>
-  <br />
-  <em>Overview (click to play) — also on <a href="https://memlayer.org/">memlayer.org</a></em>
-</p>
+## Why do I need it?
 
-| Demo | Preview (click to play) | Guide |
-|---|---|---|
-| Install and agents | [![install agents](website/public/videos/install-agents-v2-poster.jpg)](https://memlayer.org/videos/install-agents-v2.mp4) | [Agents / MCP](https://memlayer.org/docs/agents/) |
-| Save, search, context | [![save search context](website/public/videos/save-search-context-v2-poster.jpg)](https://memlayer.org/videos/save-search-context-v2.mp4) | [Observations](https://memlayer.org/docs/observations/) · [Search and context](https://memlayer.org/docs/search-context/) |
-| Anchors and verify | [![anchors verify](website/public/videos/anchors-verify-v2-poster.jpg)](https://memlayer.org/videos/anchors-verify-v2.mp4) | [Anchors and verify](https://memlayer.org/docs/anchors-verify/) |
-| Decide and mem | [![decide mem](website/public/videos/decide-mem-v2-poster.jpg)](https://memlayer.org/videos/decide-mem-v2.mp4) | [Decide](https://memlayer.org/docs/decide/) · [Mem archives](https://memlayer.org/docs/mem/) |
+Coding agents forget across sessions; chat history is not project memory.
+Capture a decision once, retrieve it next session. Optional code anchors let
+stale claims withdraw when git moves.
 
-Silent terminal-style clips (no narration). Full walkthrough: [Getting started](https://memlayer.org/docs/getting-started/).
+## How is it different?
 
-## What it does
+Memory as **infrastructure for coding agents** — with a real self-host path
+(inspectable SQLite, MCP install targets, code anchors) **and** a Cloud SaaS
+path for teams that want managed hosting. Not a bare vector index.
 
-| Primitive | Command / tool | Purpose |
-|---|---|---|
-| **Save** | `obs save` / `memory_add` | Capture a decision or fix with context |
-| **Brief** | `obs context` / `memory_context` | Topic-ranked memory for the current task |
-| **Search** | `obs search` / `memory_search` | Hybrid (BM25 + dense) or BM25; optional agent rerank |
-
-Data lives under `~/.memlayer/` as plain SQLite you can inspect, back up, or delete.
+Engineering comparison: [Why Memlayer?](https://memlayer.org/docs/why-memlayer/)
 
 ## Install
 
-**Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL/`pkg-config`, macOS or Linux (WSL OK).
+**Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL/`pkg-config`, macOS or Linux
+(WSL OK). Windows is out of scope for v1.
 
 ```bash
 git clone https://github.com/sanudatta11/memlayer && cd memlayer
@@ -63,70 +47,120 @@ export PATH="$HOME/.local/bin:$PATH"
 memlayer --version
 ```
 
-The daemon auto-starts on first use. Full guide: [Install](https://memlayer.org/docs/install/).
+Full guide: [Install](https://memlayer.org/docs/install/).
 
-## Quick start
+## 30-second example
 
 ```bash
-memlayer obs save \
-  --type decision \
+memlayer install --agent cursor   # or: memlayer install
+SID=$(uuidgen)
+memlayer obs save --type decision \
   --title "use pgx not GORM" \
   --content "Team prefers raw SQL via pgx" \
-  --session "$(uuidgen)"
-
-memlayer obs recent --limit 5
-memlayer obs search "pgx"
+  --session "$SID"
+memlayer obs context --query "database access layer" --limit 10
+memlayer decide "Should we keep pgx?"
 ```
 
-More: [Getting started](https://memlayer.org/docs/getting-started/).
+Agents use MCP (`memlayer mcp`) or shell-out. **Python/TypeScript SDKs are not
+shipped.** Preference-evolution walkthrough:
+[`demos/preference-evolution.sh`](demos/preference-evolution.sh).
 
-## Wire into your agent
+## Architecture
+
+```mermaid
+flowchart LR
+  Agents[Coding agents MCP or CLI]
+  CLI[memlayer CLI]
+  MCP[memlayer mcp]
+  D[memlayer-daemon gRPC]
+  WT[Write thread]
+  DB[(project SQLite FTS5 plus optional vec)]
+  G[(global.sqlite)]
+  Workers[embed extract resolve verify]
+  Agents --> CLI
+  Agents --> MCP
+  CLI --> D
+  MCP --> D
+  D --> WT
+  WT --> DB
+  WT --> G
+  D --> Workers
+  Workers --> DB
+```
+
+Details: [Architecture](https://memlayer.org/docs/architecture/).
+
+## Benchmarks
+
+Local LoCoMo / staleness analysis lives in the eval harness. Public claims wait
+for disclosed, stratified scorecards — see [LoCoMo eval](https://memlayer.org/docs/locomo/).
+Do not quote smoke or tiny slices against published leaderboards.
+
+## Integrations
+
+| Surface | Status |
+|---|---|
+| MCP: `memory_search`, `memory_recent`, `memory_context`, `memory_add`, `memory_facts`, `memory_health`, `memory_decide` | Shipped (`memlayer mcp`) |
+| `memlayer install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
+| LangGraph, OpenAI Agents SDK, CrewAI, AutoGen, LlamaIndex, Vercel AI SDK | **Not yet** |
 
 ```bash
-memlayer install                 # auto-detect agents (like skills.sh)
-memlayer install --agent cursor  # one agent (+ shared .agents)
-memlayer install --all           # every known target
+memlayer install                 # auto-detect
+memlayer install --agent cursor
+memlayer install --all
 ```
 
-This installs skills/rules, Claude Code hooks (where applicable), and MCP
-registration for detected agents. Restart the agent afterward.
+Full matrix: [Integrations](https://memlayer.org/docs/integrations/).
 
-**MCP tools:** `memory_search`, `memory_recent`, `memory_context`,
-`memory_add`, `memory_facts`, `memory_health`, `memory_decide` — launched as
-`memlayer mcp`. Extract / judge / rerank / Decide use the invoking agent's
-current model unless you pin `MEMLAYER_LLM_MODEL` or a concrete id.
+## Self-hosting
 
-| Agent | Config touched by install |
-|---|---|
-| Claude Code | `~/.claude.json`, `.mcp.json` |
-| Cursor | `~/.cursor/mcp.json` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| Antigravity | `~/.gemini/config/mcp_config.json` |
-| OpenCode | `~/.config/opencode/opencode.json` |
-| Others | Kimi, ZCode, VS Code, Copilot, Codex, Gemini, Amazon Q, `.agents/mcp.json` |
+**Shipped today:** per-user daemon on a Unix domain socket (auto-spawned), or
+team mode over TCP+TLS + bearer tokens (`memlayer team init-ca`,
+`MEMLAYER_LISTEN=tcp://…`) on infrastructure you run.
 
-Details: [Wire into your agent](https://memlayer.org/docs/agents/).
+Guide: [Self-hosting](https://memlayer.org/docs/self-hosting/).
+
+## Cloud SaaS
+
+**Memlayer Cloud** is the managed SaaS offering for teams that want persistent
+agent memory without operating the daemon themselves. Same product thesis
+(coding-agent memory, MCP/CLI clients); hosting and ops on us.
+
+Self-host remains first-class and open source. Cloud details and signup will
+land on [memlayer.org](https://memlayer.org) as the service rolls out — see
+[Self-hosting](https://memlayer.org/docs/self-hosting/#cloud-saas) for how the
+modes relate.
+
+## Roadmap
+
+Public directions (graphify bridge, multi-relation judge, eval CI):
+[`docs/ROADMAP.md`](docs/ROADMAP.md). Contributor notes:
+[`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md).
+
+## Demo
+
+<p align="center">
+  <a href="https://memlayer.org/videos/overview-v2.mp4">
+    <img src="website/public/videos/overview-v2-poster.jpg" alt="memlayer overview demo" width="100%" />
+  </a>
+  <br />
+  <em>Overview (click to play) — more clips on <a href="https://memlayer.org/">memlayer.org</a></em>
+</p>
 
 ## Docs
 
+- [Why Memlayer?](https://memlayer.org/docs/why-memlayer/)
+- [Architecture](https://memlayer.org/docs/architecture/)
 - [Getting started](https://memlayer.org/docs/getting-started/)
-- [Install](https://memlayer.org/docs/install/)
-- [Agents / MCP](https://memlayer.org/docs/agents/)
-- [Observations](https://memlayer.org/docs/observations/)
-- [Search and context](https://memlayer.org/docs/search-context/)
-- [Anchors and verify](https://memlayer.org/docs/anchors-verify/)
-- [Decide](https://memlayer.org/docs/decide/)
-- [Mem archives](https://memlayer.org/docs/mem/)
-- [Config](https://memlayer.org/docs/config/)
-- [LoCoMo eval](https://memlayer.org/docs/locomo/)
-- [AWS one-shot eval stack](infra/eval/README.md) (CloudFormation + EC2)
-- [Troubleshooting](https://memlayer.org/docs/troubleshooting/)
-- [Command cheat sheet](https://memlayer.org/docs/commands/)
+- [Install](https://memlayer.org/docs/install/) · [Integrations](https://memlayer.org/docs/integrations/) · [Self-hosting and Cloud](https://memlayer.org/docs/self-hosting/)
+- [Observations](https://memlayer.org/docs/observations/) · [Search and context](https://memlayer.org/docs/search-context/)
+- [Anchors and verify](https://memlayer.org/docs/anchors-verify/) · [Decide](https://memlayer.org/docs/decide/) · [Mem archives](https://memlayer.org/docs/mem/)
+- [Config](https://memlayer.org/docs/config/) · [LoCoMo eval](https://memlayer.org/docs/locomo/) · [Commands](https://memlayer.org/docs/commands/)
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for layout and local build/test.
-Architecture and roadmap: [`CLAUDE.md`](CLAUDE.md), [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ```bash
 cargo build --workspace --tests
@@ -146,4 +180,6 @@ at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in memlayer by you shall be dual-licensed as above, without any
+additional terms or conditions.
+by you shall be dual-licensed as above, without any
 additional terms or conditions.

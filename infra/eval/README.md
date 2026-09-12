@@ -119,6 +119,7 @@ aws cloudformation describe-stacks \
 make eval-locomo-smoke
 make eval-staleness
 LIMIT=50 make eval-locomo   # or full without LIMIT
+# Facts.db built automatically when missing (EXTRACT=0 to skip)
 ```
 
 ### Recommended local measure recipe (accuracy + wall-clock)
@@ -134,7 +135,8 @@ export MEMLAYER_EVAL_CONCURRENCY=4
 
 LIMIT=50 make eval-locomo
 # Optional: build facts.db first for fact-level hybrid
-# EXTRACT=1 LIMIT=50 make eval-locomo
+# EXTRACT=0 LIMIT=50 make eval-locomo   # ablation without facts
+# EXTRACT=force LIMIT=50 make eval-locomo  # rebuild facts.db
 ```
 
 `recall_at_k` / `mrr` are evidence-turn based when LoCoMo provides `evidence`

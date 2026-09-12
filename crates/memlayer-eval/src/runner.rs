@@ -83,12 +83,12 @@ fn fmt_eta(secs: u64) -> String {
 
 /// Compact ASCII bar for percentage display, e.g. `[####------]`.
 fn pct_bar(done: usize, total: usize, width: usize) -> String {
-    let filled = if total == 0 {
-        width
-    } else {
-        ((done * width) + (total / 2)) / total
-    }
-    .min(width);
+    // Round half-up; `checked_div` yields None when total == 0.
+    let filled = (done * width)
+        .checked_add(total / 2)
+        .and_then(|n| n.checked_div(total))
+        .unwrap_or(width)
+        .min(width);
     let mut s = String::with_capacity(width + 2);
     s.push('[');
     for i in 0..width {
@@ -102,7 +102,15 @@ fn pct_bar(done: usize, total: usize, width: usize) -> String {
 /// this threshold (P5 spec-task-31 cost gate). When the top fact is a
 /// clear winner, a Haiku-shuffle costs $$ and adds judge noise without
 /// materially improving accuracy.
+///
+/// LoCoMo HybridRerank always reranks (threshold ignored) so multi-hop
+/// candidates are not left in BM25/ANN order when facts look "clear".
 const RERANK_AMBIGUITY_THRESHOLD: f32 = 0.15;
+
+/// LoCoMo multi-hop (JSON cat 1 → `multi_hop`): always rerank + wider pool.
+fn is_locomo_multihop(category: Option<&str>) -> bool {
+    matches!(category, Some("multi_hop") | Some("1"))
+}
 
 /// Abort after this many consecutive answer-LLM failures (bad auth / model).
 const CONSECUTIVE_ANSWER_FAIL_ABORT: usize = 5;
@@ -478,7 +486,6 @@ pub async fn run(
     let k = cfg.k;
     let retrieval = cfg.retrieval.clone();
     let lexical_judge = cfg.lexical_judge;
-    let hybrid_stack = hybrid_stack.map(|(e, c)| (e, c));
     let rerank_claude = rerank_claude;
 
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
@@ -520,7 +527,6 @@ pub async fn run(
         let abort_flag = abort_flag.clone();
         let last_answer_err = last_answer_err.clone();
         let progress_ui = progress_ui.clone();
-        let run_t0 = run_t0;
 
         join_set.spawn(async move {
             let _permit = permit;
@@ -731,7 +737,11 @@ async fn eval_one_query(
 ) -> Result<QueryResult, QueryEvalError> {
     let t_start = Instant::now();
     let project = infer_project(benchmark, &q.id);
-    let evidence_window = evidence_window_for_question(retrieval.evidence_window, &q.question);
+    let mut evidence_window = evidence_window_for_question(retrieval.evidence_window, &q.question);
+    let multihop = benchmark == BenchmarkKind::Locomo && is_locomo_multihop(q.category.as_deref());
+    if multihop {
+        evidence_window = evidence_window.max(6);
+    }
 
     let mut rerank_skipped = false;
     let (hits, retrieval_us, rerank_us) = match retrieval.mode {
@@ -744,8 +754,17 @@ async fn eval_one_query(
             let (embedder, cache) = hybrid_stack.expect(
                 "hybrid_stack initialised when mode is Hybrid or HybridRerank",
             );
-            let retrieve_k = if retrieval.rerank { k * 3 } else { k };
+            let retrieve_k = if multihop && retrieval.rerank {
+                k * 5
+            } else if retrieval.rerank {
+                k * 3
+            } else {
+                k
+            };
             let facts_db_path = facts_db_path_for(benchmark, data_dir);
+            // LoCoMo always reranks when configured; multi-hop always; else ambiguity gate.
+            let force_rerank = retrieval.rerank
+                && (benchmark == BenchmarkKind::Locomo || multihop);
             let mut rerank_ambiguous = true;
             let (raw_hits, raw_retrieval_us) = if facts_db_path.exists() {
                 let ret = crate::retrieve_facts::retrieve_facts(
@@ -761,10 +780,12 @@ async fn eval_one_query(
                 )
                 .await
                 .with_context(|| format!("facts retrieve for query '{}'", q.id))?;
-                rerank_ambiguous = ret
-                    .top2_delta
-                    .map(|d| d < RERANK_AMBIGUITY_THRESHOLD)
-                    .unwrap_or(true);
+                if !force_rerank {
+                    rerank_ambiguous = ret
+                        .top2_delta
+                        .map(|d| d < RERANK_AMBIGUITY_THRESHOLD)
+                        .unwrap_or(true);
+                }
                 if ret.hits.is_empty() {
                     info!(
                         query_id = %q.id,
@@ -804,7 +825,7 @@ async fn eval_one_query(
             };
 
             if let Some(claude) = rerank_claude {
-                if rerank_ambiguous {
+                if force_rerank || rerank_ambiguous {
                     let (reranked, rerank_dur) = crate::rerank::rerank(
                         claude.clone(),
                         &raw_hits,
@@ -832,7 +853,8 @@ async fn eval_one_query(
         }
     };
 
-    let (system, user_msg, prompt_tokens) = build_answer_prompt(&hits, &q.question);
+    let (system, user_msg, prompt_tokens) =
+        build_answer_prompt(&hits, &q.question, q.category.as_deref());
     let gold_sub_rank = gold_substring_rank(&q.gold_answer, &hits);
     let primary_rank = primary_retrieval_rank(q, &hits);
 

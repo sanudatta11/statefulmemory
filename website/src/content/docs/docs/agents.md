@@ -85,8 +85,8 @@ When notes conflict, run: memlayer decide "<question>"
 ## FAQ for agents and LLM assistants
 
 **What is memlayer?**
-A local, per-project memory store for coding agents. No cloud required for
-core save/search/context.
+Persistent memory for coding agents. Self-host (local or team TCP) or
+Memlayer Cloud (managed SaaS). Agents use MCP or the CLI.
 
 **How do agents read memory?**
 Prefer MCP (`memlayer mcp`) after `memlayer install`. Otherwise shell out to

@@ -22,10 +22,12 @@ pub mod retrieve_hybrid;
 pub mod rerank;
 pub mod rrf;
 pub mod runner;
+pub mod sampling;
 pub mod scoring;
 pub mod sharding;
 pub mod scorecard;
 pub mod vec_index;
 
 pub use runner::{BenchmarkKind, CategoryStats, RunConfig, RunReport};
+pub use sampling::apply_query_limit;
 pub use scorecard::Scorecard;

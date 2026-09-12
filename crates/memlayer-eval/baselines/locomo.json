@@ -26,7 +26,44 @@
       "comparable_to_memlayer_accuracy_pct": true,
       "note": "Public locomo10 leaderboards use an answer LLM plus a judge LLM. Protocols differ: judge model, top-k, whether adversarial items are dropped, partial credit. Published overall scores commonly fall around 67–80 when adversarial is excluded; some re-runs exceed 90 with a stronger judge or a different harness. Do not treat those as paper F1.",
       "typical_published_range": [67, 80],
-      "high_end_with_protocol_drift": 92
+      "high_end_with_protocol_drift": 92,
+      "published_systems": [
+        {
+          "name": "Mem0",
+          "overall_j": 66.9,
+          "source": "arXiv:2504.19413 (paper table ~67.13 single-hop J; overall ~66.9 in replications)",
+          "matched_harness": false,
+          "notes": "gpt-4o-mini class answer/judge; adversarial excluded"
+        },
+        {
+          "name": "Mem0-graph",
+          "overall_j": 68.0,
+          "source": "arXiv:2504.19413",
+          "matched_harness": false,
+          "notes": "~2 pts above base Mem0 in paper"
+        },
+        {
+          "name": "engram-lite",
+          "overall_j": 68.3,
+          "source": "engram-lite benchmarks/locomo README (Mem0 protocol)",
+          "matched_harness": false,
+          "notes": "Fairer peer; answerer/judge disclosed as haiku-class"
+        },
+        {
+          "name": "ENGRAM paper",
+          "overall_j": 77.55,
+          "source": "arXiv:2511.12960",
+          "matched_harness": false,
+          "notes": "Shared-backbone claim; not a matched memlayer harness"
+        },
+        {
+          "name": "Engram marketing",
+          "overall_j": 80.0,
+          "source": "engram.fyi/research",
+          "matched_harness": false,
+          "notes": "Gemini 2.5 Flash; do not treat as matched"
+        }
+      ]
     },
     "retrieval_recall": {
       "unit": "R@k percent",
@@ -37,15 +74,17 @@
   },
   "memlayer_scorecard": {
     "smoke": "BM25 plus lexical contain on a one-query fixture. Wiring check only; not a LoCoMo score.",
-    "full": "Ingest locomo10.json, hybrid-rerank retrieval, LLM answer plus LLM judge. accuracy_pct is the judge pass rate. Scorecard 2.0 reports recall_at_k and MRR as retrieval metrics; token-F1 is not emitted."
+    "full": "Ingest locomo10.json, hybrid-rerank retrieval, LLM answer plus LLM judge. accuracy_pct is the judge pass rate. Scorecard 2.0 reports recall_at_k and MRR as retrieval metrics; token-F1 is not emitted. LIMIT=N uses stratified sampling across multi_hop/temporal/open_domain/single_hop. Measure recipe: facts.db via EXTRACT (auto if missing) + disclosed MEMLAYER_LLM_MODEL."
   },
   "how_to_beat_or_compare": [
     "Smoke (`make eval-locomo-smoke`) only proves the CLI harness. Never quote it against published numbers.",
-    "Full (`make eval-locomo`) is the local analysis run. Optional LIMIT=N for a cheaper slice.",
+    "Full (`make eval-locomo`) is the local analysis run. Optional LIMIT=N for a cheaper stratified slice (cats 1–4).",
+    "Measure path auto-builds data/locomo/facts.db when missing (EXTRACT). Override with EXTRACT=0 only for ablation.",
     "Compare accuracy_pct only to other LLM-judge locomo10 runs that disclose judge model, k, and whether adversarial questions are included.",
+    "Mem0 (~66.9) / engram-lite (~68.3) are the fairest published peers; Engram 77–80% is a different harness.",
     "To beat paper F1 (51.6 overall / 87.9 human), you need token-overlap F1 on gold answers. memlayer does not emit that metric.",
     "Use recall_at_k / MRR to diagnose retrieval; they are independent of the judge.",
-    "To land in the published LLM-judge band (~67–80+), use the default LoCoMo profile (hybrid + rerank + evidence window), ingest speaker-prefixed turns, keep fact fusion on, and use a capable answer/judge model. Match the other system's category filter.",
+    "To land in the published LLM-judge band (~67–80+), use hybrid + rerank + evidence window + fact fusion, and a capable answer/judge model.",
     "Retrieval R@k is the right metric if you only care whether evidence was fetched; it will look stronger than judged QA."
   ]
 }

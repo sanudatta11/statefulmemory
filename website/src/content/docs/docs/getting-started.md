@@ -14,7 +14,8 @@ export PATH="$HOME/.local/bin:$PATH"
 memlayer --version
 ```
 
-Full notes: [Install](/docs/install/).
+Full notes: [Install](/docs/install/). Deployment modes (self-host vs
+Memlayer Cloud): [Self-hosting and Cloud](/docs/self-hosting/).
 
 ## 2. Wire your agent (and optional git hooks)
 

@@ -8,10 +8,11 @@ If both `AGENTS.md` and `CLAUDE.md` exist, OpenCode prefers this file.
 
 ## What this repo is
 
-Local, per-project persistent memory for coding agents. Thin CLI → user-local
-gRPC daemon → SQLite (FTS5 + optional sqlite-vec). No cloud required for
-search/context. Optional LLM steps (extract, conflict judge, rerank, Decide)
-shell out to whichever agent CLI is on `PATH`.
+Local, per-project persistent memory for coding agents. Thin CLI → gRPC
+daemon → SQLite (FTS5 + optional sqlite-vec). Self-host (UDS or team TCP) or
+Memlayer Cloud (managed SaaS). Optional LLM steps (extract, conflict judge,
+rerank, Decide) shell out to whichever agent CLI is on `PATH`. On self-host,
+hybrid search/context does not require a third-party search API key.
 
 ## Architecture (one paragraph)
 
@@ -40,7 +41,10 @@ memlayer-eval (benchmarks only) · memlayer-tests (needs live daemon)
   `~/.memlayer/config.toml` > code defaults. Re-resolve per task.
 - Worker pools: `try_queue` drops on full; never block the save path.
 - Git: shell out only (`memlayer-core::git`). No git2/gix.
-- Do not invent third-party memory product names in user-facing docs/UI.
+- Do not name third-party memory products in product UI / CLI help / MCP
+  blurbs. Comparison and eval docs (`why-memlayer`, LoCoMo, baselines) may
+  name them with sources and unmatched-harness caveats. Never invent peer
+  features.
 
 ## Build / test / debug
 
@@ -65,7 +69,9 @@ export MEMLAYER_LLM_PROVIDER=opencode MEMLAYER_LLM_BIN=opencode
 export MEMLAYER_LLM_MODEL=opencode-go/deepseek-v4.1-flash
 export MEMLAYER_EVAL_CONCURRENCY=4
 LIMIT=50 make eval-locomo
-# Optional facts path: EXTRACT=1 LIMIT=50 make eval-locomo
+# Facts path is default (builds facts.db if missing). Ablation: EXTRACT=0
+# Optional capable pin:
+# EXTRACT=force LIMIT=50 make eval-locomo
 ```
 
 Full LoCoMo on AWS (one-shot EC2, scorecards → S3): see

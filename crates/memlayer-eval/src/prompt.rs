@@ -7,11 +7,16 @@
 
 use tiktoken_rs::cl100k_base;
 
+fn is_multihop(category: Option<&str>) -> bool {
+    matches!(category, Some("multi_hop") | Some("1"))
+}
+
 /// Build the system prompt handed to the answer LLM.
 /// Returns (system_prompt, user_message, estimated_token_count).
 pub fn build_answer_prompt(
     memories: &[String],
     question: &str,
+    category: Option<&str>,
 ) -> (String, String, usize) {
     let memories_block = if memories.is_empty() {
         "No relevant memories found.".to_string()
@@ -24,6 +29,16 @@ pub fn build_answer_prompt(
             .join("\n\n")
     };
 
+    let multihop_rule = if is_multihop(category) {
+        "\n\
+         7. This is a MULTI-HOP question: synthesize across ALL memories.\n\
+            Do not stop at the first matching turn — combine facts from\n\
+            different sessions/turns when the gold answer requires it.\n\
+            Prefer a short grounded synthesis over a single-span quote.\n"
+    } else {
+        ""
+    };
+
     let system = format!(
         "You are a helpful assistant with access to a user's personal memory store.\n\
          Answer the question using ONLY the provided memories.\n\
@@ -34,6 +49,7 @@ pub fn build_answer_prompt(
            event date), NOT today.\n\
          - Lines like '[9:55 am on 22 October, 2023] Caroline (...): ...' are\n\
            the original chat turns surrounding the fact.\n\
+         - Bracketed dialogue ids like [D1:3] label the source turn.\n\
          \n\
          Answering rules:\n\
          1. Prefer short answers grounded in quoted or paraphrased spans from\n\
@@ -50,7 +66,8 @@ pub fn build_answer_prompt(
             would include a modifier (e.g. 'counseling for X'), include it\n\
             when memories support it.\n\
          6. Be concise — answer the question directly. Avoid bullet lists or\n\
-            paragraphs of context unless asked.\n\
+            paragraphs of context unless asked.\
+         {multihop_rule}\
          \n\
          <memories>\n{memories_block}\n</memories>"
     );
@@ -93,5 +110,23 @@ fn count_tokens(text: &str) -> usize {
             // Fallback: rough word-count estimate (4 chars ≈ 1 token).
             text.len() / 4
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multihop_prompt_asks_to_synthesize() {
+        let (sys, _, _) = build_answer_prompt(&["a".into()], "Q?", Some("multi_hop"));
+        assert!(sys.contains("MULTI-HOP"));
+        assert!(sys.contains("synthesize"));
+    }
+
+    #[test]
+    fn single_hop_prompt_skips_multihop_rule() {
+        let (sys, _, _) = build_answer_prompt(&["a".into()], "Q?", Some("single_hop"));
+        assert!(!sys.contains("MULTI-HOP"));
     }
 }

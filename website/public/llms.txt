@@ -1,16 +1,22 @@
 # memlayer
 
-> Persistent memory for AI coding agents: local, per-project, no cloud.
-> SQLite under ~/.memlayer/, CLI + gRPC daemon, MCP tools, hybrid BM25 + dense search.
+> Persistent memory for AI coding agents. Self-host (local or team) or
+> Memlayer Cloud (managed SaaS). CLI + gRPC daemon, MCP tools, SQLite,
+> hybrid BM25 + dense search.
 
-memlayer is open source (MIT OR Apache-2.0). Source: https://github.com/sanudatta11/memlayer
+memlayer is open source (MIT OR Apache-2.0) for the self-host stack.
+Source: https://github.com/sanudatta11/memlayer
 
 ## Docs
 
 - [Overview](https://memlayer.org/): Product overview and demo video
+- [Why Memlayer?](https://memlayer.org/docs/why-memlayer/): Self-host + Cloud vs vector DBs
+- [Architecture](https://memlayer.org/docs/architecture/): CLI, MCP, daemon, SQLite
 - [Install](https://memlayer.org/docs/install/): Build from source (Rust), PATH, doctor
 - [Getting started](https://memlayer.org/docs/getting-started/): End-to-end tour
+- [Integrations](https://memlayer.org/docs/integrations/): 14 install targets + MCP
 - [Wire into your agent](https://memlayer.org/docs/agents/): MCP, git verify hooks, MEMLAYER_LLM_*
+- [Self-hosting and Cloud](https://memlayer.org/docs/self-hosting/): UDS, team TCP, Memlayer Cloud SaaS
 - [Observations](https://memlayer.org/docs/observations/): Save, recent, history, reextract
 - [Search and context](https://memlayer.org/docs/search-context/): Hybrid retrieval, token budgets
 - [Anchors and verify](https://memlayer.org/docs/anchors-verify/): path::symbol digests, stale withdrawal
