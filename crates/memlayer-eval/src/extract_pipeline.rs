@@ -248,12 +248,16 @@ impl ExtractPipeline {
             "starting extraction"
         );
 
-        if miss_indices.is_empty() {
-            // All windows were cache hits — nothing to fan out.
-            stats.elapsed_ms = t0.elapsed().as_millis();
-            return Ok(stats);
-        }
+        // Collected per-miss results: (window_index, facts_or_failure).
+        // Empty when all windows were cache hits (session summaries still run).
+        let mut fresh_results: Vec<(usize, std::result::Result<Vec<Fact>, ()>)> =
+            Vec::with_capacity(miss_indices.len());
 
+        if miss_indices.is_empty() {
+            // All windows cached — skip Haiku, but still flatten cached facts
+            // so session summaries can run below.
+            info!(project, "all windows cached; skipping Haiku fan-out");
+        } else {
         // ---------- 5a. Probe: run first miss synchronously ----------
         // If the very first Haiku call returns empty (bad model ID, auth
         // failure, rate-limit), bail immediately rather than spawning
@@ -342,7 +346,29 @@ impl ExtractPipeline {
                     response_len = raw.len(),
                     "claude haiku responded"
                 );
-                let parsed = parse_facts(&raw, &window);
+                let parsed = match parse_facts(&raw, &window) {
+                    Ok(facts) if facts.is_empty() => {
+                        // EH-4 soft retry once before marking permanently failed.
+                        warn!(
+                            project = %project_name,
+                            window = i,
+                            "parse_facts empty; retrying once (EH-4)"
+                        );
+                        match claude.ask(&prompt, HAIKU_MODEL).await {
+                            Ok(raw2) => parse_facts(&raw2, &window),
+                            Err(e) => {
+                                warn!(
+                                    project = %project_name,
+                                    window = i,
+                                    error = %e,
+                                    "EH-4 retry call failed"
+                                );
+                                Ok(Vec::new())
+                            }
+                        }
+                    }
+                    other => other,
+                };
                 let _ = tx.send((i, parsed));
             });
         }
@@ -351,8 +377,6 @@ impl ExtractPipeline {
         drop(tx);
 
         // Collected per-miss results: (window_index, facts_or_failure).
-        let mut fresh_results: Vec<(usize, std::result::Result<Vec<Fact>, ()>)> =
-            Vec::with_capacity(miss_indices.len());
         let total_handles = total_to_spawn;
         let progress_t0 = std::time::Instant::now();
         let mut completed = 0usize;
@@ -416,6 +440,10 @@ impl ExtractPipeline {
                 last_log_at = std::time::Instant::now();
             }
         }
+        } // end else miss_indices non-empty
+
+        // Collected per-miss results declared before the if/else.
+        // (fresh_results filled above when there were misses.)
 
         // ---------- 6. Persist successful + failed extractions ----------
         let mut put_items: Vec<(String, Vec<Fact>)> = Vec::new();

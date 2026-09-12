@@ -80,7 +80,7 @@ fn ts11_locomo_enables_rerank() {
     assert!(p.rerank, "LoCoMo should enable rerank");
     assert_eq!(p.mode, RetrievalMode::HybridRerank);
     assert_eq!(p.k, 20);
-    assert_eq!(p.evidence_window, 4);
+    assert_eq!(p.evidence_window, 6);
 }
 
 #[test]

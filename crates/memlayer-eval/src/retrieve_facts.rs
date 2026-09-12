@@ -58,9 +58,9 @@ fn over_fetch_n(k: i32) -> i32 {
 }
 
 /// Max number of entity matches that contribute to a fact's boost. With
-/// `BOOST_PER_ENTITY = 0.5`, the cap of 1.0 is hit at 2 distinct matches.
-const BOOST_PER_ENTITY: f32 = 0.5;
-const ENTITY_BOOST_CAP: f32 = 1.0;
+/// `BOOST_PER_ENTITY = 0.75`, the cap of 1.5 is hit at 2 distinct matches.
+const BOOST_PER_ENTITY: f32 = 0.75;
+const ENTITY_BOOST_CAP: f32 = 1.5;
 
 /// L2 distance threshold for the entities_vec ANN match. With BGE-small's
 /// L2-normalized embeddings this corresponds roughly to cosine ≥ 0.5.
@@ -290,10 +290,17 @@ pub async fn retrieve_facts(
 
     let mut formatted: Vec<String> = Vec::with_capacity(fetched_facts.len());
     for (id, subject, predicate, object, temporal, evidence_obs_id) in fetched_facts {
-        let fact_line = if let Some(t) = temporal {
-            format!("[{t}] {subject} {predicate} {object}")
-        } else {
-            format!("{subject} {predicate} {object}")
+        let seed_dia = lookup_seed_dia_id(&storage_conn, evidence_obs_id);
+        let fact_line = {
+            let body = if let Some(t) = temporal {
+                format!("[{t}] {subject} {predicate} {object}")
+            } else {
+                format!("{subject} {predicate} {object}")
+            };
+            match seed_dia {
+                Some(ref d) => format!("[{d}] {body}"),
+                None => body,
+            }
         };
 
         let evidence = match crate::retrieve::expand_evidence(
@@ -346,6 +353,46 @@ pub async fn retrieve_facts(
         candidates_considered,
         top2_delta,
     })
+}
+
+/// Pull a LoCoMo-style dialogue id (`D1:3`) from the seed observation text.
+fn lookup_seed_dia_id(conn: &rusqlite::Connection, obs_id: i64) -> Option<String> {
+    let text: String = conn
+        .query_row(
+            "SELECT COALESCE(content, '') || ' ' || COALESCE(title, '') FROM observations WHERE id = ?1",
+            rusqlite::params![obs_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    extract_dia_id(&text)
+}
+
+fn extract_dia_id(text: &str) -> Option<String> {
+    // Match [D12:3] or (D12:3) or bare D12:3.
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if bytes[i].to_ascii_lowercase() == b'd' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b':' {
+                i += 1;
+                let num_start = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > num_start {
+                    return Some(text[start..i].to_ascii_uppercase());
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// Embed `text`, hitting the on-disk cache before the model.

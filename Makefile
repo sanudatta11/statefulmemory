@@ -11,6 +11,9 @@
 
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
+# Always build/run against the repo target/ (avoids stale sandbox CARGO_TARGET_DIR).
+export CARGO_TARGET_DIR := $(CURDIR)/target
+
 BINARY     := target/release/memlayer
 INSTALL_DIR := $(HOME)/.local/bin
 CARGO       := cargo
@@ -32,6 +35,12 @@ VENDOR_BGE          := $(CURDIR)/crates/memlayer-eval/scripts/vendor_bge_model.s
 
 # Eval / hybrid paths need BGE without a manual shell export.
 export MEMLAYER_BGE_MODEL_DIR := $(BGE_MODEL_DIR)
+
+# Optional capable pin for measure runs (disclosed on scorecard via MEMLAYER_LLM_MODEL).
+# Example: EVAL_MODEL=opencode/glm-5.3 make eval-locomo
+ifdef EVAL_MODEL
+export MEMLAYER_LLM_MODEL := $(EVAL_MODEL)
+endif
 
 ifdef LIMIT
 LIMIT_FLAG := --limit $(LIMIT)
@@ -204,17 +213,18 @@ eval-bge-model:
 	@QUIET=1 "$(VENDOR_BGE)"
 
 # Pre-extract facts for every LoCoMo conversation (expensive; opt-in via EXTRACT=1).
+# Session-tier summary facts are on by default (Mem0-style rollups).
 eval-locomo-extract: release eval-locomo-fetch eval-bge-model
 	@mkdir -p "$(EVAL_OUT)"
-	@echo "Extracting LoCoMo facts → $(EVAL_DATA)/locomo/facts.db (needs agent CLI)."
+	@echo "Extracting LoCoMo facts → $(EVAL_DATA)/locomo/facts.db (needs agent CLI; session summaries on)."
 	cd crates/memlayer-eval && \
 	RUST_LOG=info cargo run --release --bin eval -- extract \
-	  --benchmark locomo --data-dir "$(EVAL_DATA)" \
+	  --benchmark locomo --data-dir "$(EVAL_DATA)" --session-summaries \
 	  2>&1 | tee "$(EVAL_OUT)/extract-locomo.log"
 
 eval-locomo eval-locomo-full: release eval-locomo-fetch eval-bge-model $(EXTRACT_DEPS)
 	@mkdir -p "$(EVAL_OUT)"
-	@echo "Full LoCoMo: MEMLAYER_BGE_MODEL_DIR=$(MEMLAYER_BGE_MODEL_DIR) (hybrid+rerank; needs agent CLI for answer/judge)."
+	@echo "Full LoCoMo: MEMLAYER_BGE_MODEL_DIR=$(MEMLAYER_BGE_MODEL_DIR) model=$${MEMLAYER_LLM_MODEL:-default} (hybrid+rerank; needs agent CLI for answer/judge)."
 	MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark locomo $(LIMIT_FLAG) \
 	  --save-scorecard "$(SCORECARD_FULL)"
 	@$(COMPARE_LOCOMO) --scorecard "$(SCORECARD_FULL)" --baselines "$(LOCOMO_BASELINES)"

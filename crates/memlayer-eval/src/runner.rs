@@ -379,10 +379,11 @@ pub async fn run(
             None
         };
 
-    let queries_to_run: Vec<_> = match cfg.limit {
-        Some(n) => queries.into_iter().take(n).collect(),
-        None    => queries,
-    };
+    // Prefer stratified LoCoMo sampling when a limit is set here (callers may
+    // also pre-limit). Never use a raw prefix `take(n)` — that over-weights
+    // early multi-hop items in conv-26 and omits single_hop.
+    let stratified = matches!(cfg.benchmark, BenchmarkKind::Locomo);
+    let queries_to_run = crate::apply_query_limit(queries, cfg.limit, stratified);
 
     info!(count = queries_to_run.len(), k = cfg.k, "running queries");
     let mode_label = match cfg.retrieval.mode {
@@ -739,9 +740,19 @@ async fn eval_one_query(
     let project = infer_project(benchmark, &q.id);
     let mut evidence_window = evidence_window_for_question(retrieval.evidence_window, &q.question);
     let multihop = benchmark == BenchmarkKind::Locomo && is_locomo_multihop(q.category.as_deref());
+    let temporal = benchmark == BenchmarkKind::Locomo && is_locomo_temporal(q.category.as_deref());
     if multihop {
         evidence_window = evidence_window.max(6);
     }
+    if temporal {
+        evidence_window = evidence_window.max(8);
+    }
+    // Temporal QA is hurt by recency decay (old dated turns are the answer).
+    let decay_lambda = if temporal {
+        0.0
+    } else {
+        retrieval.decay_lambda
+    };
 
     let mut rerank_skipped = false;
     let (hits, retrieval_us, rerank_us) = match retrieval.mode {
@@ -754,7 +765,10 @@ async fn eval_one_query(
             let (embedder, cache) = hybrid_stack.expect(
                 "hybrid_stack initialised when mode is Hybrid or HybridRerank",
             );
-            let retrieve_k = if multihop && retrieval.rerank {
+            // LoCoMo: wide candidate pool for all categories (was multi-hop only).
+            let retrieve_k = if benchmark == BenchmarkKind::Locomo && retrieval.rerank {
+                k * 5
+            } else if multihop && retrieval.rerank {
                 k * 5
             } else if retrieval.rerank {
                 k * 3
@@ -776,7 +790,7 @@ async fn eval_one_query(
                     evidence_window,
                     embedder.clone(),
                     cache.clone(),
-                    retrieval.decay_lambda,
+                    decay_lambda,
                 )
                 .await
                 .with_context(|| format!("facts retrieve for query '{}'", q.id))?;
@@ -806,6 +820,24 @@ async fn eval_one_query(
                     (
                         fallback.hits,
                         (ret.latency + fallback.latency).as_micros() as u64,
+                    )
+                } else if benchmark == BenchmarkKind::Locomo {
+                    // Fuse facts + obs so turns without extracted facts still
+                    // contribute dia_id evidence for recall@k / answer context.
+                    let obs = crate::retrieve_hybrid::retrieve_hybrid(
+                        data_dir,
+                        &project,
+                        &q.question,
+                        retrieve_k,
+                        embedder.clone(),
+                        cache.clone(),
+                    )
+                    .await
+                    .with_context(|| format!("obs hybrid fuse for query '{}'", q.id))?;
+                    let fused = fuse_hit_lists(&ret.hits, &obs.hits, retrieve_k as usize);
+                    (
+                        fused,
+                        (ret.latency + obs.latency).as_micros() as u64,
                     )
                 } else {
                     (ret.hits, ret.latency.as_micros() as u64)
@@ -967,6 +999,10 @@ async fn eval_one_query(
     })
 }
 
+fn is_locomo_temporal(category: Option<&str>) -> bool {
+    matches!(category, Some("temporal") | Some("2"))
+}
+
 /// Widen the evidence window for temporal questions (eval-only).
 pub fn evidence_window_for_question(base: u8, question: &str) -> u8 {
     let q = question.to_ascii_lowercase();
@@ -977,6 +1013,25 @@ pub fn evidence_window_for_question(base: u8, question: &str) -> u8 {
     }
 }
 
+/// Normalize a LoCoMo dialogue id for substring match (`D1:3`, `[D1:3]`, `(D1:3)`).
+fn normalize_dia_needle(raw: &str) -> String {
+    raw.trim()
+        .trim_matches(|c: char| c == '[' || c == ']' || c == '(' || c == ')')
+        .to_ascii_lowercase()
+}
+
+/// True when `haystack` contains dialogue id `needle` (e.g. `D1:3`).
+fn hit_contains_dia_id(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let h = haystack.to_ascii_lowercase();
+    // Prefer bracketed form first (ingest prefix), then bare id.
+    h.contains(&format!("[{needle}]"))
+        || h.contains(&format!("({needle})"))
+        || h.contains(needle)
+}
+
 /// 0-based rank of the first hit containing any evidence turn id.
 pub fn evidence_rank(evidence: &[String], hits: &[String]) -> Option<usize> {
     if evidence.is_empty() {
@@ -984,16 +1039,39 @@ pub fn evidence_rank(evidence: &[String], hits: &[String]) -> Option<usize> {
     }
     let needles: Vec<String> = evidence
         .iter()
-        .map(|e| e.trim().to_ascii_lowercase())
+        .map(|e| normalize_dia_needle(e))
         .filter(|e| !e.is_empty())
         .collect();
     if needles.is_empty() {
         return None;
     }
-    hits.iter().position(|h| {
-        let hl = h.to_ascii_lowercase();
-        needles.iter().any(|n| hl.contains(n))
-    })
+    hits.iter()
+        .position(|h| needles.iter().any(|n| hit_contains_dia_id(h, n)))
+}
+
+/// RRF-fuse two hit lists (facts + observations) so gold `dia_id` turns can
+/// surface even when no fact was extracted from that turn.
+pub fn fuse_hit_lists(facts: &[String], obs: &[String], k: usize) -> Vec<String> {
+    use std::collections::HashMap;
+    const RRF_K: f64 = 60.0;
+    let mut scores: HashMap<&str, f64> = HashMap::new();
+    for (rank, h) in facts.iter().enumerate() {
+        *scores.entry(h.as_str()).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
+    }
+    for (rank, h) in obs.iter().enumerate() {
+        *scores.entry(h.as_str()).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
+    }
+    let mut ranked: Vec<(&str, f64)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(b.0))
+    });
+    ranked
+        .into_iter()
+        .take(k)
+        .map(|(s, _)| s.to_string())
+        .collect()
 }
 
 /// 0-based rank of the first hit containing the gold answer substring.
@@ -1213,6 +1291,24 @@ mod tests {
         // Gold substring may miss while evidence hits.
         assert_eq!(gold_substring_rank("LGBTQ support group", &hits), Some(1));
         assert_eq!(gold_substring_rank("the park", &hits), None);
+
+        // Fact-formatted hit with bracketed dia_id in expand lines.
+        let fact_hits = vec![
+            "Caroline prefers painting\n  - title: [D1:1] hi\n  - [D1:1] Melanie: hi".into(),
+            "Caroline attended LGBTQ support group\n  - [10:00 am] Caroline (D1:3): …\n  - [D1:3] Caroline: I went to the LGBTQ support group".into(),
+        ];
+        assert_eq!(evidence_rank(&["D1:3".into()], &fact_hits), Some(1));
+        assert_eq!(evidence_rank(&["[D1:3]".into()], &fact_hits), Some(1));
+
+        let fused = fuse_hit_lists(
+            &["fact-only SPO".into()],
+            &["[D1:3] Caroline: went to group".into(), "other".into()],
+            3,
+        );
+        assert!(
+            evidence_rank(&["D1:3".into()], &fused).is_some(),
+            "obs fuse must surface dia_id: {fused:?}"
+        );
 
         let q = EvalQuery {
             id: "c-q0".into(),

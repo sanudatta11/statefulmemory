@@ -2,7 +2,8 @@
 //!
 //! LoCoMo `LIMIT=N` used to be a prefix `take(N)`, which over-weights early
 //! multi-hop items and omits single-hop — unfair vs Mem0/Engram overalls.
-//! Stratified sampling keeps categories 1–4 proportional (adversarial excluded).
+//! Stratified sampling keeps categories 1–4 proportional (adversarial excluded)
+//! and round-robins across conversation projects within each category.
 
 use crate::datasets::EvalQuery;
 
@@ -31,6 +32,52 @@ pub fn apply_query_limit(queries: Vec<EvalQuery>, limit: Option<usize>, stratifi
     }
 }
 
+/// Project key from LoCoMo query id (`conv-26-q3` → `conv-26`).
+fn project_key(q: &EvalQuery) -> String {
+    q.id
+        .rsplit_once("-q")
+        .map(|(prefix, _)| prefix.to_string())
+        .unwrap_or_else(|| q.id.clone())
+}
+
+/// Round-robin across projects so LIMIT slices are not all from conv-26.
+fn take_across_projects(bucket: Vec<EvalQuery>, take_n: usize) -> Vec<EvalQuery> {
+    use std::collections::{BTreeMap, VecDeque};
+
+    if take_n == 0 || bucket.is_empty() {
+        return Vec::new();
+    }
+    if bucket.len() <= take_n {
+        return bucket;
+    }
+
+    let mut by_proj: BTreeMap<String, VecDeque<EvalQuery>> = BTreeMap::new();
+    for q in bucket {
+        by_proj.entry(project_key(&q)).or_default().push_back(q);
+    }
+    let mut keys: Vec<String> = by_proj.keys().cloned().collect();
+    // Stable order by project name.
+    keys.sort();
+
+    let mut out = Vec::with_capacity(take_n);
+    while out.len() < take_n {
+        let mut progressed = false;
+        for key in &keys {
+            if out.len() >= take_n {
+                break;
+            }
+            if let Some(q) = by_proj.get_mut(key).and_then(|dq| dq.pop_front()) {
+                out.push(q);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    out
+}
+
 fn stratify_locomo_queries(queries: Vec<EvalQuery>, cap: usize) -> Vec<EvalQuery> {
     use std::collections::HashMap;
 
@@ -53,7 +100,7 @@ fn stratify_locomo_queries(queries: Vec<EvalQuery>, cap: usize) -> Vec<EvalQuery
         .map(|c| by_cat.get(*c).map(|v| v.len()).unwrap_or(0))
         .sum();
     if eligible == 0 {
-        return other.into_iter().take(cap).collect();
+        return take_across_projects(other, cap);
     }
 
     // Largest-remainder allocation across categories that have items.
@@ -105,12 +152,12 @@ fn stratify_locomo_queries(queries: Vec<EvalQuery>, cap: usize) -> Vec<EvalQuery
             continue;
         }
         if let Some(bucket) = by_cat.remove(name) {
-            out.extend(bucket.into_iter().take(take_n));
+            out.extend(take_across_projects(bucket, take_n));
         }
     }
 
     if out.len() < cap {
-        out.extend(other.into_iter().take(cap - out.len()));
+        out.extend(take_across_projects(other, cap - out.len()));
     }
     out.truncate(cap);
     out
@@ -166,6 +213,22 @@ mod tests {
         // Single-hop is majority of pool → largest share.
         assert!(counts["single_hop"] >= counts["multi_hop"]);
         assert!(counts["single_hop"] >= 20);
+    }
+
+    #[test]
+    fn stratified_round_robins_across_projects() {
+        let mut qs = Vec::new();
+        for i in 0..30 {
+            qs.push(q(&format!("conv-26-q{i}"), "single_hop"));
+        }
+        for i in 0..30 {
+            qs.push(q(&format!("conv-42-q{i}"), "single_hop"));
+        }
+        let out = apply_query_limit(qs, Some(10), true);
+        assert_eq!(out.len(), 10);
+        let p26 = out.iter().filter(|q| q.id.starts_with("conv-26-")).count();
+        let p42 = out.iter().filter(|q| q.id.starts_with("conv-42-")).count();
+        assert!(p26 >= 4 && p42 >= 4, "expected mix across projects, got p26={p26} p42={p42}");
     }
 
     #[test]

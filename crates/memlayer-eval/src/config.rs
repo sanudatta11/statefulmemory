@@ -67,14 +67,14 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
         BenchmarkKind::Locomo => RetrievalConfig {
             mode: RetrievalMode::HybridRerank,
             k: 20,
-            evidence_window: 4,
+            evidence_window: 6,
             rerank: true,
             decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
         },
         BenchmarkKind::Longmemeval => RetrievalConfig {
             mode: RetrievalMode::HybridRerank,
             k: 10,
-            evidence_window: 4,
+            evidence_window: 6,
             rerank: true,
             decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
         },

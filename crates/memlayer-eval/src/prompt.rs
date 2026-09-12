@@ -11,6 +11,10 @@ fn is_multihop(category: Option<&str>) -> bool {
     matches!(category, Some("multi_hop") | Some("1"))
 }
 
+fn is_temporal(category: Option<&str>) -> bool {
+    matches!(category, Some("temporal") | Some("2"))
+}
+
 /// Build the system prompt handed to the answer LLM.
 /// Returns (system_prompt, user_message, estimated_token_count).
 pub fn build_answer_prompt(
@@ -37,6 +41,28 @@ pub fn build_answer_prompt(
             Prefer a short grounded synthesis over a single-span quote.\n"
     } else {
         ""
+    };
+
+    let temporal_rule = if is_temporal(category) {
+        "\n\
+         7. This is a TEMPORAL question (when / how long / before / after):\n\
+            - Treat bracketed session timestamps like\n\
+              '[9:55 am on 22 October, 2023]' as the conversation clock.\n\
+            - The LATEST timestamp among memories is \"now\" for relative\n\
+              answers (e.g. \"last week\", \"2 days ago\") — never use today's\n\
+              real-world date.\n\
+            - Prefer absolute dates from memory text or fact [YYYY-MM-DD]\n\
+              prefixes when the question asks \"when\".\n\
+            - If several candidate dates appear, pick the one that answers\n\
+              the question's event, not an unrelated timestamp.\n"
+    } else {
+        ""
+    };
+
+    let extra_rule = if !multihop_rule.is_empty() {
+        multihop_rule
+    } else {
+        temporal_rule
     };
 
     let system = format!(
@@ -67,7 +93,7 @@ pub fn build_answer_prompt(
             when memories support it.\n\
          6. Be concise — answer the question directly. Avoid bullet lists or\n\
             paragraphs of context unless asked.\
-         {multihop_rule}\
+         {extra_rule}\
          \n\
          <memories>\n{memories_block}\n</memories>"
     );
@@ -127,6 +153,15 @@ mod tests {
     #[test]
     fn single_hop_prompt_skips_multihop_rule() {
         let (sys, _, _) = build_answer_prompt(&["a".into()], "Q?", Some("single_hop"));
+        assert!(!sys.contains("MULTI-HOP"));
+        assert!(!sys.contains("TEMPORAL"));
+    }
+
+    #[test]
+    fn temporal_prompt_anchors_to_session_clock() {
+        let (sys, _, _) = build_answer_prompt(&["a".into()], "When?", Some("temporal"));
+        assert!(sys.contains("TEMPORAL"));
+        assert!(sys.contains("conversation clock") || sys.contains("LATEST timestamp"));
         assert!(!sys.contains("MULTI-HOP"));
     }
 }
