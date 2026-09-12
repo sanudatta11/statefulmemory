@@ -44,10 +44,20 @@ pub fn spawn_daemon() -> DaemonHandle {
     DaemonHandle { data_dir, child }
 }
 
+/// True only for a real CLI file — never a directory.
+///
+/// The repo checkout is often named `memlayer` (e.g. GHA
+/// `/home/runner/work/memlayer/memlayer`). Walking parents with
+/// `Path::exists()` alone matches that directory and `Command::new` then
+/// fails with EACCES (errno 13) when trying to execve it.
+fn is_cli_binary(path: &Path) -> bool {
+    path.is_file()
+}
+
 pub fn locate_binary() -> PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_memlayer") {
         let path = PathBuf::from(p);
-        if path.exists() {
+        if is_cli_binary(&path) {
             return path;
         }
     }
@@ -59,13 +69,13 @@ pub fn locate_binary() -> PathBuf {
             if deps.file_name().and_then(|s| s.to_str()) == Some("deps") {
                 let cand = deps.join("../memlayer");
                 if let Ok(canon) = cand.canonicalize() {
-                    if canon.exists() {
+                    if is_cli_binary(&canon) {
                         return canon;
                     }
                 }
                 let cand = deps.parent().map(|p| p.join("memlayer"));
                 if let Some(c) = cand {
-                    if c.exists() {
+                    if is_cli_binary(&c) {
                         return c;
                     }
                 }
@@ -78,7 +88,7 @@ pub fn locate_binary() -> PathBuf {
                 None => break,
             };
             let cand = dir.join("memlayer");
-            if cand.exists() {
+            if is_cli_binary(&cand) {
                 return cand;
             }
             cur = dir.parent();
@@ -98,7 +108,7 @@ pub fn locate_binary() -> PathBuf {
         });
     for profile in ["debug", "release"] {
         let cand = target.join(profile).join("memlayer");
-        if cand.exists() {
+        if is_cli_binary(&cand) {
             return cand;
         }
     }
@@ -111,7 +121,7 @@ pub fn locate_binary() -> PathBuf {
         if st.success() {
             for profile in ["debug", "release"] {
                 let cand = target.join(profile).join("memlayer");
-                if cand.exists() {
+                if is_cli_binary(&cand) {
                     return cand;
                 }
             }
@@ -546,5 +556,30 @@ pub fn start_session(env: &CliEnv, session_id: &str) {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
         );
+    }
+}
+
+#[cfg(test)]
+mod locate_binary_tests {
+    use super::is_cli_binary;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn rejects_checkout_directory_named_memlayer() {
+        let td = tempfile::TempDir::new().unwrap();
+        // Mimic GHA layout: …/work/memlayer/memlayer (directory, not the CLI).
+        let checkout = td.path().join("memlayer");
+        fs::create_dir_all(&checkout).unwrap();
+        assert!(
+            !is_cli_binary(&checkout),
+            "locate_binary must not treat the repo checkout dir as the CLI"
+        );
+
+        let fake_bin = td.path().join("bin").join("memlayer");
+        fs::create_dir_all(fake_bin.parent().unwrap()).unwrap();
+        fs::write(&fake_bin, b"#!/bin/true\n").unwrap();
+        assert!(is_cli_binary(&fake_bin));
+        assert!(!is_cli_binary(&PathBuf::from("/no/such/memlayer")));
     }
 }

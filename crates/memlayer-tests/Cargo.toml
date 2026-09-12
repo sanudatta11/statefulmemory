@@ -10,9 +10,9 @@ description = "End-to-end integration tests against the running memlayer daemon.
 [dependencies]
 memlayer-core = { path = "../memlayer-core" }
 memlayer-proto = { path = "../memlayer-proto" }
-# Depend on memlayer-cli so CARGO_BIN_EXE_memlayer resolves to the new
-# unified `memlayer` binary (Spec 2). The tests spawn it as
-# `memlayer daemon start --foreground` per PRD §4.1.
+# Depend on memlayer-cli so cargo builds the unified `memlayer` binary
+# before integration tests. (CARGO_BIN_EXE_* only covers same-package
+# bins; tests locate the artifact via `locate_binary()`.)
 memlayer-cli = { path = "../memlayer-cli" }
 # memlayer-client is needed for TS-15: the CLI binary only talks UDS in v1,
 # so we drive the daemon's TCP+TLS path directly through the client crate.
