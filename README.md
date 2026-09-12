@@ -20,6 +20,23 @@ out or speak MCP.
 [![CI](https://github.com/sanudatta11/memlayer/actions/workflows/ci.yml/badge.svg)](https://github.com/sanudatta11/memlayer/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+## Demos
+
+<p align="center">
+  <video src="https://memlayer.org/videos/overview.mp4" controls muted playsinline width="100%"></video>
+  <br />
+  <em>Overview — <a href="https://memlayer.org/">memlayer.org</a> · <a href="https://memlayer.org/videos/overview.mp4">download MP4</a></em>
+</p>
+
+| Demo | Video | Guide |
+|---|---|---|
+| Install and agents | [MP4](https://memlayer.org/videos/install-agents.mp4) | [Agents / MCP](https://memlayer.org/docs/agents/) |
+| Save, search, context | [MP4](https://memlayer.org/videos/save-search-context.mp4) | [Observations](https://memlayer.org/docs/observations/) · [Search and context](https://memlayer.org/docs/search-context/) |
+| Anchors and verify | [MP4](https://memlayer.org/videos/anchors-verify.mp4) | [Anchors and verify](https://memlayer.org/docs/anchors-verify/) |
+| Decide and mem | [MP4](https://memlayer.org/videos/decide-mem.mp4) | [Decide](https://memlayer.org/docs/decide/) · [Mem archives](https://memlayer.org/docs/mem/) |
+
+Silent terminal-style clips (no narration). Full walkthrough: [Getting started](https://memlayer.org/docs/getting-started/).
+
 ## What it does
 
 | Primitive | Command / tool | Purpose |
@@ -90,9 +107,15 @@ Details: [Wire into your agent](https://memlayer.org/docs/agents/).
 - [Getting started](https://memlayer.org/docs/getting-started/)
 - [Install](https://memlayer.org/docs/install/)
 - [Agents / MCP](https://memlayer.org/docs/agents/)
-- [Everyday commands](https://memlayer.org/docs/commands/)
+- [Observations](https://memlayer.org/docs/observations/)
+- [Search and context](https://memlayer.org/docs/search-context/)
+- [Anchors and verify](https://memlayer.org/docs/anchors-verify/)
+- [Decide](https://memlayer.org/docs/decide/)
+- [Mem archives](https://memlayer.org/docs/mem/)
 - [Config](https://memlayer.org/docs/config/)
+- [LoCoMo eval](https://memlayer.org/docs/locomo/)
 - [Troubleshooting](https://memlayer.org/docs/troubleshooting/)
+- [Command cheat sheet](https://memlayer.org/docs/commands/)
 
 ## Contributing
 
