@@ -372,7 +372,7 @@ fn extract_dia_id(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i + 3 < bytes.len() {
-        if bytes[i].to_ascii_lowercase() == b'd' {
+        if bytes[i].eq_ignore_ascii_case(&b'd') {
             let start = i;
             i += 1;
             while i < bytes.len() && bytes[i].is_ascii_digit() {

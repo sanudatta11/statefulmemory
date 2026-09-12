@@ -765,10 +765,10 @@ async fn eval_one_query(
             let (embedder, cache) = hybrid_stack.expect(
                 "hybrid_stack initialised when mode is Hybrid or HybridRerank",
             );
-            // LoCoMo: wide candidate pool for all categories (was multi-hop only).
-            let retrieve_k = if benchmark == BenchmarkKind::Locomo && retrieval.rerank {
-                k * 5
-            } else if multihop && retrieval.rerank {
+            // LoCoMo (all cats) and multi-hop: wide candidate pool before rerank.
+            let retrieve_k = if retrieval.rerank
+                && (benchmark == BenchmarkKind::Locomo || multihop)
+            {
                 k * 5
             } else if retrieval.rerank {
                 k * 3
