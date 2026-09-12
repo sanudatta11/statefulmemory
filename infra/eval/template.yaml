@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  One-shot memlayer eval on EC2: clone git ref, vendor BGE, run
+  eval-locomo-smoke → eval-staleness → eval-locomo, upload scorecards to S3,
+  optionally self-terminate. Default LLM path is Gemini CLI + Secrets Manager.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Source
+        Parameters:
+          - GitRepo
+          - GitRef
+      - Label:
+          default: Compute
+        Parameters:
+          - InstanceType
+          - VpcId
+          - SubnetId
+          - KeyName
+          - TerminateOnComplete
+      - Label:
+          default: LLM
+        Parameters:
+          - LlmProvider
+          - LlmSecretArn
+          - QueryLimit
+    ParameterLabels:
+      LlmSecretArn:
+        default: Secrets Manager ARN (GEMINI_API_KEY or ANTHROPIC_API_KEY JSON)
+
+Parameters:
+  GitRepo:
+    Type: String
+    Default: https://github.com/sanudatta11/memlayer.git
+    Description: Git repository URL to clone on the instance.
+
+  GitRef:
+    Type: String
+    Default: main
+    Description: Branch, tag, or commit SHA to evaluate.
+
+  InstanceType:
+    Type: String
+    Default: c7i.2xlarge
+    Description: EC2 instance type (16–32 GB RAM recommended for hybrid + caches).
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the eval instance (usually your default VPC).
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet with outbound internet (apt, git, S3, Secrets Manager, LLM APIs).
+
+  LlmSecretArn:
+    Type: String
+    Description: >-
+      Secrets Manager secret ARN. JSON must include GEMINI_API_KEY (gemini) or
+      ANTHROPIC_API_KEY (claude).
+    AllowedPattern: "^arn:aws[a-zA-Z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$"
+    ConstraintDescription: Must be a Secrets Manager secret ARN.
+
+  LlmProvider:
+    Type: String
+    Default: gemini
+    AllowedValues:
+      - gemini
+      - claude
+    Description: Agent CLI to install and pin via MEMLAYER_LLM_PROVIDER / MEMLAYER_LLM_BIN.
+
+  QueryLimit:
+    Type: String
+    Default: ""
+    Description: Optional LIMIT=N for Make (empty = full LoCoMo). Use 5 for a cheap smoke deploy.
+
+  KeyName:
+    Type: String
+    Default: ""
+    Description: Optional EC2 key pair for SSH debug. Leave empty to disable SSH ingress.
+
+  TerminateOnComplete:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Terminate the instance after suite finish (success or failure). Default true.
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: SSM public parameter for Ubuntu 24.04 amd64 AMI.
+
+Conditions:
+  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
+
+Resources:
+  ScorecardBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Purpose
+          Value: memlayer-eval
+
+  EvalLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /memlayer/eval/${AWS::StackName}
+      RetentionInDays: 30
+
+  EvalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: memlayer eval egress + optional SSH
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Outbound for apt, git, S3, Secrets Manager, LLM APIs
+      SecurityGroupIngress: !If
+        - HasKeyName
+        - - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0
+            Description: SSH (restrict CidrIp in production)
+        - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-eval-sg
+
+  EvalInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MemlayerEvalRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ScorecardUpload
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ScorecardBucket.Arn
+                  - !Sub ${ScorecardBucket.Arn}/*
+              - Sid: ReadLlmSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref LlmSecretArn
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !GetAtt EvalLogGroup.Arn
+                  - !Sub ${EvalLogGroup.Arn}:*
+              - Sid: SelfTerminate
+                Effect: Allow
+                Action:
+                  - ec2:TerminateInstances
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/aws:cloudformation:stack-name: !Ref AWS::StackName
+
+  EvalInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EvalInstanceRole
+
+  EvalInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EvalInstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref EvalSecurityGroup
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref AWS::NoValue]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-eval
+        - Key: Purpose
+          Value: memlayer-eval
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y git curl ca-certificates
+          export SCORECARD_BUCKET=${ScorecardBucket}
+          export STACK_NAME=${AWS::StackName}
+          export AWS_REGION=${AWS::Region}
+          export AWS_DEFAULT_REGION=${AWS::Region}
+          export GIT_REPO='${GitRepo}'
+          export GIT_REF='${GitRef}'
+          export LLM_PROVIDER=${LlmProvider}
+          export LLM_SECRET_ARN='${LlmSecretArn}'
+          export LOG_GROUP=${EvalLogGroup}
+          export INSTANCE_TYPE=${InstanceType}
+          export TERMINATE_ON_COMPLETE=${TerminateOnComplete}
+          export QUERY_LIMIT='${QueryLimit}'
+          export LOG_FILE=/var/log/memlayer-eval.log
+          BOOT=/tmp/memlayer-bootstrap
+          rm -rf "$BOOT"
+          mkdir -p "$BOOT"
+          if git ls-remote --heads "$GIT_REPO" "$GIT_REF" | grep -q .; then
+            git clone --depth 1 --branch "$GIT_REF" "$GIT_REPO" "$BOOT"
+          elif git ls-remote --tags "$GIT_REPO" "$GIT_REF" | grep -q .; then
+            git clone --depth 1 --branch "$GIT_REF" "$GIT_REPO" "$BOOT"
+          else
+            git clone "$GIT_REPO" "$BOOT"
+            git -C "$BOOT" checkout "$GIT_REF"
+          fi
+          chmod +x "$BOOT/infra/eval/userdata.sh"
+          exec "$BOOT/infra/eval/userdata.sh"
+
+Outputs:
+  ScorecardBucketName:
+    Description: S3 bucket for scorecards and run logs
+    Value: !Ref ScorecardBucket
+
+  ScorecardPrefix:
+    Description: Scorecards land under s3://bucket/<stack>/<timestamp>/
+    Value: !Sub s3://${ScorecardBucket}/${AWS::StackName}/
+
+  LogGroupName:
+    Description: CloudWatch Logs group for eval summaries
+    Value: !Ref EvalLogGroup
+
+  InstanceId:
+    Description: Eval EC2 instance id
+    Value: !Ref EvalInstance

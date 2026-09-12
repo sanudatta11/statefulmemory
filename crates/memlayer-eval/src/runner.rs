@@ -14,6 +14,90 @@ use crate::judge::JudgeClient;
 use crate::prompt::{build_answer_prompt, build_judge_prompt};
 use crate::retrieve::retrieve;
 
+/// In-place stderr progress for long eval runs.
+///
+/// On a TTY, `status` rewrites one sticky line with `\r` (no scroll spam).
+/// Phase messages use `note`, which commits a newline. Non-TTY (CI / redirected
+/// logs) falls back to one newline per update so capture still works.
+struct CliProgress {
+    tty: bool,
+    /// Visible width of the last sticky status line (for padding clears).
+    sticky_len: usize,
+}
+
+impl CliProgress {
+    fn new() -> Self {
+        use std::io::IsTerminal;
+        Self {
+            tty: std::io::stderr().is_terminal(),
+            sticky_len: 0,
+        }
+    }
+
+    fn status(&mut self, msg: impl std::fmt::Display) {
+        use std::io::Write;
+        let line = format!("[eval] {msg}");
+        if self.tty {
+            eprint!("\r{line}");
+            if line.len() < self.sticky_len {
+                let pad = self.sticky_len - line.len();
+                eprint!("{:pad$}", "");
+                eprint!("\r{line}");
+            }
+            self.sticky_len = line.len();
+            let _ = std::io::stderr().flush();
+        } else {
+            eprintln!("{line}");
+        }
+    }
+
+    fn note(&mut self, msg: impl std::fmt::Display) {
+        use std::io::Write;
+        if self.tty && self.sticky_len > 0 {
+            // End the sticky line before a permanent note.
+            eprintln!();
+            self.sticky_len = 0;
+        }
+        eprintln!("[eval] {msg}");
+        let _ = std::io::stderr().flush();
+    }
+}
+
+fn pct(done: usize, total: usize) -> f64 {
+    if total == 0 {
+        100.0
+    } else {
+        (done as f64 / total as f64) * 100.0
+    }
+}
+
+fn fmt_eta(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Compact ASCII bar for percentage display, e.g. `[####------]`.
+fn pct_bar(done: usize, total: usize, width: usize) -> String {
+    let filled = if total == 0 {
+        width
+    } else {
+        ((done * width) + (total / 2)) / total
+    }
+    .min(width);
+    let mut s = String::with_capacity(width + 2);
+    s.push('[');
+    for i in 0..width {
+        s.push(if i < filled { '#' } else { '-' });
+    }
+    s.push(']');
+    s
+}
+
 /// LLM rerank fires only when the rank-1 vs rank-2 score delta is below
 /// this threshold (P5 spec-task-31 cost gate). When the top fact is a
 /// clear winner, a Haiku-shuffle costs $$ and adds judge noise without
@@ -207,19 +291,34 @@ pub async fn run(
     memories: Vec<EvalMemory>,
     queries: Vec<EvalQuery>,
 ) -> Result<RunReport> {
+    let mut ui = CliProgress::new();
+
     // --- Ingest ---
     if !cfg.skip_ingest {
         info!(count = memories.len(), "ingesting memories");
+        let n = memories.len();
+        ui.status(format!("ingest  {:>5.1}%  0/{n}  queuing writes …", 0.0));
         crate::ingest::ingest_memories(&cfg.data_dir, &memories, 500, cfg.no_supersede)
             .await
             .context("ingest")?;
+        ui.note(format!("ingest complete  ({n} memories)"));
     }
 
     // --- Evaluate ---
     let judge = if cfg.lexical_judge {
         None
     } else {
-        Some(JudgeClient::new().context("create judge client")?)
+        ui.status("detecting agent CLI for answer/judge …");
+        let j = JudgeClient::new().context("create judge client")?;
+        if let Some(p) = memlayer_extract::agent_cli::detect_provider() {
+            ui.note(format!(
+                "LLM provider={} bin={} (override with MEMLAYER_LLM_PROVIDER / MEMLAYER_LLM_BIN)",
+                p.id, p.bin
+            ));
+        } else {
+            ui.note("agent CLI ready for answer/judge");
+        }
+        Some(j)
     };
 
     // Reuse the same shell-out client used by extraction so rerank shares
@@ -239,6 +338,16 @@ pub async fn run(
     };
 
     info!(count = queries_to_run.len(), k = cfg.k, "running queries");
+    let mode_label = match cfg.retrieval.mode {
+        RetrievalMode::Bm25 => "bm25",
+        RetrievalMode::Hybrid => "hybrid",
+        RetrievalMode::HybridRerank => "hybrid-rerank",
+    };
+    ui.note(format!(
+        "running {} queries (mode={mode_label}, k={})",
+        queries_to_run.len(),
+        cfg.k
+    ));
 
     if matches!(
         cfg.retrieval.mode,
@@ -262,6 +371,7 @@ pub async fn run(
         RetrievalMode::Bm25 => None,
         RetrievalMode::Hybrid | RetrievalMode::HybridRerank => {
             info!("loading BGE-small embedder for hybrid retrieval");
+            ui.status("loading BGE-small embedder …");
             let embedder = std::sync::Arc::new(
                 memlayer_embed::BgeSmallEmbedder::try_new()
                     .context("load BGE-small embedder")?,
@@ -270,6 +380,7 @@ pub async fn run(
                 memlayer_embed::cache::EmbeddingCache::open(&cfg.data_dir)
                     .context("open embedding cache")?,
             );
+            ui.note("BGE-small ready");
             Some((embedder, cache))
         }
     };
@@ -297,8 +408,17 @@ pub async fn run(
     let run_t0 = Instant::now();
     let mut correct_so_far = 0usize;
     let mut completed = 0usize;
+    let mut answer_skipped = 0usize;
+    let mut last_answer_err: Option<String> = None;
     for q in &queries_to_run {
         let t_start = Instant::now();
+        let next = completed + 1;
+        ui.status(format!(
+            "{} {:5.1}%  {next}/{total_queries}  …  id={}",
+            pct_bar(completed, total_queries, 20),
+            pct(completed, total_queries),
+            q.id,
+        ));
 
         // Determine project name for this query (inferred from id prefix).
         let project = infer_project(cfg.benchmark, &q.id);
@@ -434,7 +554,11 @@ pub async fn run(
             let model_answer = match judge.answer(&system, &user_msg).await {
                 Ok(a) => a,
                 Err(e) => {
-                    warn!(query_id = %q.id, error = %e, "answer LLM failed, skipping query");
+                    let msg = format!("{e:#}");
+                    warn!(query_id = %q.id, error = %msg, "answer LLM failed, skipping query");
+                    ui.note(format!("answer LLM failed for {}: {msg}", q.id));
+                    answer_skipped += 1;
+                    last_answer_err = Some(msg);
                     continue;
                 }
             };
@@ -499,6 +623,16 @@ pub async fn run(
             "query complete"
         );
 
+        let mark = if correct { "ok" } else { "miss" };
+        ui.status(format!(
+            "{} {:5.1}%  {completed}/{total_queries}  {mark}  acc={acc_pct:.1}%  eta={}  e2e={:.1}s  id={}",
+            pct_bar(completed, total_queries, 20),
+            pct(completed, total_queries),
+            fmt_eta(eta_s),
+            (end_to_end_us as f64) / 1_000_000.0,
+            q.id,
+        ));
+
         if let Some(w) = trace_writer.as_mut() {
             use std::io::Write;
             let entry = serde_json::json!({
@@ -548,6 +682,16 @@ pub async fn run(
         });
     }
 
+    if results.is_empty() && !cfg.lexical_judge && total_queries > 0 {
+        let hint = last_answer_err.unwrap_or_else(|| "unknown LLM error".into());
+        anyhow::bail!(
+            "all {total_queries} queries skipped after answer LLM failures \
+             ({answer_skipped} skips). Last error: {hint}. \
+             Fix auth for the detected CLI, or pin a working one: \
+             export MEMLAYER_LLM_PROVIDER=opencode  # or gemini / claude"
+        );
+    }
+
     let mode_tag = match cfg.retrieval.mode {
         RetrievalMode::Bm25 => "bm25",
         RetrievalMode::Hybrid => "hybrid",
@@ -566,6 +710,13 @@ pub async fn run(
     std::fs::write(&json_path, &json).context("write JSON report")?;
     std::fs::write(&cfg.output_path, report.to_markdown()).context("write Markdown report")?;
     info!(md = %cfg.output_path.display(), json = %json_path.display(), "report written");
+    ui.note(format!(
+        "done  accuracy={:.1}%  ({}/{})  report={}",
+        report.accuracy_pct,
+        report.correct,
+        report.total_queries,
+        cfg.output_path.display()
+    ));
 
     Ok(report)
 }

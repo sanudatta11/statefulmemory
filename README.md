@@ -119,6 +119,7 @@ Details: [Wire into your agent](https://memlayer.org/docs/agents/).
 - [Mem archives](https://memlayer.org/docs/mem/)
 - [Config](https://memlayer.org/docs/config/)
 - [LoCoMo eval](https://memlayer.org/docs/locomo/)
+- [AWS one-shot eval stack](infra/eval/README.md) (CloudFormation + EC2)
 - [Troubleshooting](https://memlayer.org/docs/troubleshooting/)
 - [Command cheat sheet](https://memlayer.org/docs/commands/)
 

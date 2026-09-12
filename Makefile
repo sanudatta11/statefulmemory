@@ -29,6 +29,9 @@ SCORECARD_STALE_BASE := $(EVAL_OUT)/staleness-baseline.json
 BGE_MODEL_DIR       ?= $(HOME)/.memlayer-models/bge-small
 VENDOR_BGE          := $(CURDIR)/crates/memlayer-eval/scripts/vendor_bge_model.sh
 
+# Eval / hybrid paths need BGE without a manual shell export.
+export MEMLAYER_BGE_MODEL_DIR := $(BGE_MODEL_DIR)
+
 ifdef LIMIT
 LIMIT_FLAG := --limit $(LIMIT)
 else
@@ -177,12 +180,12 @@ eval-locomo-fetch:
 	fi
 
 eval-bge-model:
-	MEMLAYER_BGE_MODEL_DIR="$(BGE_MODEL_DIR)" "$(VENDOR_BGE)"
+	@QUIET=1 "$(VENDOR_BGE)"
 
 eval-locomo eval-locomo-full: release eval-locomo-fetch eval-bge-model
 	@mkdir -p "$(EVAL_OUT)"
-	@echo "Full LoCoMo uses hybrid+rerank + agent CLI for answer/judge."
-	MEMLAYER_BGE_MODEL_DIR="$(BGE_MODEL_DIR)" MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark locomo $(LIMIT_FLAG) \
+	@echo "Full LoCoMo: MEMLAYER_BGE_MODEL_DIR=$(MEMLAYER_BGE_MODEL_DIR) (hybrid+rerank; needs agent CLI for answer/judge)."
+	MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark locomo $(LIMIT_FLAG) \
 	  --save-scorecard "$(SCORECARD_FULL)"
 	@$(COMPARE_LOCOMO) --scorecard "$(SCORECARD_FULL)" --baselines "$(LOCOMO_BASELINES)"
 
@@ -200,15 +203,13 @@ eval-staleness: release
 	  --no-supersede --save-scorecard "$(SCORECARD_STALE_BASE)"
 	@$(COMPARE_STALENESS) --scorecard "$(SCORECARD_STALE)" --baseline "$(SCORECARD_STALE_BASE)"
 
-extract-locomo:
-	@test -n "$(MEMLAYER_BGE_MODEL_DIR)" || (echo "Set MEMLAYER_BGE_MODEL_DIR first"; exit 1)
+extract-locomo: eval-bge-model
 	cd crates/memlayer-eval && \
 	RUST_LOG=info cargo run --release --bin eval -- extract \
 	  --benchmark locomo --project locomo-conv-26 \
 	  2>&1 | tee reports/extract-locomo.log
 
-run-locomo:
-	@test -n "$(MEMLAYER_BGE_MODEL_DIR)" || (echo "Set MEMLAYER_BGE_MODEL_DIR first"; exit 1)
+run-locomo: eval-bge-model
 	cd crates/memlayer-eval && \
 	RUST_LOG=info cargo run --release --bin eval -- run \
 	  --benchmark locomo --mode hybrid-rerank --evidence-window 2 \

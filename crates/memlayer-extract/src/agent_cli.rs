@@ -42,16 +42,10 @@ pub struct Provider {
 }
 
 fn specs() -> &'static [ProviderSpec] {
+    // Prefer CLIs that work well headless (API-key / providers auth) before
+    // IDE agents that often need an interactive `login` for `-p` mode.
+    // Override anytime with MEMLAYER_LLM_BIN / MEMLAYER_LLM_PROVIDER.
     &[
-        ("cursor", &["cursor-agent", "agent"], None, None),
-        ("copilot", &["copilot"], None, None),
-        (
-            "gemini",
-            &["gemini"],
-            Some("gemini-2.5-flash"),
-            Some("gemini-2.5-pro"),
-        ),
-        ("codex", &["codex"], None, None),
         (
             "opencode",
             &["opencode"],
@@ -64,17 +58,26 @@ fn specs() -> &'static [ProviderSpec] {
             Some(opencode_models::OPENCODE_FAST),
             Some(opencode_models::OPENCODE_CAPABLE),
         ),
-        ("amazon-q", &["q"], None, None),
-        ("kimi", &["kimi"], None, None),
-        ("windsurf", &["windsurf"], None, None),
-        ("antigravity", &["antigravity", "agy"], None, None),
-        ("zcode", &["zcode"], None, None),
+        (
+            "gemini",
+            &["gemini"],
+            Some("gemini-2.5-flash"),
+            Some("gemini-2.5-pro"),
+        ),
         (
             "claude",
             &["claude"],
             Some("claude-haiku-4-5"),
             Some("claude-sonnet-4-6"),
         ),
+        ("amazon-q", &["q"], None, None),
+        ("kimi", &["kimi"], None, None),
+        ("codex", &["codex"], None, None),
+        ("cursor", &["cursor-agent", "agent"], None, None),
+        ("copilot", &["copilot"], None, None),
+        ("windsurf", &["windsurf"], None, None),
+        ("antigravity", &["antigravity", "agy"], None, None),
+        ("zcode", &["zcode"], None, None),
     ]
 }
 
@@ -361,6 +364,11 @@ pub fn build_args(provider_id: &str, prompt: &str, model: Option<&str>) -> Vec<S
         }
         _ => {
             args.push("-p".into());
+            // Cursor: ask mode keeps eval/judge prompts read-only.
+            if provider_id == "cursor" {
+                args.push("--mode".into());
+                args.push("ask".into());
+            }
             args.push(prompt.to_string());
             if let Some(m) = model {
                 args.push("--model".into());
@@ -535,17 +543,29 @@ mod tests {
     #[test]
     fn cursor_args_omit_model_when_none() {
         let args = build_args("cursor", "rank these", None);
-        assert_eq!(args, vec!["-p".to_string(), "rank these".to_string()]);
+        assert_eq!(
+            args,
+            vec![
+                "-p".to_string(),
+                "--mode".to_string(),
+                "ask".to_string(),
+                "rank these".to_string()
+            ]
+        );
     }
 
     #[test]
-    fn claude_is_not_preferred_over_other_agents() {
+    fn headless_providers_precede_ide_agents() {
         let ids: Vec<_> = specs().iter().map(|(id, _, _, _)| *id).collect();
-        assert_eq!(ids.last(), Some(&"claude"));
-        assert!(ids.contains(&"cursor"));
+        let opencode = ids.iter().position(|id| *id == "opencode").unwrap();
+        let cursor = ids.iter().position(|id| *id == "cursor").unwrap();
+        assert!(
+            opencode < cursor,
+            "opencode should be preferred over cursor for headless eval"
+        );
         assert!(ids.contains(&"gemini"));
+        assert!(ids.contains(&"claude"));
         assert!(ids.contains(&"codex"));
-        assert!(ids.contains(&"opencode"));
         assert!(ids.contains(&"kilo"));
     }
 

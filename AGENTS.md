@@ -58,6 +58,9 @@ make eval-staleness
 LIMIT=50 make eval-locomo
 ```
 
+Full LoCoMo on AWS (one-shot EC2, scorecards → S3): see
+[`infra/eval/README.md`](infra/eval/README.md).
+
 Integration tests under `crates/memlayer-tests/` need a live daemon socket.
 
 ## Config (defaults that matter)

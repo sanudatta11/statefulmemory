@@ -20,20 +20,37 @@ set -euo pipefail
 
 DEST="${MEMLAYER_BGE_MODEL_DIR:-$HOME/.memlayer-models/bge-small}"
 BASE="https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main"
+# QUIET=1 when invoked from Make (env already exported for child recipes).
+QUIET="${QUIET:-0}"
 
 mkdir -p "$DEST"
-echo "=== Vendoring BAAI/bge-small-en-v1.5 to $DEST ==="
+if [ "$QUIET" != "1" ]; then
+    echo "=== Vendoring BAAI/bge-small-en-v1.5 to $DEST ==="
+fi
 
+NEED_DOWNLOAD=0
 for FNAME in config.json tokenizer.json model.safetensors; do
     OUT="$DEST/$FNAME"
     if [ -f "$OUT" ]; then
-        echo "  $FNAME already present, skipping"
+        if [ "$QUIET" != "1" ]; then
+            echo "  $FNAME already present, skipping"
+        fi
         continue
     fi
+    NEED_DOWNLOAD=1
     echo "  downloading $FNAME ..."
     curl -L --progress-bar -o "$OUT" "$BASE/$FNAME"
 done
 
-echo ""
-echo "Done. Set this in your shell:"
-echo "  export MEMLAYER_BGE_MODEL_DIR=$DEST"
+if [ "$QUIET" = "1" ]; then
+    if [ "$NEED_DOWNLOAD" = "1" ]; then
+        echo "BGE model ready at $DEST"
+    else
+        echo "BGE model already present at $DEST"
+    fi
+else
+    echo ""
+    echo "Done. For a one-off shell session:"
+    echo "  export MEMLAYER_BGE_MODEL_DIR=$DEST"
+    echo "Make eval targets export this automatically."
+fi
