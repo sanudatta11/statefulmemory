@@ -15,6 +15,22 @@ memlayer --version
 The daemon auto-starts on first use. Put `~/.local/bin` on your `PATH` permanently
 if `memlayer` is not found after install.
 
+## Wire agents and git hooks
+
+From any project directory (after the binary is on `PATH`):
+
+```bash
+memlayer install                 # MCP + skills; git hooks if cwd is a repo
+memlayer install --no-git-hooks  # skip post-commit / post-merge / post-checkout
+```
+
+When cwd is a git repo, install adds hooks that run `memlayer verify --quiet`
+after commit, merge, and checkout. That keeps code-anchored memories marked
+when HEAD moves. Uninstall strips the memlayer blocks from those hooks.
+
+`memlayer install` also writes a bootstrap `~/.memlayer/config.toml` (hybrid
+search, conflict judge, extract on) without clobbering keys you already set.
+
 ## Verify
 
 ```bash

@@ -15,7 +15,10 @@ memlayer install --all           # every known target
 ```
 
 This installs skills/rules, Claude Code hooks (where applicable), and MCP
-registration for detected agents. Restart the agent afterward.
+registration for detected agents. When cwd is a git repo, it also installs
+`post-commit` / `post-merge` / `post-checkout` hooks that run
+`memlayer verify --quiet` (skip with `--no-git-hooks`). Restart the agent
+afterward.
 
 ## MCP tools
 

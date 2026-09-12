@@ -4,17 +4,22 @@ description: Common memlayer CLI commands for saving, searching, and managing me
 ---
 
 ```bash
+memlayer install                 # MCP + skills; git hooks when cwd is a repo
+memlayer install --no-git-hooks  # skip verify hooks
 memlayer obs save --type decision --title "..." --content "..." --session "$SID"
 memlayer obs save --anchor src/auth.rs::login --title "..." --content "..."
+memlayer obs save --anchor src/a.rs::foo --anchor src/b.rs::bar --title "..." --content "..."
 memlayer obs recent --limit 10
 memlayer obs search "auth"                     # hybrid (BM25 + dense + RRF)
 memlayer obs search "auth" --mode bm25         # lexical only
+memlayer obs search "auth" --max-tokens 800    # pack hits under a token budget
 memlayer obs context --query "deploy" --limit 20
 memlayer obs context --max-tokens 500         # pack until budget (estimate)
 memlayer obs context --include-stale           # keep stale/invalidated claims
-memlayer verify                                # re-check code anchors vs HEAD
+memlayer verify [--quiet]                      # re-check code anchors vs HEAD
 memlayer obs history <id>                      # supersession chain tree
 memlayer obs relations <id>                    # graph relation edges
+memlayer obs reextract [--since <rfc3339>]     # re-queue fact extraction
 memlayer obs reindex [--force]                 # queue re-embedding and quantization
 memlayer tui                                   # interactive observation browser
 memlayer doctor [--repair]                     # database integrity audit & auto-repair
@@ -34,6 +39,7 @@ memlayer mem import secret.mem --seed-file ./phrase.txt
 TTY → text; pipes → JSON. Override with `--output {text,json,yaml}`.
 
 Anchored observations are stamped with the current git commit and a content
-digest. After the code moves, `memlayer verify` marks them `stale` /
-`invalidated` / `unprovable`. Context withdraws those by default
-(`verify.serve_stale = false`); search still shows them flagged.
+digest. After the code moves, `memlayer verify` (or the install git hooks)
+marks them `stale` / `invalidated` / `unprovable`. Context withdraws those by
+default (`verify.serve_stale = false`); search still shows them flagged.
+Pass multiple `--anchor path::symbol` flags on one save when needed.

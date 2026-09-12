@@ -26,6 +26,7 @@ make prereqs && make install
 export PATH="$HOME/.local/bin:$PATH"
 memlayer --version
 memlayer install                 # auto-detect agents; registers MCP + skills
+                                 # (+ git verify hooks when cwd is a repo)
 ```
 
 ## Everyday usage
@@ -37,6 +38,7 @@ memlayer obs search "auth" --mode hybrid
 memlayer obs context --query "deploy" --limit 20 --max-tokens 500
 memlayer verify                  # re-check code anchors against git HEAD
 memlayer decide "Should we keep SQLite?"
+memlayer mem export --out backup.mem
 ```
 
 Context withdraws stale / invalidated / unprovable anchored claims by default

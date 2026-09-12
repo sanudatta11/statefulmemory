@@ -48,5 +48,7 @@ Merge order (highest wins): env vars → project overlay → global → code def
 `MEMLAYER_LLM_BIN`, `MEMLAYER_LLM_PROVIDER`, `MEMLAYER_LLM_MODEL`
 (legacy `MEMLAYER_CLAUDE_MODEL` is the same as `MEMLAYER_LLM_MODEL`).
 
-See the repository [`CLAUDE.md`](https://github.com/sanudatta11/memlayer/blob/main/CLAUDE.md)
+See the repository [`AGENTS.md`](https://github.com/sanudatta11/memlayer/blob/main/AGENTS.md)
+(OpenCode / Codex / local LLMs) and
+[`CLAUDE.md`](https://github.com/sanudatta11/memlayer/blob/main/CLAUDE.md)
 for the full knob list and architecture notes.
