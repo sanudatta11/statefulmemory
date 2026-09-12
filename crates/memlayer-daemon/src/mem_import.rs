@@ -63,7 +63,7 @@ pub async fn handle(
     let project = map(state.registry.get_or_open(&req.project_name))?;
     let report = apply_on_write_thread(&project, payload, mode).await?;
 
-    if let Some(pool) = &state.embed_pool {
+    if let Some(pool) = state.embed_pool.read().as_ref() {
         if let Ok(conn) = project.open_read_conn() {
             if let Ok(rows) = snapshot::imported_observation_ids(&conn) {
                 for (obs_id, title, content) in rows {

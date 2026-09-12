@@ -53,8 +53,26 @@ pub fn locate_binary() -> PathBuf {
     }
 
     if let Ok(exe) = std::env::current_exe() {
+        // Integration tests live in target/.../deps/<test>; the CLI binary is
+        // the sibling `memlayer` next to `deps/`.
+        if let Some(deps) = exe.parent() {
+            if deps.file_name().and_then(|s| s.to_str()) == Some("deps") {
+                let cand = deps.join("../memlayer");
+                if let Ok(canon) = cand.canonicalize() {
+                    if canon.exists() {
+                        return canon;
+                    }
+                }
+                let cand = deps.parent().map(|p| p.join("memlayer"));
+                if let Some(c) = cand {
+                    if c.exists() {
+                        return c;
+                    }
+                }
+            }
+        }
         let mut cur: Option<&Path> = exe.parent();
-        for _ in 0..4 {
+        for _ in 0..6 {
             let dir = match cur {
                 Some(d) => d,
                 None => break,
@@ -67,8 +85,17 @@ pub fn locate_binary() -> PathBuf {
         }
     }
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    let target = Path::new(&manifest).parent().unwrap().parent().unwrap().join("target");
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+            Path::new(&manifest)
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("target")
+        });
     for profile in ["debug", "release"] {
         let cand = target.join(profile).join("memlayer");
         if cand.exists() {
@@ -266,25 +293,36 @@ impl CliEnv {
         c.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.data_path())
+            .env("TMPDIR", std::env::temp_dir())
             .env("MEMLAYER_DATA_DIR", self.data_path())
             .env("MEMLAYER_PROJECT", &self.project)
             .env("MEMLAYER_LOG", "warn")
             .current_dir(self.data_path());
+        // Prefer a vendored BGE tree so auto-spawned daemons do not block on
+        // a Hub download inside the 5 s readiness budget (FR2.3).
+        if let Ok(dir) = std::env::var("MEMLAYER_BGE_MODEL_DIR") {
+            c.env("MEMLAYER_BGE_MODEL_DIR", dir);
+        } else {
+            let home_vendor = dirs_home_bge();
+            if home_vendor.is_dir() {
+                c.env("MEMLAYER_BGE_MODEL_DIR", home_vendor);
+            }
+        }
         c
     }
 
     /// Same as [`cmd`] but does *not* set `MEMLAYER_PROJECT`. Use for tests
     /// that exercise the project-detection algorithm itself.
     pub fn cmd_no_project_env(&self) -> Command {
-        let mut c = Command::new(&self.binary);
-        c.env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.data_path())
-            .env("MEMLAYER_DATA_DIR", self.data_path())
-            .env("MEMLAYER_LOG", "warn")
-            .current_dir(self.data_path());
+        let mut c = self.cmd();
+        c.env_remove("MEMLAYER_PROJECT");
         c
     }
+}
+
+fn dirs_home_bge() -> PathBuf {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".memlayer-models").join("bge-small")
 }
 
 impl Default for CliEnv {
@@ -501,10 +539,12 @@ pub fn start_session(env: &CliEnv, session_id: &str) {
         .args(["session", "start", session_id])
         .output()
         .expect("session start");
-    assert!(
-        out.status.success(),
-        "session start failed: stdout={}\nstderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
+    if !out.status.success() {
+        let log = std::fs::read_to_string(env.log_path()).unwrap_or_default();
+        panic!(
+            "session start failed: stdout={}\nstderr={}\ndaemon.log:\n{log}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
 }

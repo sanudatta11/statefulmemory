@@ -178,6 +178,21 @@ fn spawn_detached(binary: &Path) -> std::io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Explicitly forward data-dir / model env: some test harnesses start the
+    // CLI with a cleared environment, and we must not drop these when the
+    // child is reaped into its own session.
+    for key in [
+        "MEMLAYER_DATA_DIR",
+        "MEMLAYER_LOG",
+        "MEMLAYER_BGE_MODEL_DIR",
+        "HOME",
+        "TMPDIR",
+        "PATH",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            cmd.env(key, v);
+        }
+    }
     // SAFETY: setsid is async-signal-safe and only mutates session/process-
     // group state. No allocations or non-AS-safe calls in this closure.
     unsafe {

@@ -83,29 +83,15 @@ pub async fn run(cfg: Config) -> Result<()> {
     // overrides are re-resolved per task inside the workers.
     let memlayer_cfg = memlayer_core::config::load_resolved(None);
 
-    // Spawn the embed worker pool. If BGE-small fails to load (model
-    // weights missing, candle init error, etc.) we fall back to BM25-only
-    // mode by leaving `embed_pool = None`; saves still succeed (SC-11).
-    let (embed_pool, query_embedder) = match memlayer_embed::BgeSmallEmbedder::try_new() {
-        Ok(embedder) => {
-            let n = memlayer_cfg.embed.workers.max(1);
-            tracing::info!(workers = n, "spawning embed worker pool");
-            let shared = Arc::new(embedder);
-            let pool = crate::embed_worker::EmbedWorkerPool::spawn(
-                shared.clone(),
-                registry.clone(),
-                n,
-            );
-            (Some(pool), Some(shared))
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "BGE-small embedder failed to load; daemon running in BM25-only mode",
-            );
-            (None, None)
-        }
-    };
+    // Embedder slots start empty so we can bind the UDS socket before the
+    // (often multi-second) BGE-small load. Auto-spawn only waits for the
+    // socket file (FR2.3, 5 s); hybrid search falls back to BM25 until the
+    // background load finishes and fills these locks.
+    let embed_pool: Arc<parking_lot::RwLock<Option<crate::embed_worker::EmbedWorkerPool>>> =
+        Arc::new(parking_lot::RwLock::new(None));
+    let query_embedder: Arc<
+        parking_lot::RwLock<Option<std::sync::Arc<memlayer_embed::BgeSmallEmbedder>>>,
+    > = Arc::new(parking_lot::RwLock::new(None));
 
     // Build the shared Claude client once; both the extract worker pool
     // and the daemon's rerank path call into it.
@@ -188,16 +174,29 @@ pub async fn run(cfg: Config) -> Result<()> {
         resolve_pool,
         verify_pool,
     });
+
     let svc = MemlayerService::new(state.clone());
 
     // Signals.
     let mut shutdown_rx = signals::install(registry.clone(), dm.clone(), in_flight.clone(), shutdown_tx);
 
-    // Bind + serve.
+    // Bind + serve FIRST so auto-spawn's 5 s socket poll succeeds even when
+    // BGE download/load takes many seconds (common under env_clear tests and
+    // cold machines without MEMLAYER_BGE_MODEL_DIR).
+    tracing::info!("binding listen socket before embedder load");
     let serve_result = if cfg.is_tcp_mode() {
+        // TCP path: kick off BGE load, then serve (accept starts immediately).
+        spawn_embedder_load(state.clone(), registry.clone(), memlayer_cfg.embed.workers.max(1));
         serve_tcp(cfg.clone(), svc, token_store, &mut shutdown_rx).await
     } else {
-        serve_uds(svc, &mut shutdown_rx).await
+        serve_uds_then_load_embedder(
+            svc,
+            state.clone(),
+            registry.clone(),
+            memlayer_cfg.embed.workers.max(1),
+            &mut shutdown_rx,
+        )
+        .await
     };
 
     // Cleanup.
@@ -208,6 +207,75 @@ pub async fn run(cfg: Config) -> Result<()> {
     };
 
     serve_result
+}
+
+fn spawn_embedder_load(
+    state: Arc<DaemonState>,
+    registry: Arc<ProjectRegistry>,
+    workers: usize,
+) {
+    tokio::task::spawn_blocking(move || {
+        match memlayer_embed::BgeSmallEmbedder::try_new() {
+            Ok(embedder) => {
+                tracing::info!(workers, "spawning embed worker pool");
+                let shared = Arc::new(embedder);
+                let pool = crate::embed_worker::EmbedWorkerPool::spawn(
+                    shared.clone(),
+                    registry,
+                    workers,
+                );
+                *state.query_embedder.write() = Some(shared);
+                *state.embed_pool.write() = Some(pool);
+                tracing::info!("BGE-small embedder ready");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "BGE-small embedder failed to load; daemon running in BM25-only mode",
+                );
+            }
+        }
+    });
+}
+
+/// Bind UDS, start the accept loop, THEN load BGE on a blocking thread.
+///
+/// Splitting bind from `Server::serve` ensures the socket file exists (and
+/// accepts connections) before any multi-second model I/O.
+async fn serve_uds_then_load_embedder(
+    svc: MemlayerService,
+    state: Arc<DaemonState>,
+    registry: Arc<ProjectRegistry>,
+    workers: usize,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    let sock = paths::socket_path();
+    lifecycle::unlink_stale_socket(&sock)?;
+    let listener = UnixListener::bind(&sock).map_err(|e| {
+        Error::internal(format!("bind UDS {}: {e}", sock.display()))
+    })?;
+    lifecycle::chmod_socket_0600(&sock)?;
+    info!(path=%sock.display(), "bound UDS");
+
+    spawn_embedder_load(state, registry, workers);
+
+    let stream = UnixListenerStream::new(listener);
+
+    let mut rx = shutdown_rx.clone();
+    Server::builder()
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(20)))
+        .concurrency_limit_per_connection(64)
+        .max_concurrent_streams(Some(256))
+        .add_service(MemlayerServer::new(svc))
+        .serve_with_incoming_shutdown(stream, async move {
+            let _ = rx.changed().await;
+            info!("UDS server: drain triggered");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        })
+        .await
+        .map_err(|e| Error::internal(format!("UDS serve: {e}")))?;
+    Ok(())
 }
 
 /// Walk every project DB on disk and refuse to start if any of them stored
@@ -251,38 +319,6 @@ fn check_embed_model_on_disk(_registry: &ProjectRegistry) -> Result<()> {
                 ))
             })?;
     }
-    Ok(())
-}
-
-async fn serve_uds(
-    svc: MemlayerService,
-    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
-) -> Result<()> {
-    let sock = paths::socket_path();
-    lifecycle::unlink_stale_socket(&sock)?;
-    let listener = UnixListener::bind(&sock).map_err(|e| {
-        Error::internal(format!("bind UDS {}: {e}", sock.display()))
-    })?;
-    lifecycle::chmod_socket_0600(&sock)?;
-    info!(path=%sock.display(), "bound UDS");
-
-    let stream = UnixListenerStream::new(listener);
-
-    let mut rx = shutdown_rx.clone();
-    Server::builder()
-        .http2_keepalive_interval(Some(Duration::from_secs(30)))
-        .http2_keepalive_timeout(Some(Duration::from_secs(20)))
-        .concurrency_limit_per_connection(64)
-        .max_concurrent_streams(Some(256))
-        .add_service(MemlayerServer::new(svc))
-        .serve_with_incoming_shutdown(stream, async move {
-            let _ = rx.changed().await;
-            info!("UDS server: drain triggered");
-            // 5s drain window — tonic stops accepting and waits for in-flight.
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        })
-        .await
-        .map_err(|e| Error::internal(format!("UDS serve: {e}")))?;
     Ok(())
 }
 

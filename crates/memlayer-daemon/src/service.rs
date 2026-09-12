@@ -78,15 +78,22 @@ pub struct DaemonState {
     /// search has a single BM25-ranked corpus to query. Mirror failures
     /// are logged via tracing and DO NOT fail the per-project save.
     pub global_db: Option<Arc<Mutex<GlobalDb>>>,
-    /// Async embed worker pool. `None` if BGE-small failed to load at
-    /// startup; the daemon then runs in BM25-only mode (search/context
+    /// Async embed worker pool. `None` until BGE-small finishes loading (or
+    /// if load failed); the daemon then runs in BM25-only mode (search/context
     /// callers see embeddings as "missing" and fall back to BM25).
-    pub embed_pool: Option<crate::embed_worker::EmbedWorkerPool>,
+    ///
+    /// Wrapped in `RwLock` so the daemon can bind the UDS socket before the
+    /// (often multi-second) model load completes — auto-spawn's 5 s budget
+    /// (FR2.3) only waits for the socket, not for BGE.
+    pub embed_pool: std::sync::Arc<
+        parking_lot::RwLock<Option<crate::embed_worker::EmbedWorkerPool>>,
+    >,
     /// Shared BGE-small embedder used by both the embed worker pool and
     /// the daemon's hybrid query path. Same `Arc` instance, so the model
-    /// weights are loaded once and reused. `None` mirrors `embed_pool` —
-    /// daemon falls back to BM25-only.
-    pub query_embedder: Option<std::sync::Arc<memlayer_embed::BgeSmallEmbedder>>,
+    /// weights are loaded once and reused. `None` mirrors `embed_pool`.
+    pub query_embedder: std::sync::Arc<
+        parking_lot::RwLock<Option<std::sync::Arc<memlayer_embed::BgeSmallEmbedder>>>,
+    >,
     /// Async extract worker pool. Always Some after daemon startup; the
     /// pool itself is config-gated per task (cfg.extract.enabled), so a
     /// disabled extract config means workers wake up and immediately
@@ -189,7 +196,7 @@ impl MemlayerService {
         // Embed the query. If the daemon has no embedder (cold-start
         // fallback or candle init failure), or embedding errors, fall
         // back to BM25 (+ facts) only.
-        let dense_hits = match &self.state.query_embedder {
+        let dense_hits = match self.state.query_embedder.read().as_ref() {
             None => {
                 tracing::info!(
                     "hybrid requested but no query embedder loaded — using BM25 (+ facts if any)",
@@ -847,7 +854,7 @@ impl Memlayer for MemlayerService {
         // Both pools `try_send`; full queue / disconnected pool drops the
         // task silently and logs.
         let mut warnings: Vec<String> = warnings_pending;
-        if let Some(pool) = &self.state.embed_pool {
+        if let Some(pool) = self.state.embed_pool.read().as_ref() {
             match pool.try_queue(crate::embed_worker::EmbedTask {
                 project_name: r.project_name.clone(),
                 obs_id: obs.id,
@@ -1014,7 +1021,7 @@ impl Memlayer for MemlayerService {
             if mode == memlayer_retrieval::hybrid::HybridMode::Hybrid {
                 // Hybrid cross-project: BM25 via global DB + dense fan-out to
                 // per-project DBs, then RRF-fused on (project, source_id) key.
-                if let Some(embedder) = &self.state.query_embedder {
+                if let Some(embedder) = self.state.query_embedder.read().as_ref() {
                     let q_vec = match embedder.embed(&[r.query.as_str()]) {
                         Ok(mut vs) => vs.pop(),
                         Err(e) => {
@@ -1541,11 +1548,16 @@ impl Memlayer for MemlayerService {
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
 
-        let embed_pool = match &self.state.embed_pool {
-            Some(p) => p,
-            None => return Err(Status::failed_precondition(
-                "embed worker pool is not running (BGE-small failed to load at startup)",
-            )),
+        let embed_pool = {
+            let guard = self.state.embed_pool.read();
+            match guard.as_ref() {
+                Some(p) => p.clone(),
+                None => {
+                    return Err(Status::failed_precondition(
+                        "embed worker pool is not running (BGE-small still loading or failed to load)",
+                    ))
+                }
+            }
         };
 
         let mut cleared: i64 = 0;
