@@ -26,8 +26,8 @@ GitHub README strips `<video>` tags, so demos are shown as clickable posters
 (full MP4s open on [memlayer.org](https://memlayer.org)).
 
 <p align="center">
-  <a href="https://memlayer.org/videos/overview.mp4">
-    <img src="website/public/videos/overview-poster.jpg" alt="memlayer overview demo" width="100%" />
+  <a href="https://memlayer.org/videos/overview-v2.mp4">
+    <img src="website/public/videos/overview-v2-poster.jpg" alt="memlayer overview demo" width="100%" />
   </a>
   <br />
   <em>Overview (click to play) — also on <a href="https://memlayer.org/">memlayer.org</a></em>
@@ -35,10 +35,10 @@ GitHub README strips `<video>` tags, so demos are shown as clickable posters
 
 | Demo | Preview (click to play) | Guide |
 |---|---|---|
-| Install and agents | [![install agents](website/public/videos/install-agents-poster.jpg)](https://memlayer.org/videos/install-agents.mp4) | [Agents / MCP](https://memlayer.org/docs/agents/) |
-| Save, search, context | [![save search context](website/public/videos/save-search-context-poster.jpg)](https://memlayer.org/videos/save-search-context.mp4) | [Observations](https://memlayer.org/docs/observations/) · [Search and context](https://memlayer.org/docs/search-context/) |
-| Anchors and verify | [![anchors verify](website/public/videos/anchors-verify-poster.jpg)](https://memlayer.org/videos/anchors-verify.mp4) | [Anchors and verify](https://memlayer.org/docs/anchors-verify/) |
-| Decide and mem | [![decide mem](website/public/videos/decide-mem-poster.jpg)](https://memlayer.org/videos/decide-mem.mp4) | [Decide](https://memlayer.org/docs/decide/) · [Mem archives](https://memlayer.org/docs/mem/) |
+| Install and agents | [![install agents](website/public/videos/install-agents-v2-poster.jpg)](https://memlayer.org/videos/install-agents-v2.mp4) | [Agents / MCP](https://memlayer.org/docs/agents/) |
+| Save, search, context | [![save search context](website/public/videos/save-search-context-v2-poster.jpg)](https://memlayer.org/videos/save-search-context-v2.mp4) | [Observations](https://memlayer.org/docs/observations/) · [Search and context](https://memlayer.org/docs/search-context/) |
+| Anchors and verify | [![anchors verify](website/public/videos/anchors-verify-v2-poster.jpg)](https://memlayer.org/videos/anchors-verify-v2.mp4) | [Anchors and verify](https://memlayer.org/docs/anchors-verify/) |
+| Decide and mem | [![decide mem](website/public/videos/decide-mem-v2-poster.jpg)](https://memlayer.org/videos/decide-mem-v2.mp4) | [Decide](https://memlayer.org/docs/decide/) · [Mem archives](https://memlayer.org/docs/mem/) |
 
 Silent terminal-style clips (no narration). Full walkthrough: [Getting started](https://memlayer.org/docs/getting-started/).
 

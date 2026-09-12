@@ -7,7 +7,7 @@ memlayer is persistent memory for AI coding agents: local SQLite under
 `~/.memlayer/`, a CLI plus daemon, and MCP tools. Wire it once; agents keep
 saving and retrieving decisions across sessions.
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/install-agents.mp4" title="Install and agents demo">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/install-agents-v2.mp4" title="Install and agents demo">
   Your browser does not support video.
 </video>
 

@@ -42,16 +42,21 @@
         box-shadow: 0 40px 120px rgba(0, 0, 0, 0.45);
         font-family: "JetBrains Mono", ui-monospace, monospace;
       }
+      
       .term-bar {
-        height: 52px; display: flex; align-items: center; gap: 18px;
-        padding: 0 22px; background: #16201b; color: #8fa397; font-size: 18px;
+        position: relative;
+        height: 52px; display: flex; align-items: center;
+        padding: 0 28px; background: #16201b; color: #8fa397; font-size: 18px;
       }
-      .traffic { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-      .traffic .d { width: 12px; height: 12px; border-radius: 50%; display: block; }
+      .traffic { display: flex; align-items: center; gap: 10px; flex-shrink: 0; z-index: 1; }
+      .traffic .d { width: 14px; height: 14px; border-radius: 50%; display: block; }
       .traffic .d.r { background: #c45c4a; }
       .traffic .d.y { background: #c9a227; }
       .traffic .d.g { background: #4ea06a; }
-      .term-title { line-height: 1; }
+      .term-title {
+        position: absolute; left: 50%; transform: translateX(-50%);
+        line-height: 1; white-space: nowrap; pointer-events: none;
+      }
       .term-body {
         padding: 36px 40px; font-size: 30px; line-height: 1.55; color: #d7e0da;
         white-space: pre-wrap;

@@ -7,7 +7,7 @@ A **`.mem` archive** is a portable snapshot of project memory you can copy,
 backup, or move between machines. Export writes the archive; import restores
 observations into the local daemon store.
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/decide-mem.mp4" title="Decide and mem archives demo">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/decide-mem-v2.mp4" title="Decide and mem archives demo">
   Your browser does not support video.
 </video>
 

@@ -7,7 +7,7 @@ description: Ask memlayer for a recommendation when project memories conflict; u
 coding-agent CLI to recommend a resolution. Hybrid search stays local; the
 synthesis step needs an LLM backend on `PATH` (or `MEMLAYER_LLM_*`).
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/decide-mem.mp4" title="Decide and mem archives demo">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/decide-mem-v2.mp4" title="Decide and mem archives demo">
   Your browser does not support video.
 </video>
 

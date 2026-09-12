@@ -25,7 +25,7 @@ memlayer install --no-git-hooks  # skip hooks
 
 Details: [Wire into your agent](/docs/agents/).
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/overview.mp4" title="memlayer overview">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/overview-v2.mp4" title="memlayer overview">
   Your browser does not support video.
 </video>
 

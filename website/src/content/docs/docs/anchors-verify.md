@@ -8,7 +8,7 @@ A **code anchor** binds an observation to a symbol in the repo
 content digest. **`memlayer verify`** (and install git hooks) re-check anchors
 against HEAD and mark claims `fresh`, `stale`, `invalidated`, or `unprovable`.
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/anchors-verify.mp4" title="Anchors and verify demo">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/anchors-verify-v2.mp4" title="Anchors and verify demo">
   Your browser does not support video.
 </video>
 

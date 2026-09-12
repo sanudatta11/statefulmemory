@@ -8,7 +8,7 @@ what you hand an agent before it starts coding. Both default to **hybrid**
 retrieval: BM25 fused with BGE-small dense vectors via reciprocal rank fusion
 (RRF). No cloud is required for this path.
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/save-search-context.mp4" title="Save, search, and context demo">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/save-search-context-v2.mp4" title="Save, search, and context demo">
   Your browser does not support video.
 </video>
 

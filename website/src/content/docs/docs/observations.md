@@ -7,7 +7,7 @@ Observations are the unit of memory in memlayer: a typed note with a title,
 content, optional session, and optional code anchors. They live in per-project
 SQLite under `~/.memlayer/` and are searchable with BM25 and dense vectors.
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/save-search-context.mp4" title="Save, search, and context demo">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/save-search-context-v2.mp4" title="Save, search, and context demo">
   Your browser does not support video.
 </video>
 
