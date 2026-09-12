@@ -6,6 +6,9 @@ description: Save your first observation and search project memory with memlayer
 memlayer captures decisions and fixes in a local SQLite store, then surfaces
 them for the next session.
 
+**Prerequisite:** a working CLI — see [Install](/docs/install/) if
+`memlayer --version` fails.
+
 ## Save an observation
 
 ```bash
@@ -34,6 +37,6 @@ The daemon auto-starts on first use.
 
 ## Next steps
 
-- [Install](/docs/install/) if you have not built the binary yet
-- [Wire into your agent](/docs/agents/) for MCP / skills registration
-- [Everyday commands](/docs/commands/) for the full day-to-day surface
+- [Wire into your agent](/docs/agents/) — MCP / skills so the agent uses memory
+- [Everyday commands](/docs/commands/) — day-to-day CLI surface
+- [GitHub](https://github.com/sanudatta11/memlayer) — source and issues

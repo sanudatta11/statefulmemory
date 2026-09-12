@@ -104,6 +104,37 @@ header.header {
 	border-bottom: 1px solid var(--sl-color-hairline);
 }
 
+/* Make site search easy to spot */
+site-search button[data-open-modal] {
+	border: 1px solid var(--sl-color-hairline-light);
+	background: color-mix(in oklab, var(--sl-color-bg) 70%, var(--sl-color-gray-6));
+}
+
+site-search button[data-open-modal]:hover {
+	border-color: color-mix(in oklab, var(--sl-color-accent) 45%, var(--sl-color-hairline-light));
+}
+
+/* Primary actions on Overview */
+.ml-cta-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.65rem 0.75rem;
+	align-items: center;
+	margin: 1rem 0 1.35rem;
+}
+
+@media (max-width: 40rem) {
+	.ml-cta-row {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.ml-cta-row .sl-link-button {
+		justify-content: center;
+		width: 100%;
+	}
+}
+
 /* Selected sidebar: copper fill + light text */
 .sidebar-content a[aria-current='page'],
 .sidebar-content a[aria-current='page']:hover,

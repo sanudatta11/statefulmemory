@@ -24,5 +24,6 @@ memlayer doctor
 
 ## Next steps
 
-- [Getting started](/docs/getting-started/) — save and search
-- [Wire into your agent](/docs/agents/) — MCP and skills
+1. [Getting started](/docs/getting-started/) — save and search your first notes
+2. [Wire into your agent](/docs/agents/) — MCP tools and hooks so the agent uses them
+3. [GitHub](https://github.com/sanudatta11/memlayer) — source, issues, and releases

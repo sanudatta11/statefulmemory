@@ -1,0 +1,55 @@
+---
+import config from 'virtual:starlight/user-config';
+import { Icon } from '@astrojs/starlight/components';
+
+const links = config.social || [];
+---
+
+{
+	links.length > 0 && (
+		<>
+			{links.map(({ label, href, icon }) => (
+				<a
+					href={href}
+					class="ml-social"
+					rel="noopener noreferrer"
+					target="_blank"
+					title={label}
+				>
+					<Icon name={icon} size="1.15rem" />
+					<span class="ml-social__label">{label}</span>
+				</a>
+			))}
+		</>
+	)
+}
+
+<style>
+	@layer starlight.core {
+		.ml-social {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.4rem;
+			padding: 0.35rem 0.55rem;
+			margin: -0.35rem -0.25rem;
+			border-radius: 0.35rem;
+			color: var(--sl-color-text-accent);
+			text-decoration: none;
+			font-size: 0.9rem;
+			font-weight: 600;
+			line-height: 1;
+		}
+		.ml-social:hover {
+			color: var(--sl-color-white);
+			background: color-mix(in oklab, var(--sl-color-accent) 14%, transparent);
+		}
+		.ml-social__label {
+			display: none;
+		}
+		@media (min-width: 30rem) {
+			.ml-social__label {
+				display: inline;
+			}
+		}
+	}
+</style>

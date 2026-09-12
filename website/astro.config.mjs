@@ -21,6 +21,11 @@ export default defineConfig({
 			description,
 			favicon: '/favicon.svg',
 			customCss: ['./src/styles/custom.css'],
+			pagefind: true,
+			components: {
+				Header: './src/components/Header.astro',
+				SocialIcons: './src/components/SocialIcons.astro',
+			},
 			social: [
 				{
 					icon: 'github',
@@ -35,12 +40,17 @@ export default defineConfig({
 			pagination: true,
 			sidebar: [
 				{
-					label: 'Docs',
+					label: 'Start here',
 					items: [
 						{ label: 'Overview', slug: '' },
-						{ label: 'Getting started', slug: 'docs/getting-started' },
 						{ label: 'Install', slug: 'docs/install' },
+						{ label: 'Getting started', slug: 'docs/getting-started' },
 						{ label: 'Wire into your agent', slug: 'docs/agents' },
+					],
+				},
+				{
+					label: 'Reference',
+					items: [
 						{ label: 'Everyday commands', slug: 'docs/commands' },
 						{ label: 'Config', slug: 'docs/config' },
 						{ label: 'Troubleshooting', slug: 'docs/troubleshooting' },
