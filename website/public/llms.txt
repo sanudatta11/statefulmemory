@@ -7,14 +7,19 @@ memlayer is open source (MIT). Source: https://github.com/sanudatta11/memlayer
 
 ## Docs
 
-- [Overview](https://memlayer.org/): What memlayer is and how to install in one minute
+- [Overview](https://memlayer.org/): Product overview and demo video
 - [Install](https://memlayer.org/docs/install/): Build from source (Rust), PATH, doctor
-- [Getting started](https://memlayer.org/docs/getting-started/): Save, search, anchors/verify, decide, mem export
-- [Wire into your agent](https://memlayer.org/docs/agents/): MCP install for Claude Code, Cursor, OpenCode, Codex, Gemini CLI, and peers; local LLM env vars; git verify hooks
-- [Everyday commands](https://memlayer.org/docs/commands/): obs save/search/context/verify, decide, mem export
-- [Config](https://memlayer.org/docs/config/): TOML overlays, hybrid search, verify.serve_stale, token budget
-- [LoCoMo eval](https://memlayer.org/docs/locomo/): Smoke, full, and staleness benchmarks
-- [Troubleshooting](https://memlayer.org/docs/troubleshooting/): Doctor, stale withdrawal, LLM CLI, git hooks
+- [Getting started](https://memlayer.org/docs/getting-started/): End-to-end tour
+- [Wire into your agent](https://memlayer.org/docs/agents/): MCP, git verify hooks, MEMLAYER_LLM_*
+- [Observations](https://memlayer.org/docs/observations/): Save, recent, history, reextract
+- [Search and context](https://memlayer.org/docs/search-context/): Hybrid retrieval, token budgets
+- [Anchors and verify](https://memlayer.org/docs/anchors-verify/): path::symbol digests, stale withdrawal
+- [Decide](https://memlayer.org/docs/decide/): Conflict recommendation via agent CLI
+- [Mem archives](https://memlayer.org/docs/mem/): Portable .mem export/import
+- [Config](https://memlayer.org/docs/config/): TOML overlays and env overrides
+- [LoCoMo eval](https://memlayer.org/docs/locomo/): Smoke, full, staleness
+- [Troubleshooting](https://memlayer.org/docs/troubleshooting/): Doctor and common failures
+- [Command cheat sheet](https://memlayer.org/docs/commands/): Dense command index
 
 ## For coding agents (repo)
 

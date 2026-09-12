@@ -5,6 +5,8 @@ description: Build and install the memlayer CLI on macOS or Linux.
 
 **Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL / `pkg-config`, macOS or Linux (WSL OK).
 
+## Build from source
+
 ```bash
 git clone https://github.com/sanudatta11/memlayer && cd memlayer
 make prereqs && make install    # → ~/.local/bin/memlayer
@@ -14,6 +16,14 @@ memlayer --version
 
 The daemon auto-starts on first use. Put `~/.local/bin` on your `PATH` permanently
 if `memlayer` is not found after install.
+
+## What install puts where
+
+| Path | Role |
+| --- | --- |
+| `~/.local/bin/memlayer` | CLI binary |
+| `~/.memlayer/` | Data dir (created on first use) |
+| `~/.memlayer/config.toml` | Written/merged by `memlayer install` |
 
 ## Wire agents and git hooks
 
@@ -31,7 +41,9 @@ when HEAD moves. Uninstall strips the memlayer blocks from those hooks.
 `memlayer install` also writes a bootstrap `~/.memlayer/config.toml` (hybrid
 search, conflict judge, extract on) without clobbering keys you already set.
 
-## Verify
+Full agent matrix: [Wire into your agent](/docs/agents/).
+
+## Sanity checks
 
 ```bash
 memlayer daemon status
@@ -40,6 +52,6 @@ memlayer doctor
 
 ## Next steps
 
-1. [Getting started](/docs/getting-started/): save and search your first notes
-2. [Wire into your agent](/docs/agents/): MCP tools and hooks so the agent uses them
+1. [Getting started](/docs/getting-started/): end-to-end tour
+2. [Wire into your agent](/docs/agents/): MCP tools and hooks
 3. [GitHub](https://github.com/sanudatta11/memlayer): source, issues, and releases

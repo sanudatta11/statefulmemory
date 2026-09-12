@@ -73,3 +73,7 @@ skills-lock.json
 .impeccable/mocks/
 .impeccable/build/
 
+
+# HyperFrames demo caches
+.hyperframes/
+website/demos/**/renders/

@@ -1,0 +1,5 @@
+node_modules/
+.hyperframes/
+renders/
+*.mp4
+.DS_Store

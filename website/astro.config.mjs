@@ -49,12 +49,22 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Core memory',
+					items: [
+						{ label: 'Observations', slug: 'docs/observations' },
+						{ label: 'Search and context', slug: 'docs/search-context' },
+						{ label: 'Anchors and verify', slug: 'docs/anchors-verify' },
+						{ label: 'Decide', slug: 'docs/decide' },
+						{ label: 'Mem archives', slug: 'docs/mem' },
+					],
+				},
+				{
 					label: 'Reference',
 					items: [
-						{ label: 'Everyday commands', slug: 'docs/commands' },
 						{ label: 'Config', slug: 'docs/config' },
 						{ label: 'LoCoMo eval', slug: 'docs/locomo' },
 						{ label: 'Troubleshooting', slug: 'docs/troubleshooting' },
+						{ label: 'Command cheat sheet', slug: 'docs/commands' },
 					],
 				},
 			],

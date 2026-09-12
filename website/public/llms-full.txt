@@ -85,6 +85,11 @@ https://memlayer.org/
 https://memlayer.org/docs/install/
 https://memlayer.org/docs/getting-started/
 https://memlayer.org/docs/agents/
+https://memlayer.org/docs/observations/
+https://memlayer.org/docs/search-context/
+https://memlayer.org/docs/anchors-verify/
+https://memlayer.org/docs/decide/
+https://memlayer.org/docs/mem/
 https://memlayer.org/docs/commands/
 https://memlayer.org/docs/config/
 https://memlayer.org/docs/locomo/

@@ -1,45 +1,79 @@
 ---
-title: Everyday commands
-description: Common memlayer CLI commands for saving, searching, and managing memory.
+title: Command cheat sheet
+description: Quick command index — each line links to the detailed guide.
 ---
 
+Prefer the feature guides for explanations. This page is a dense index only.
+
+## Install and agents
+
 ```bash
-memlayer install                 # MCP + skills; git hooks when cwd is a repo
-memlayer install --no-git-hooks  # skip verify hooks
-memlayer obs save --type decision --title "..." --content "..." --session "$SID"
-memlayer obs save --anchor src/auth.rs::login --title "..." --content "..."
-memlayer obs save --anchor src/a.rs::foo --anchor src/b.rs::bar --title "..." --content "..."
-memlayer obs recent --limit 10
-memlayer obs search "auth"                     # hybrid (BM25 + dense + RRF)
-memlayer obs search "auth" --mode bm25         # lexical only
-memlayer obs search "auth" --max-tokens 800    # pack hits under a token budget
-memlayer obs context --query "deploy" --limit 20
-memlayer obs context --max-tokens 500         # pack until budget (estimate)
-memlayer obs context --include-stale           # keep stale/invalidated claims
-memlayer verify [--quiet]                      # re-check code anchors vs HEAD
-memlayer obs history <id>                      # supersession chain tree
-memlayer obs relations <id>                    # graph relation edges
-memlayer obs reextract [--since <rfc3339>]     # re-queue fact extraction
-memlayer obs reindex [--force]                 # queue re-embedding and quantization
-memlayer tui                                   # interactive observation browser
-memlayer doctor [--repair]                     # database integrity audit & auto-repair
-memlayer eval --smoke --save-scorecard card.json
-# from repo root: make eval-locomo-smoke | make eval-locomo | make eval-locomo-e2e
-memlayer decide "Should we keep SQLite or move to Postgres?"
-memlayer config show
-memlayer daemon status
-memlayer logs --lines 50
-memlayer mem export --out backup.mem
-# prints a note about --seed-file / --seed-phrase
-memlayer mem export --out secret.mem --seed-file ./phrase.txt
-memlayer mem import backup.mem
-memlayer mem import secret.mem --seed-file ./phrase.txt
+make prereqs && make install
+memlayer install
+memlayer install --agent cursor
+memlayer install --no-git-hooks
 ```
 
-TTY → text; pipes → JSON. Override with `--output {text,json,yaml}`.
+→ [Install](/docs/install/) · [Wire into your agent](/docs/agents/)
 
-Anchored observations are stamped with the current git commit and a content
-digest. After the code moves, `memlayer verify` (or the install git hooks)
-marks them `stale` / `invalidated` / `unprovable`. Context withdraws those by
-default (`verify.serve_stale = false`); search still shows them flagged.
-Pass multiple `--anchor path::symbol` flags on one save when needed.
+## Observations
+
+```bash
+memlayer obs save --type decision --title "…" --content "…" --session "$SID"
+memlayer obs save --anchor src/auth.rs::login --title "…" --content "…"
+memlayer obs recent --limit 10
+memlayer obs history <id>
+memlayer obs relations <id>
+memlayer obs reextract [--since <rfc3339>]
+memlayer obs reindex [--force]
+```
+
+→ [Observations](/docs/observations/)
+
+## Search and context
+
+```bash
+memlayer obs search "auth"
+memlayer obs search "auth" --mode bm25
+memlayer obs search "auth" --max-tokens 800
+memlayer obs context --query "deploy" --limit 20
+memlayer obs context --max-tokens 500
+memlayer obs context --include-stale
+```
+
+→ [Search and context](/docs/search-context/)
+
+## Anchors and verify
+
+```bash
+memlayer verify
+memlayer verify --quiet
+```
+
+→ [Anchors and verify](/docs/anchors-verify/)
+
+## Decide and mem
+
+```bash
+memlayer decide "Should we keep SQLite?"
+memlayer mem export --out backup.mem
+memlayer mem export --out secret.mem --seed-file ./phrase.txt
+memlayer mem import backup.mem
+```
+
+→ [Decide](/docs/decide/) · [Mem archives](/docs/mem/)
+
+## Ops
+
+```bash
+memlayer config show
+memlayer daemon status
+memlayer doctor [--repair]
+memlayer tui
+memlayer logs --lines 50
+memlayer eval --smoke --save-scorecard card.json
+```
+
+→ [Config](/docs/config/) · [LoCoMo eval](/docs/locomo/) · [Troubleshooting](/docs/troubleshooting/)
+
+TTY → text; pipes → JSON. Override with `--output {text,json,yaml}`.

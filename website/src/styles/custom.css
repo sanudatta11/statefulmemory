@@ -226,3 +226,15 @@ nav[aria-labelledby='starlight__on-this-page'] a[aria-current='true'] {
 		display: none;
 	}
 }
+
+/* Demo videos on docs pages */
+.ml-demo-video {
+	display: block;
+	width: 100%;
+	max-width: 52rem;
+	margin: 1.25rem 0 1.75rem;
+	border-radius: 0.5rem;
+	border: 1px solid var(--sl-color-hairline);
+	background: hsl(168, 14%, 5%);
+	aspect-ratio: 16 / 9;
+}
