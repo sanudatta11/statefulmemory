@@ -205,7 +205,10 @@ export default defineConfig({
 								url: site,
 								codeRepository: 'https://github.com/sanudatta11/memlayer',
 								programmingLanguage: 'Rust',
-								license: 'https://opensource.org/licenses/MIT',
+								license: [
+									'https://opensource.org/licenses/MIT',
+									'https://www.apache.org/licenses/LICENSE-2.0',
+								],
 								applicationCategory: 'DeveloperApplication',
 								operatingSystem: 'Linux, macOS',
 							},

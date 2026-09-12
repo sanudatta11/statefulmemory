@@ -2,7 +2,7 @@
 
 Canonical site: https://memlayer.org
 Repository: https://github.com/sanudatta11/memlayer
-License: MIT
+License: MIT OR Apache-2.0
 
 ## Definition
 

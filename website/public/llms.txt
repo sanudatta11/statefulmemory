@@ -3,7 +3,7 @@
 > Persistent memory for AI coding agents: local, per-project, no cloud.
 > SQLite under ~/.memlayer/, CLI + gRPC daemon, MCP tools, hybrid BM25 + dense search.
 
-memlayer is open source (MIT). Source: https://github.com/sanudatta11/memlayer
+memlayer is open source (MIT OR Apache-2.0). Source: https://github.com/sanudatta11/memlayer
 
 ## Docs
 

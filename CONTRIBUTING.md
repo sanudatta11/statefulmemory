@@ -49,3 +49,9 @@ attribution. See [`.cursor/rules/git-commits.mdc`](.cursor/rules/git-commits.mdc
 
 See [`CLAUDE.md`](CLAUDE.md) for architectural invariants, config reference,
 and the gRPC surface listing.
+
+## License
+
+Contributions are dual-licensed under MIT OR Apache-2.0 (same as the project).
+See [`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE), and the
+License section in [`README.md`](README.md).
