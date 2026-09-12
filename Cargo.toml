@@ -56,7 +56,10 @@ candle-core         = "0.8"
 candle-nn           = "0.8"
 candle-transformers = "0.8"
 tokenizers          = { version = "0.20", default-features = false, features = ["onig"] }
-hf-hub              = { version = "0.3" }
+# 0.4+ joins HuggingFace relative resolve-cache redirects; 0.3 dies with
+# RelativeUrlWithoutBase. Stay on 0.4.x (not 0.5) — 0.5 has Content-Range/gzip
+# metadata breakage (huggingface/hf-hub#141).
+hf-hub              = { version = "0.4.3" }
 zerocopy            = "0.7"
 async-trait         = "0.1"
 

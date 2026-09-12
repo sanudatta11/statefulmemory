@@ -4,7 +4,8 @@
 .PHONY: help prereqs check-inputs build release install test test-eval lint clean \
         daemon-start daemon-stop daemon-status logs skill-install \
         extract-locomo run-locomo \
-        eval-locomo-smoke eval-locomo-fetch eval-locomo eval-locomo-full \
+        eval-locomo-smoke eval-locomo-fetch eval-bge-model \
+        eval-locomo eval-locomo-full \
         eval-locomo-e2e eval-locomo-compare eval-staleness
 
 export PATH := $(HOME)/.cargo/bin:$(PATH)
@@ -25,6 +26,8 @@ COMPARE_STALENESS   := python3 $(CURDIR)/tools/compare_staleness.py
 SCORECARD           ?= $(SCORECARD_FULL)
 SCORECARD_STALE     := $(EVAL_OUT)/staleness.json
 SCORECARD_STALE_BASE := $(EVAL_OUT)/staleness-baseline.json
+BGE_MODEL_DIR       ?= $(HOME)/.memlayer-models/bge-small
+VENDOR_BGE          := $(CURDIR)/crates/memlayer-eval/scripts/vendor_bge_model.sh
 
 ifdef LIMIT
 LIMIT_FLAG := --limit $(LIMIT)
@@ -62,6 +65,7 @@ help:
 	@echo "Eval (LoCoMo e2e — preferred for local analysis)"
 	@echo "  eval-locomo-smoke    Fixture: BM25 + lexical judge, write eval/locomo-smoke.json"
 	@echo "  eval-locomo-fetch    Download SNAP locomo10.json into data/locomo/"
+	@echo "  eval-bge-model       Vendor BGE-small into BGE_MODEL_DIR (default ~/.memlayer-models/bge-small)"
 	@echo "  eval-locomo          Full locomo10: hybrid-rerank + LLM answer/judge"
 	@echo "  eval-locomo-full     Alias for eval-locomo"
 	@echo "  eval-locomo-e2e      Smoke then full"
@@ -172,10 +176,13 @@ eval-locomo-fetch:
 		echo "Wrote $(LOCOMO_JSON)"; \
 	fi
 
-eval-locomo eval-locomo-full: release eval-locomo-fetch
+eval-bge-model:
+	MEMLAYER_BGE_MODEL_DIR="$(BGE_MODEL_DIR)" "$(VENDOR_BGE)"
+
+eval-locomo eval-locomo-full: release eval-locomo-fetch eval-bge-model
 	@mkdir -p "$(EVAL_OUT)"
-	@echo "Full LoCoMo uses hybrid+rerank (needs MEMLAYER_BGE_MODEL_DIR) and an agent CLI for answer+judge."
-	MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark locomo $(LIMIT_FLAG) \
+	@echo "Full LoCoMo uses hybrid+rerank + agent CLI for answer/judge."
+	MEMLAYER_BGE_MODEL_DIR="$(BGE_MODEL_DIR)" MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark locomo $(LIMIT_FLAG) \
 	  --save-scorecard "$(SCORECARD_FULL)"
 	@$(COMPARE_LOCOMO) --scorecard "$(SCORECARD_FULL)" --baselines "$(LOCOMO_BASELINES)"
 

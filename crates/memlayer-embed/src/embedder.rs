@@ -14,15 +14,18 @@
 //!   inference on CPU is plenty fast for the retrieval path.
 //!
 //! Network policy:
-//!   `try_new` calls into `hf_hub` synchronously the first time it runs.
-//!   `hf-hub` honours `HTTPS_PROXY` / `HTTP_PROXY` and caches model files
-//!   under `~/.cache/huggingface/` (or `$HF_HOME`). For air-gapped or
-//!   restricted environments, pre-populate that cache out of band — the
-//!   library falls back to it transparently on subsequent runs.
+//!   `try_new` resolves weights in this order:
+//!   1. `MEMLAYER_BGE_MODEL_DIR` (explicit vendor path)
+//!   2. `~/.memlayer-models/bge-small` when already complete
+//!   3. `hf-hub` ≥0.4 (joins HuggingFace relative `/api/resolve-cache/…`
+//!      redirects; 0.3 failed with `RelativeUrlWithoutBase`)
+//!   4. `curl` into `~/.memlayer-models/bge-small` if hf-hub still fails
+//!      (TLS interception, empty cache, etc.)
 //!
 //! Model: `BAAI/bge-small-en-v1.5` (BERT-style, 384-dim, 33M params).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -35,6 +38,9 @@ use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer};
 const MODEL_ID: &str = "BAAI/bge-small-en-v1.5";
 /// Output dimensionality of `bge-small-en-v1.5` (matches its `hidden_size`).
 const EMBED_DIM: usize = 384;
+/// Absolute resolve URLs (curl follows relative redirects correctly).
+const HF_RESOLVE_BASE: &str = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
+const MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "model.safetensors"];
 
 /// Trait for sentence embedders. Implementations must be thread-safe so the
 /// retrieval path can share a single instance behind an `Arc`.
@@ -56,58 +62,148 @@ pub struct BgeSmallEmbedder {
     device: Device,
 }
 
+fn default_vendor_dir() -> PathBuf {
+    dirs_next_home()
+        .map(|h| h.join(".memlayer-models").join("bge-small"))
+        .unwrap_or_else(|| PathBuf::from(".memlayer-models/bge-small"))
+}
+
+/// Prefer `dirs`-less home lookup to avoid a new crate dep.
+fn dirs_next_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn model_paths_in(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        dir.join("config.json"),
+        dir.join("tokenizer.json"),
+        dir.join("model.safetensors"),
+    )
+}
+
+fn dir_has_model_files(dir: &Path) -> bool {
+    let (cfg, tok, wts) = model_paths_in(dir);
+    cfg.is_file() && tok.is_file() && wts.is_file()
+}
+
+fn require_model_files(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    let (cfg, tok, wts) = model_paths_in(dir);
+    for p in [&cfg, &tok, &wts] {
+        if !p.is_file() {
+            anyhow::bail!(
+                "BGE model dir {} is missing {}",
+                dir.display(),
+                p.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+            );
+        }
+    }
+    Ok((cfg, tok, wts))
+}
+
+fn download_via_hf_hub() -> Result<(PathBuf, PathBuf, PathBuf)> {
+    let api = Api::new().context("failed to initialize HuggingFace API client")?;
+    let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
+    let cfg = repo
+        .get("config.json")
+        .with_context(|| format!("download {MODEL_ID}/config.json from HuggingFace Hub"))?;
+    let tok = repo
+        .get("tokenizer.json")
+        .with_context(|| format!("download {MODEL_ID}/tokenizer.json from HuggingFace Hub"))?;
+    let wts = repo
+        .get("model.safetensors")
+        .with_context(|| format!("download {MODEL_ID}/model.safetensors from HuggingFace Hub"))?;
+    Ok((cfg, tok, wts))
+}
+
+/// Download model files with system `curl`, which correctly follows HuggingFace's
+/// relative `Location` redirects (hf-hub 0.3 passes those to ureq as absolute-less URLs).
+fn download_via_curl(dest: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("create BGE vendor dir {}", dest.display()))?;
+    for name in MODEL_FILES {
+        let out = dest.join(name);
+        if out.is_file() {
+            continue;
+        }
+        let url = format!("{HF_RESOLVE_BASE}/{name}");
+        tracing::info!(%url, dest = %out.display(), "downloading BGE file via curl");
+        let status = Command::new("curl")
+            .args([
+                "-fL",
+                "--retry",
+                "4",
+                "--retry-delay",
+                "2",
+                "--progress-bar",
+                "-o",
+            ])
+            .arg(&out)
+            .arg(&url)
+            .status()
+            .context("spawn curl to download BGE model (is curl on PATH?)")?;
+        if !status.success() {
+            let _ = std::fs::remove_file(&out);
+            anyhow::bail!(
+                "curl failed downloading {name} from {url} (exit {status}); \
+                 set MEMLAYER_BGE_MODEL_DIR after running \
+                 crates/memlayer-eval/scripts/vendor_bge_model.sh"
+            );
+        }
+    }
+    require_model_files(dest)
+}
+
+fn resolve_model_paths() -> Result<(PathBuf, PathBuf, PathBuf)> {
+    if let Ok(local_dir) = std::env::var("MEMLAYER_BGE_MODEL_DIR") {
+        let dir = PathBuf::from(local_dir);
+        tracing::info!(?dir, "loading BGE-small from MEMLAYER_BGE_MODEL_DIR");
+        return require_model_files(&dir);
+    }
+
+    let vendor = default_vendor_dir();
+    if dir_has_model_files(&vendor) {
+        tracing::info!(?vendor, "loading BGE-small from default vendor dir");
+        return require_model_files(&vendor);
+    }
+
+    match download_via_hf_hub() {
+        Ok(paths) => Ok(paths),
+        Err(hf_err) => {
+            tracing::warn!(
+                error = %hf_err,
+                ?vendor,
+                "hf-hub BGE download failed; falling back to curl vendor dir"
+            );
+            download_via_curl(&vendor).with_context(|| {
+                format!(
+                    "load BGE-small embedder (hf-hub failed: {hf_err}; curl fallback also failed)"
+                )
+            })
+        }
+    }
+}
+
 impl BgeSmallEmbedder {
     /// Load BGE-small-en-v1.5.
     ///
     /// **Path-resolution order:**
-    /// 1. If `MEMLAYER_BGE_MODEL_DIR` is set, expect `config.json`,
-    ///    `tokenizer.json`, and `model.safetensors` at that path. This is the
-    ///    enterprise escape hatch for environments where HuggingFace can't be
-    ///    reached (corporate TLS interception that the bundled rustls roots
-    ///    in `hf-hub`'s ureq don't trust).
-    /// 2. Otherwise call `hf-hub` which honours `HTTPS_PROXY` and caches
-    ///    files under `~/.cache/huggingface/`.
+    /// 1. `MEMLAYER_BGE_MODEL_DIR` — explicit vendor path
+    /// 2. `~/.memlayer-models/bge-small` if already populated
+    /// 3. `hf-hub` (caches under `~/.cache/huggingface/`)
+    /// 4. `curl` into `~/.memlayer-models/bge-small` when hf-hub fails
+    ///    (e.g. HuggingFace relative redirect → `RelativeUrlWithoutBase`)
     ///
     /// Errors are wrapped with `anyhow::Context` so callers can surface a
     /// useful message (EH-2). Common causes:
     /// * Local override path doesn't contain all three required files.
-    /// * No network and an empty HF cache.
-    /// * Corporate proxy blocks `huggingface.co` and the bundled rustls
-    ///   roots reject the proxy's intercept cert. Vendor the model and
+    /// * No network and an empty HF / vendor cache.
+    /// * Corporate proxy blocks `huggingface.co`. Vendor the model and
     ///   set `MEMLAYER_BGE_MODEL_DIR` to bypass.
     /// * Disk full while writing to the cache directory.
     pub fn try_new() -> Result<Self> {
-        let (config_path, tokenizer_path, weights_path) =
-            if let Ok(local_dir) = std::env::var("MEMLAYER_BGE_MODEL_DIR") {
-                let dir = PathBuf::from(local_dir);
-                tracing::info!(?dir, "loading BGE-small from MEMLAYER_BGE_MODEL_DIR");
-                let cfg = dir.join("config.json");
-                let tok = dir.join("tokenizer.json");
-                let wts = dir.join("model.safetensors");
-                for p in [&cfg, &tok, &wts] {
-                    if !p.exists() {
-                        anyhow::bail!(
-                            "MEMLAYER_BGE_MODEL_DIR={} is missing {}",
-                            dir.display(),
-                            p.file_name().and_then(|s| s.to_str()).unwrap_or("?")
-                        );
-                    }
-                }
-                (cfg, tok, wts)
-            } else {
-                let api = Api::new().context("failed to initialize HuggingFace API client")?;
-                let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
-                let cfg = repo.get("config.json").with_context(|| {
-                    format!("download {MODEL_ID}/config.json from HuggingFace Hub")
-                })?;
-                let tok = repo.get("tokenizer.json").with_context(|| {
-                    format!("download {MODEL_ID}/tokenizer.json from HuggingFace Hub")
-                })?;
-                let wts = repo.get("model.safetensors").with_context(|| {
-                    format!("download {MODEL_ID}/model.safetensors from HuggingFace Hub")
-                })?;
-                (cfg, tok, wts)
-            };
+        let (config_path, tokenizer_path, weights_path) = resolve_model_paths()?;
 
         let config_json =
             std::fs::read_to_string(&config_path).context("read BGE config.json")?;
