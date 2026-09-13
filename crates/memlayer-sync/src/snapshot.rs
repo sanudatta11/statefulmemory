@@ -8,11 +8,11 @@ use memlayer_core::error::Error;
 
 use crate::error::{Result, SyncError};
 use crate::mem_archive::{
-    ArchivedFact, ArchivedObservation, ArchivedPrompt, ArchivedRelation, ArchivedSession,
-    ArchivePayload,
+    ArchivePayload, ArchivedEntity, ArchivedEntityEdge, ArchivedEntityMention, ArchivedFact,
+    ArchivedObservation, ArchivedPrompt, ArchivedRelation, ArchivedSession,
 };
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 #[derive(Debug, Clone, Default)]
 pub struct ApplyReport {
@@ -21,6 +21,9 @@ pub struct ApplyReport {
     pub prompts_imported: i64,
     pub facts_imported: i64,
     pub relations_imported: i64,
+    pub entities_imported: i64,
+    pub mentions_imported: i64,
+    pub edges_imported: i64,
     pub skipped: i64,
 }
 
@@ -36,6 +39,9 @@ pub fn dump_payload(conn: &Connection, project: &str, exported_at: &str) -> Resu
     let prompts = dump_prompts(conn)?;
     let facts = dump_facts(conn)?;
     let relations = dump_relations(conn)?;
+    let entities = dump_entities(conn)?;
+    let entity_mentions = dump_mentions(conn)?;
+    let entity_edges = dump_edges(conn)?;
     Ok(ArchivePayload {
         format: "memlayer.archive".into(),
         archive_version: 1,
@@ -47,7 +53,71 @@ pub fn dump_payload(conn: &Connection, project: &str, exported_at: &str) -> Resu
         prompts,
         facts,
         relations,
+        entities,
+        entity_mentions,
+        entity_edges,
     })
+}
+
+fn dump_entities(conn: &Connection) -> Result<Vec<ArchivedEntity>> {
+    let mut stmt = conn
+        .prepare("SELECT id, kind, name, norm_name FROM entities ORDER BY id")
+        .map_err(storage_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ArchivedEntity {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                name: row.get(2)?,
+                norm_name: row.get(3)?,
+            })
+        })
+        .map_err(storage_err)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(storage_err)
+}
+
+fn dump_mentions(conn: &Connection) -> Result<Vec<ArchivedEntityMention>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT entity_id, observation_id, offsets, source
+             FROM entity_mentions ORDER BY entity_id, observation_id",
+        )
+        .map_err(storage_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ArchivedEntityMention {
+                entity_id: row.get(0)?,
+                observation_id: row.get(1)?,
+                offsets: row.get(2)?,
+                source: row.get(3)?,
+            })
+        })
+        .map_err(storage_err)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(storage_err)
+}
+
+fn dump_edges(conn: &Connection) -> Result<Vec<ArchivedEntityEdge>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT from_entity, to_entity, relation, weight, first_seen, last_seen,
+                    src_observation_id
+             FROM entity_edges ORDER BY from_entity, to_entity, relation",
+        )
+        .map_err(storage_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ArchivedEntityEdge {
+                from_entity: row.get(0)?,
+                to_entity: row.get(1)?,
+                relation: row.get(2)?,
+                weight: row.get(3)?,
+                first_seen: row.get(4)?,
+                last_seen: row.get(5)?,
+                src_observation_id: row.get(6)?,
+            })
+        })
+        .map_err(storage_err)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(storage_err)
 }
 
 fn dump_sessions(conn: &Connection) -> Result<Vec<ArchivedSession>> {
@@ -191,9 +261,7 @@ pub fn apply_payload(
         ))));
     }
 
-    let tx = conn
-        .transaction()
-        .map_err(storage_err)?;
+    let tx = conn.transaction().map_err(storage_err)?;
 
     if mode == "replace" {
         wipe_project(&tx)?;
@@ -387,6 +455,8 @@ pub fn apply_payload(
         report.relations_imported += 1;
     }
 
+    import_entity_graph(&tx, payload, &obs_id_map, &mut report)?;
+
     tx.commit().map_err(storage_err)?;
     Ok(report)
 }
@@ -400,8 +470,145 @@ fn ensure_session(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Import the entity graph (V11). Entity ids are remapped by `norm_name`
+/// (UNIQUE lookup key) so a merge into an existing graph dedupes cleanly;
+/// mentions and edges follow the remapped entity / observation ids.
+fn import_entity_graph(
+    conn: &Connection,
+    payload: &ArchivePayload,
+    obs_id_map: &HashMap<i64, i64>,
+    report: &mut ApplyReport,
+) -> Result<()> {
+    if payload.entities.is_empty()
+        && payload.entity_mentions.is_empty()
+        && payload.entity_edges.is_empty()
+    {
+        return Ok(());
+    }
+
+    // Entity remap: source id -> new local id (upsert by norm_name).
+    let mut ent_id_map: HashMap<i64, i64> = HashMap::new();
+    for e in &payload.entities {
+        let norm = if e.norm_name.trim().is_empty() {
+            memlayer_core::config::normalize_entity_name(&e.name)
+        } else {
+            e.norm_name.clone()
+        };
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM entities WHERE norm_name = ?1",
+                params![&norm],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err)?;
+        let new_id = if let Some(id) = existing {
+            conn.execute(
+                "UPDATE entities SET name = ?2, kind = ?3 WHERE id = ?1",
+                params![id, &e.name, &e.kind],
+            )
+            .map_err(storage_err)?;
+            id
+        } else {
+            conn.execute(
+                "INSERT INTO entities (kind, name, norm_name) VALUES (?1, ?2, ?3)",
+                params![&e.kind, &e.name, &norm],
+            )
+            .map_err(storage_err)?;
+            conn.last_insert_rowid()
+        };
+        ent_id_map.insert(e.id, new_id);
+        report.entities_imported += 1;
+    }
+
+    for m in &payload.entity_mentions {
+        let (Some(&entity_id), Some(&obs_id)) = (
+            ent_id_map.get(&m.entity_id),
+            obs_id_map.get(&m.observation_id),
+        ) else {
+            report.skipped += 1;
+            continue;
+        };
+        let n = conn
+            .execute(
+                "INSERT INTO entity_mentions (entity_id, observation_id, offsets, source)
+                 SELECT ?1, ?2, ?3, ?4
+                 WHERE NOT EXISTS (
+                    SELECT 1 FROM entity_mentions
+                    WHERE entity_id = ?1 AND observation_id = ?2 AND source = ?4
+                 )",
+                params![entity_id, obs_id, &m.offsets, &m.source],
+            )
+            .map_err(storage_err)?;
+        report.mentions_imported += n as i64;
+    }
+
+    for ed in &payload.entity_edges {
+        let (Some(&from_id), Some(&to_id)) = (
+            ent_id_map.get(&ed.from_entity),
+            ent_id_map.get(&ed.to_entity),
+        ) else {
+            report.skipped += 1;
+            continue;
+        };
+        if from_id == to_id {
+            report.skipped += 1;
+            continue;
+        }
+        let src_obs = ed
+            .src_observation_id
+            .and_then(|o| obs_id_map.get(&o))
+            .copied();
+        // Read-then-upsert (write path is a single thread in prod; this runs
+        // inside the import tx, so the pattern is safe here too).
+        let existing_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM entity_edges
+                 WHERE from_entity = ?1 AND to_entity = ?2 AND relation = ?3",
+                params![from_id, to_id, &ed.relation],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err)?;
+        if let Some(id) = existing_id {
+            conn.execute(
+                "UPDATE entity_edges SET weight = weight + ?2,
+                        first_seen = MIN(first_seen, ?3), last_seen = MAX(last_seen, ?4),
+                        src_observation_id = COALESCE(?5, src_observation_id)
+                 WHERE id = ?1",
+                params![id, ed.weight.max(0.0), ed.first_seen, ed.last_seen, src_obs],
+            )
+            .map_err(storage_err)?;
+        } else {
+            let weight = ed.weight.max(1.0);
+            conn.execute(
+                "INSERT INTO entity_edges
+                    (from_entity, to_entity, relation, weight, first_seen, last_seen,
+                     src_observation_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    from_id,
+                    to_id,
+                    &ed.relation,
+                    weight,
+                    ed.first_seen,
+                    ed.last_seen,
+                    src_obs
+                ],
+            )
+            .map_err(storage_err)?;
+        }
+        report.edges_imported += 1;
+    }
+
+    Ok(())
+}
+
 fn wipe_project(conn: &Connection) -> Result<()> {
     for sql in [
+        "DELETE FROM entity_mentions",
+        "DELETE FROM entity_edges",
+        "DELETE FROM entities",
         "DELETE FROM observation_relations",
         "DELETE FROM facts",
         "DELETE FROM observation_embedding_meta",
@@ -512,5 +719,92 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         assert_eq!(titles, vec!["Title A".to_string()]);
+    }
+
+    #[test]
+    fn graph_dump_apply_round_trip() {
+        let (_dir, src) = open_db();
+        seed(&src);
+        let obs_id: i64 = src
+            .query_row("SELECT id FROM observations ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        src.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'validate', 'validate')",
+            [],
+        )
+        .unwrap();
+        let e2: i64 = src
+            .query_row(
+                "SELECT id FROM entities WHERE norm_name = 'validate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        src.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'refresh', 'refresh')",
+            [],
+        )
+        .unwrap();
+        let e3: i64 = src
+            .query_row(
+                "SELECT id FROM entities WHERE norm_name = 'refresh'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        src.execute(
+            "INSERT INTO entity_mentions (entity_id, observation_id, source) VALUES (?1, ?2, 'backtick')",
+            params![e2, obs_id],
+        )
+        .unwrap();
+        src.execute(
+            "INSERT INTO entity_mentions (entity_id, observation_id, source) VALUES (?1, ?2, 'backtick')",
+            params![e3, obs_id],
+        )
+        .unwrap();
+        src.execute(
+            "INSERT INTO entity_edges (from_entity, to_entity, relation, weight, first_seen, last_seen, src_observation_id)
+             VALUES (?1, ?2, 'mentions', 2.0, 1, 1, ?3)",
+            params![e2, e3, obs_id],
+        )
+        .unwrap();
+
+        let payload = dump_payload(&src, "demo", "2026-09-12T00:00:00Z").unwrap();
+        assert_eq!(payload.entities.len(), 2);
+        assert_eq!(payload.entity_mentions.len(), 2);
+        assert_eq!(payload.entity_edges.len(), 1);
+
+        let (_dir2, mut dst) = open_db();
+        let report = apply_payload(&mut dst, &payload, "merge").unwrap();
+        assert_eq!(report.observations_imported, 1);
+        assert_eq!(report.entities_imported, 2);
+        assert_eq!(report.mentions_imported, 2);
+        assert_eq!(report.edges_imported, 1);
+
+        let ent_n: i64 = dst
+            .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ent_n, 2, "entity upsert must dedupe by norm_name");
+        let men_n: i64 = dst
+            .query_row("SELECT count(*) FROM entity_mentions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(men_n, 2);
+        let edge_n: i64 = dst
+            .query_row("SELECT count(*) FROM entity_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(edge_n, 1);
+
+        // Re-import: entities/mentions dedupe; edit edge accumulates but the
+        // topology (counts) stays stable.
+        let report2 = apply_payload(&mut dst, &payload, "merge").unwrap();
+        assert_eq!(report2.entities_imported, 2, "entity upserts counted");
+        assert_eq!(report2.mentions_imported, 0, "mentions are idempotent");
+        assert_eq!(report2.edges_imported, 1);
+        let edge_n2: i64 = dst
+            .query_row("SELECT count(*) FROM entity_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(edge_n2, 1);
     }
 }

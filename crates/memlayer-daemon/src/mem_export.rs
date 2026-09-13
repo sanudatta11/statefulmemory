@@ -14,7 +14,8 @@ use memlayer_sync::snapshot;
 use crate::error_map::map;
 use crate::service::DaemonState;
 
-pub const SEED_REQUIRED_MSG: &str = "this archive is seed-encrypted and cannot be imported without the seed phrase. \
+pub const SEED_REQUIRED_MSG: &str =
+    "this archive is seed-encrypted and cannot be imported without the seed phrase. \
 pass --seed-file or --seed-phrase (the same phrase used at export).";
 
 const SEED_TOO_SHORT: &str = "seed phrase must be at least 12 characters after trim";
@@ -28,9 +29,7 @@ pub async fn handle(
         return Err(Status::invalid_argument("project_name is required"));
     }
     if !req.file.ends_with(".mem") {
-        return Err(Status::invalid_argument(
-            "export path must end with .mem",
-        ));
+        return Err(Status::invalid_argument("export path must end with .mem"));
     }
     let dest = PathBuf::from(&req.file);
     let project = map(state.registry.get_or_open(&req.project_name))?;
@@ -55,6 +54,9 @@ async fn run(
     let n_prompts = payload.prompts.len() as i64;
     let n_facts = payload.facts.len() as i64;
     let n_rels = payload.relations.len() as i64;
+    let n_entities = payload.entities.len() as i64;
+    let n_mentions = payload.entity_mentions.len() as i64;
+    let n_edges = payload.entity_edges.len() as i64;
 
     let mut salt = [0u8; 16];
     let mut aead_nonce = [0u8; 24];
@@ -92,6 +94,9 @@ async fn run(
         facts: n_facts,
         relations: n_rels,
         bytes: nbytes,
+        entities: n_entities,
+        mentions: n_mentions,
+        edges: n_edges,
     })
 }
 
@@ -118,7 +123,9 @@ pub(crate) fn map_sync(e: memlayer_sync::SyncError) -> Status {
         SyncError::SeedTooShort => Status::invalid_argument(SEED_TOO_SHORT),
         SyncError::NotArchive => Status::invalid_argument("not a memlayer archive"),
         SyncError::Truncated => Status::invalid_argument("memlayer archive truncated"),
-        SyncError::ChecksumMismatch => Status::invalid_argument("memlayer archive checksum mismatch"),
+        SyncError::ChecksumMismatch => {
+            Status::invalid_argument("memlayer archive checksum mismatch")
+        }
         SyncError::UnsupportedVersion(v) => {
             Status::invalid_argument(format!("unsupported memlayer archive version {v}"))
         }

@@ -89,6 +89,33 @@ pub struct ArchivedRelation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArchivedEntity {
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub norm_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArchivedEntityMention {
+    pub entity_id: i64,
+    pub observation_id: i64,
+    pub offsets: Option<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArchivedEntityEdge {
+    pub from_entity: i64,
+    pub to_entity: i64,
+    pub relation: String,
+    pub weight: f64,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub src_observation_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArchivePayload {
     pub format: String,
     pub archive_version: u16,
@@ -105,6 +132,15 @@ pub struct ArchivePayload {
     pub facts: Vec<ArchivedFact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<ArchivedRelation>,
+    // Spec: graph-briefing. Additive (v2 payloads carry these; v1 payloads
+    // decode to empty vecs via serde defaults). Entity ids are per-project and
+    // remapped on import by norm_name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<ArchivedEntity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_mentions: Vec<ArchivedEntityMention>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_edges: Vec<ArchivedEntityEdge>,
 }
 
 pub struct EncodeParams {
@@ -189,8 +225,8 @@ pub fn is_encrypted(bytes: &[u8]) -> Result<bool> {
 pub fn encode(payload: &ArchivePayload, params: &EncodeParams) -> Result<Vec<u8>> {
     let inner = rmp_serde::to_vec(payload).map_err(|e| SyncError::Compress(e.to_string()))?;
     let checksum = Sha256::digest(&inner);
-    let compressed = zstd::bulk::compress(&inner, ZSTD_LEVEL)
-        .map_err(|e| SyncError::Compress(e.to_string()))?;
+    let compressed =
+        zstd::bulk::compress(&inner, ZSTD_LEVEL).map_err(|e| SyncError::Compress(e.to_string()))?;
     let mut flags = 0u8;
     let body = if let Some(raw) = &params.seed {
         flags |= FLAG_ENCRYPTED;
@@ -244,7 +280,8 @@ pub fn decode(bytes: &[u8], seed: Option<&str>) -> Result<ArchivePayload> {
     } else {
         keystream_xor(body, &salt)
     };
-    let inner = zstd::decode_all(&compressed[..]).map_err(|e| SyncError::Decompress(e.to_string()))?;
+    let inner =
+        zstd::decode_all(&compressed[..]).map_err(|e| SyncError::Decompress(e.to_string()))?;
     if inner.len() != uncompressed_len {
         return Err(SyncError::CorruptChunk("length mismatch".into()));
     }
@@ -271,6 +308,9 @@ mod tests {
             prompts: vec![],
             facts: vec![],
             relations: vec![],
+            entities: vec![],
+            entity_mentions: vec![],
+            entity_edges: vec![],
         }
     }
 

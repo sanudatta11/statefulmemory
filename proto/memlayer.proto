@@ -747,6 +747,9 @@ message ExportMemResponse {
   int64 facts = 5;
   int64 relations = 6;
   int64 bytes = 7;
+  int64 entities = 8;      // graph-briefing: entities in the snapshot
+  int64 mentions = 9;      //                    entity_mentions rows
+  int64 edges = 10;        //                    entity_edges rows
 }
 message ImportMemRequest {
   string project_name = 1;
@@ -763,6 +766,9 @@ message ImportMemResponse {
   int64 skipped = 6;
   bool seed_encrypted = 7;
   bool seed_ignored = 8;
+  int64 entities_imported = 9;   // graph-briefing
+  int64 mentions_imported = 10;
+  int64 edges_imported = 11;
 }
 
 // ---

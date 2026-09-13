@@ -71,3 +71,7 @@ jobs:
           # Supersession + observation rows survive.
           "$BIN" obs search "portable decision" --mode hybrid | grep -q "portable" \
             || { echo "imported observations missing"; exit 1; }
+
+          # .mem v2 carries the entity graph; imported graph must be non-empty.
+          IM_ENT=$("$BIN" --output json graph stats | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_entities"])')
+          test "$IM_ENT" -ge 1 || { echo "graph entities lost on import"; exit 1; }

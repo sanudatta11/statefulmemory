@@ -96,6 +96,9 @@ pub async fn handle(
         skipped: report.skipped,
         seed_encrypted,
         seed_ignored,
+        entities_imported: report.entities_imported,
+        mentions_imported: report.mentions_imported,
+        edges_imported: report.edges_imported,
     })
 }
 
@@ -109,15 +112,15 @@ async fn apply_on_write_thread(
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let (stat_tx, stat_rx) = std::sync::mpsc::sync_channel(1);
     map(project.write.send(WriteRequest::Custom {
-        f: Box::new(move |conn| {
-            match snapshot::apply_payload(conn, &payload, &mode) {
+        f: Box::new(
+            move |conn| match snapshot::apply_payload(conn, &payload, &mode) {
                 Ok(r) => {
                     let _ = stat_tx.send(r);
                     Ok(())
                 }
                 Err(e) => Err(memlayer_core::Error::internal(e.to_string())),
-            }
-        }),
+            },
+        ),
         reply: reply_tx,
     }))?;
     reply_rx

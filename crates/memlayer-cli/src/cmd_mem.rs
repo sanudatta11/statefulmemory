@@ -97,7 +97,11 @@ async fn export(
         file: out.to_string_lossy().into_owned(),
         seed_phrase,
     };
-    let resp = client.export_mem(req).await.map_err(VerbErr::Status)?.into_inner();
+    let resp = client
+        .export_mem(req)
+        .await
+        .map_err(VerbErr::Status)?
+        .into_inner();
     write_export(&resp, fmt, used_seed).map_err(VerbErr::Io)?;
     if used_seed {
         eprintln!("{HINT_ENCRYPTED}");
@@ -141,16 +145,18 @@ async fn import(
         mode: a.mode,
         seed_phrase,
     };
-    let resp = client.import_mem(req).await.map_err(VerbErr::Status)?.into_inner();
+    let resp = client
+        .import_mem(req)
+        .await
+        .map_err(VerbErr::Status)?
+        .into_inner();
     write_import(&resp, fmt).map_err(VerbErr::Io)?;
     if resp.seed_encrypted {
         eprintln!("{HINT_IMPORT_ENCRYPTED}");
     } else {
         eprintln!("{HINT_IMPORT_UNENCRYPTED}");
         if resp.seed_ignored {
-            eprintln!(
-                "warn: seed was ignored because the archive is not seed-encrypted."
-            );
+            eprintln!("warn: seed was ignored because the archive is not seed-encrypted.");
         }
     }
     Ok(())
@@ -178,15 +184,19 @@ fn load_seed(
     }
 }
 
-fn write_export(resp: &p::ExportMemResponse, fmt: Formatter, seed_encrypted: bool) -> io::Result<()> {
+fn write_export(
+    resp: &p::ExportMemResponse,
+    fmt: Formatter,
+    seed_encrypted: bool,
+) -> io::Result<()> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     match fmt {
         Formatter::Text => {
             writeln!(
                 handle,
-                "wrote {} ({} observations, {} sessions, {} bytes)",
-                resp.file, resp.observations, resp.sessions, resp.bytes
+                "wrote {} ({} observations, {} sessions, {} bytes, {} graph entities)",
+                resp.file, resp.observations, resp.sessions, resp.bytes, resp.entities
             )?;
         }
         Formatter::Json | Formatter::Yaml => {
@@ -203,6 +213,9 @@ fn write_export(resp: &p::ExportMemResponse, fmt: Formatter, seed_encrypted: boo
                 "facts": resp.facts,
                 "relations": resp.relations,
                 "bytes": resp.bytes,
+                "entities": resp.entities,
+                "mentions": resp.mentions,
+                "edges": resp.edges,
                 "seed_encrypted": seed_encrypted,
                 "hint": hint,
             });
@@ -224,11 +237,12 @@ fn write_import(resp: &p::ImportMemResponse, fmt: Formatter) -> io::Result<()> {
         Formatter::Text => {
             writeln!(
                 handle,
-                "imported {} observations, {} sessions, {} prompts, {} facts ({} skipped)",
+                "imported {} observations, {} sessions, {} prompts, {} facts, {} graph entities ({} skipped)",
                 resp.observations_imported,
                 resp.sessions_imported,
                 resp.prompts_imported,
                 resp.facts_imported,
+                resp.entities_imported,
                 resp.skipped
             )?;
         }
@@ -245,6 +259,9 @@ fn write_import(resp: &p::ImportMemResponse, fmt: Formatter) -> io::Result<()> {
                 "facts_imported": resp.facts_imported,
                 "relations_imported": resp.relations_imported,
                 "skipped": resp.skipped,
+                "entities_imported": resp.entities_imported,
+                "mentions_imported": resp.mentions_imported,
+                "edges_imported": resp.edges_imported,
                 "seed_encrypted": resp.seed_encrypted,
                 "seed_ignored": resp.seed_ignored,
                 "hint": hint,
