@@ -16,6 +16,7 @@ pub mod agent_cli;
 pub mod cache;
 pub mod claude_cli;
 pub mod entities;
+pub mod entity_resolve;
 pub mod extractor;
 pub mod opencode_models;
 pub mod prompt;

@@ -98,8 +98,49 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Launch interactive TUI observation browser.
     Tui(TuiArgs),
+    /// Inspect the entity cue graph (query / rebuild / stats).
+    Graph(GraphArgs),
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct GraphArgs {
+    #[command(subcommand)]
+    pub verb: GraphVerb,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GraphVerb {
+    /// Print graph edges around an entity.
+    Query(GraphQueryArgs),
+    /// Backfill graph entities from code anchors (works with the daemon down).
+    Rebuild(GraphRebuildArgs),
+    /// Print entity / mention / edge totals for this project.
+    Stats,
+}
+
+#[derive(Args, Debug)]
+pub struct GraphQueryArgs {
+    /// Entity name; resolved by normalized exact match, else the shortest
+    /// display-name prefix match on `norm_name`.
+    pub entity: String,
+    /// Traversal depth (server clamps to 2).
+    #[arg(long, default_value_t = 2)]
+    pub hops: u8,
+    /// Narrow to a single relation (e.g. `mentions`).
+    #[arg(long)]
+    pub relation: Option<String>,
+    /// Emit machine-readable JSON instead of text edges.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct GraphRebuildArgs {
+    /// Skip the graph-disabled note (for hooks).
+    #[arg(short, long)]
+    pub quiet: bool,
 }
 
 #[derive(Args, Debug)]
@@ -865,7 +906,9 @@ mod tests {
     fn daemon_start_foreground_parses() {
         let cli = Cli::try_parse_from(["memlayer", "daemon", "start", "--foreground"]).unwrap();
         match cli.command {
-            Command::Daemon(DaemonArgs { verb: DaemonVerb::Start { foreground } }) => {
+            Command::Daemon(DaemonArgs {
+                verb: DaemonVerb::Start { foreground },
+            }) => {
                 assert!(foreground);
             }
             other => panic!("expected daemon start, got {other:?}"),
@@ -913,14 +956,17 @@ mod tests {
     fn daemon_force_start_parses() {
         let cli = Cli::try_parse_from(["memlayer", "daemon", "force-start"]).unwrap();
         match cli.command {
-            Command::Daemon(DaemonArgs { verb: DaemonVerb::ForceStart }) => {}
+            Command::Daemon(DaemonArgs {
+                verb: DaemonVerb::ForceStart,
+            }) => {}
             other => panic!("expected daemon force-start, got {other:?}"),
         }
     }
 
     #[test]
     fn output_flag_is_global() {
-        let cli = Cli::try_parse_from(["memlayer", "--output", "json", "daemon", "status"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["memlayer", "--output", "json", "daemon", "status"]).unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Json));
     }
 
@@ -936,7 +982,10 @@ mod tests {
             .get_arguments()
             .find(|a| a.get_id() == "project")
             .expect("--project arg defined");
-        assert!(arg.get_env().is_none(), "project arg should not have env binding");
+        assert!(
+            arg.get_env().is_none(),
+            "project arg should not have env binding"
+        );
         let cli = Cli::try_parse_from(["memlayer", "--project", "explicit", "version"]).unwrap();
         assert_eq!(cli.project.as_deref(), Some("explicit"));
     }
@@ -994,7 +1043,8 @@ mod tests {
     #[test]
     fn obs_context_flags_parse() {
         let cli = Cli::try_parse_from([
-            "memlayer", "obs", "context", "--query", "deploy", "--mode", "hybrid", "--rerank", "haiku",
+            "memlayer", "obs", "context", "--query", "deploy", "--mode", "hybrid", "--rerank",
+            "haiku",
         ])
         .unwrap();
         match cli.command {
@@ -1039,7 +1089,9 @@ mod tests {
         let cli = Cli::try_parse_from(["memlayer", "daemon", "restart"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Daemon(DaemonArgs { verb: DaemonVerb::Restart })
+            Command::Daemon(DaemonArgs {
+                verb: DaemonVerb::Restart
+            })
         ));
     }
 
@@ -1048,7 +1100,9 @@ mod tests {
         let cli = Cli::try_parse_from(["memlayer", "daemon", "stop"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Daemon(DaemonArgs { verb: DaemonVerb::Stop })
+            Command::Daemon(DaemonArgs {
+                verb: DaemonVerb::Stop
+            })
         ));
     }
 
@@ -1057,14 +1111,22 @@ mod tests {
         let cli = Cli::try_parse_from(["memlayer", "daemon", "status"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Daemon(DaemonArgs { verb: DaemonVerb::Status })
+            Command::Daemon(DaemonArgs {
+                verb: DaemonVerb::Status
+            })
         ));
     }
 
     #[test]
     fn hook_pre_tool_grep_parses() {
         let cli = Cli::try_parse_from([
-            "memlayer", "hook", "pre-tool", "--tool", "Grep", "--pattern", "foo",
+            "memlayer",
+            "hook",
+            "pre-tool",
+            "--tool",
+            "Grep",
+            "--pattern",
+            "foo",
         ])
         .unwrap();
         match cli.command {
@@ -1083,7 +1145,13 @@ mod tests {
     #[test]
     fn hook_pre_tool_read_parses() {
         let cli = Cli::try_parse_from([
-            "memlayer", "hook", "pre-tool", "--tool", "Read", "--path", "/tmp/x.rs",
+            "memlayer",
+            "hook",
+            "pre-tool",
+            "--tool",
+            "Read",
+            "--path",
+            "/tmp/x.rs",
         ])
         .unwrap();
         match cli.command {

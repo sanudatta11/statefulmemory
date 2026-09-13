@@ -1,0 +1,73 @@
+name: Memory Portability Round-Trip
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: mem-roundtrip-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mem-roundtrip:
+    name: .mem export → wipe → import integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev protobuf-compiler
+          protoc --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build CLI
+        run: cargo build -p memlayer-cli --release
+
+      - name: Export → wipe → import round-trip
+        run: |
+          set -euo pipefail
+          T=${{ runner.temp }}/memlayer-rt
+          rm -rf "$T" && mkdir -p "$T"
+          export MEMLAYER_DATA_DIR="$T"
+          BIN=$PWD/target/release/memlayer
+          mkdir -p repo && cd repo
+          git init -q . && git config user.email rt@ci && git config user.name rt
+          printf 'fn main(){}\n' > main.rs && git add . && git commit -qm init
+
+          P1=$(git -C . rev-parse HEAD)
+          "$BIN" obs save --type decision --title "portable decision one" \
+            --content 'decision one content `token`' --anchor main.rs::one
+          "$BIN" obs save --type decision --title "portable decision two" \
+            --content 'decision two content superseding the older one' \
+            --anchor main.rs::two
+          "$BIN" graph rebuild
+
+          ET=$("$BIN" --output json graph stats | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_entities"])')
+          test "$ET" -ge 1 || { echo "expected graph entities before export"; exit 1; }
+
+          "$BIN" mem export --out "$T/backup.mem"
+          test -s "$T/backup.mem" || { echo "export produced empty archive"; exit 1; }
+
+          # Wipe project state, import merges it back.
+          rm -rf "$T/projects" "$T/global.sqlite" 2>/dev/null || true
+          "$BIN" mem import "$T/backup.mem" --mode merge
+
+          # Supersession + observation rows survive.
+          "$BIN" obs search "portable decision" --mode hybrid | grep -q "portable" \
+            || { echo "imported observations missing"; exit 1; }

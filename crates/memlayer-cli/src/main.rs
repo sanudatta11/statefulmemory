@@ -12,13 +12,14 @@ use is_terminal::IsTerminal;
 use tracing::error;
 
 use memlayer_cli::cli::{Cli, Command, DaemonArgs, DaemonVerb, HookVerb, OutputFormat};
-use memlayer_cli::{
-    cmd_daemon, cmd_decide, cmd_doctor, cmd_eval, cmd_hook, cmd_logs, cmd_obs, cmd_project, cmd_prompt, cmd_session,
-    cmd_skill, cmd_sync, cmd_team, cmd_tui, cmd_uninstall, cmd_version, cmd_verify, cmd_mem,
-};
-use memlayer_cli::{autospawn, exit};
 use memlayer_cli::formatter::Formatter;
 use memlayer_cli::project_detect::{self, ProjectDetection};
+use memlayer_cli::{autospawn, exit};
+use memlayer_cli::{
+    cmd_daemon, cmd_decide, cmd_doctor, cmd_eval, cmd_graph, cmd_hook, cmd_logs, cmd_mem, cmd_obs,
+    cmd_project, cmd_prompt, cmd_session, cmd_skill, cmd_sync, cmd_team, cmd_tui, cmd_uninstall,
+    cmd_verify, cmd_version,
+};
 use memlayer_client::{channel as client_channel, ClientError, MemlayerClient};
 use memlayer_proto as p;
 
@@ -38,9 +39,9 @@ async fn main() -> ExitCode {
     match cli.command {
         // daemon start --foreground runs the daemon in this process; never
         // tries to connect to itself, so it sits outside open_client.
-        Command::Daemon(DaemonArgs { verb: DaemonVerb::Start { foreground: true } }) => {
-            run_daemon_foreground().await
-        }
+        Command::Daemon(DaemonArgs {
+            verb: DaemonVerb::Start { foreground: true },
+        }) => run_daemon_foreground().await,
         Command::Daemon(DaemonArgs { verb }) => {
             let stdout_is_tty = std::io::stdout().is_terminal();
             let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
@@ -68,8 +69,14 @@ async fn main() -> ExitCode {
         }
         Command::Obs(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, fmt)) => {
-                cmd_obs::dispatch(&mut client, &detection.normalized, fmt, cli.quiet, args.verb)
-                    .await
+                cmd_obs::dispatch(
+                    &mut client,
+                    &detection.normalized,
+                    fmt,
+                    cli.quiet,
+                    args.verb,
+                )
+                .await
             }
             Err(code) => code,
         },
@@ -149,12 +156,40 @@ async fn main() -> ExitCode {
             }
             Err(code) => code,
         },
+        Command::Graph(args) => {
+            let stdout_is_tty = std::io::stdout().is_terminal();
+            let fmt = Formatter::resolve(cli.output.map(|f| f.to_formatter()), stdout_is_tty);
+            let needs_client = matches!(args.verb, memlayer_cli::cli::GraphVerb::Query(_));
+            if needs_client {
+                match open_client(cli.output, cli.project).await {
+                    Ok((mut client, detection, fmt)) => {
+                        cmd_graph::dispatch(
+                            Some(&mut client),
+                            &detection.normalized,
+                            fmt,
+                            args.verb,
+                        )
+                        .await
+                    }
+                    Err(code) => code,
+                }
+            } else {
+                // Stats / rebuild read the project DB file directly, so they
+                // only need project detection, never the daemon.
+                let project = detect_project_silent(cli.project.clone())
+                    .unwrap_or_else(|| "default".to_string());
+                cmd_graph::dispatch(None, &project, fmt, args.verb).await
+            }
+        }
         Command::Doctor(args) => {
-            let project = detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());
+            let project =
+                detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());
             let is_json = matches!(cli.output, Some(memlayer_cli::cli::OutputFormat::Json));
             match open_client(cli.output, cli.project).await {
                 Ok((mut client, detection, _fmt)) => {
-                    match cmd_doctor::run(Some(&mut client), &detection.normalized, args, is_json).await {
+                    match cmd_doctor::run(Some(&mut client), &detection.normalized, args, is_json)
+                        .await
+                    {
                         Ok(_) => ExitCode::SUCCESS,
                         Err(e) => {
                             eprintln!("memlayer doctor error: {e}");
@@ -162,15 +197,13 @@ async fn main() -> ExitCode {
                         }
                     }
                 }
-                Err(_) => {
-                    match cmd_doctor::run(None, &project, args, is_json).await {
-                        Ok(_) => ExitCode::SUCCESS,
-                        Err(e) => {
-                            eprintln!("memlayer doctor error: {e}");
-                            ExitCode::FAILURE
-                        }
+                Err(_) => match cmd_doctor::run(None, &project, args, is_json).await {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("memlayer doctor error: {e}");
+                        ExitCode::FAILURE
                     }
-                }
+                },
             }
         }
         Command::Tui(args) => match open_client(cli.output, cli.project).await {
@@ -257,7 +290,14 @@ fn detect_project_silent(project_flag: Option<String>) -> Option<String> {
 async fn open_client(
     output: Option<OutputFormat>,
     project_flag: Option<String>,
-) -> Result<(MemlayerClient<tonic::transport::Channel>, ProjectDetection, Formatter), ExitCode> {
+) -> Result<
+    (
+        MemlayerClient<tonic::transport::Channel>,
+        ProjectDetection,
+        Formatter,
+    ),
+    ExitCode,
+> {
     let cli_override = project_flag.filter(|s| !s.is_empty());
     let env_override = std::env::var("MEMLAYER_PROJECT")
         .ok()

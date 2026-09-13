@@ -47,6 +47,12 @@ jobs:
           name: benchmark-scorecard
           path: ./eval/scorecard.json
 
+      - name: Scorecard regression gate
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          node .github/scripts/eval-gate.mjs ./eval/scorecard.json ./eval/baseline.json
+
       - name: Comment PR Scorecard
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7

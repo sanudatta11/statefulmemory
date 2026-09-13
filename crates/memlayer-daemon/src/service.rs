@@ -21,24 +21,14 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, instrument};
 
 use memlayer_core::error::{Error, Result};
-use memlayer_proto::{
-    memlayer_server::Memlayer,
-    Cursor as ProtoCursor,
-    *,
-};
+use memlayer_proto::{memlayer_server::Memlayer, Cursor as ProtoCursor, *};
 use memlayer_storage::{
     cursor::Cursor as StorageCursor,
     diskmon::DiskMonitor,
-    facts as facts_q,
+    facts as facts_q, graph as graph_q,
     models::{Observation, Prompt, Session},
-    projects_admin,
-    prompts as prompts_q,
-    read as read_q,
-    sessions as sessions_q,
-    stats as stats_q,
-    write::{
-        ObservationKey, ObservationPatch, PromptKey, SaveObservationInput, WriteRequest,
-    },
+    projects_admin, prompts as prompts_q, read as read_q, sessions as sessions_q, stats as stats_q,
+    write::{ObservationKey, ObservationPatch, PromptKey, SaveObservationInput, WriteRequest},
     GlobalDb, ProjectRegistry, ProjectState,
 };
 
@@ -67,8 +57,7 @@ pub struct DaemonState {
     /// `parking_lot::Mutex` guards the registry; each per-project entry is a
     /// `tokio::sync::Mutex` so handlers can `.lock().await` across `.await`
     /// points (manifest IO, write-thread reply) without holding the outer lock.
-    pub export_mutexes:
-        Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    pub export_mutexes: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// Per-project last sync error string (set by SyncExport / SyncImport handlers).
     pub last_sync_errors: Arc<Mutex<HashMap<String, String>>>,
     /// Per-project last export timestamp (RFC3339), set by SyncExport.
@@ -85,9 +74,8 @@ pub struct DaemonState {
     /// Wrapped in `RwLock` so the daemon can bind the UDS socket before the
     /// (often multi-second) model load completes — auto-spawn's 5 s budget
     /// (FR2.3) only waits for the socket, not for BGE.
-    pub embed_pool: std::sync::Arc<
-        parking_lot::RwLock<Option<crate::embed_worker::EmbedWorkerPool>>,
-    >,
+    pub embed_pool:
+        std::sync::Arc<parking_lot::RwLock<Option<crate::embed_worker::EmbedWorkerPool>>>,
     /// Shared BGE-small embedder used by both the embed worker pool and
     /// the daemon's hybrid query path. Same `Arc` instance, so the model
     /// weights are loaded once and reused. `None` mirrors `embed_pool`.
@@ -145,17 +133,17 @@ impl MemlayerService {
         self.state.registry.get_or_open(name)
     }
 
-    pub(crate) fn resolved_search_mode(&self, wire: Option<&str>, project_name: &str) -> memlayer_retrieval::hybrid::HybridMode {
+    pub(crate) fn resolved_search_mode(
+        &self,
+        wire: Option<&str>,
+        project_name: &str,
+    ) -> memlayer_retrieval::hybrid::HybridMode {
         let cfg = memlayer_core::config::load_resolved(Some(project_name));
         memlayer_retrieval::hybrid::HybridMode::parse_wire_or_default(wire, &cfg.search.mode)
     }
 
     /// Wire `rerank` if set; otherwise honor `search.rerank` config (model role).
-    pub(crate) fn resolved_rerank(
-        &self,
-        wire: Option<&str>,
-        project_name: &str,
-    ) -> Option<String> {
+    pub(crate) fn resolved_rerank(&self, wire: Option<&str>, project_name: &str) -> Option<String> {
         if let Some(m) = wire.map(str::trim).filter(|s| !s.is_empty()) {
             return Some(m.to_string());
         }
@@ -213,7 +201,9 @@ impl MemlayerService {
                         }
                     },
                     None => {
-                        tracing::warn!("embedder returned no vectors for query — using BM25 (+ facts)");
+                        tracing::warn!(
+                            "embedder returned no vectors for query — using BM25 (+ facts)"
+                        );
                         Vec::new()
                     }
                 },
@@ -225,8 +215,7 @@ impl MemlayerService {
         };
 
         if dense_hits.is_empty() && fact_ids.is_empty() {
-            let mut hits: Vec<Observation> =
-                bm25_hits.into_iter().take(limit as usize).collect();
+            let mut hits: Vec<Observation> = bm25_hits.into_iter().take(limit as usize).collect();
             if decay_lambda > 0.0 {
                 apply_time_decay(&mut hits, decay_lambda);
             }
@@ -288,10 +277,7 @@ impl MemlayerService {
                 let age = age_days_since(&o.created_at, now);
                 *score *= (-decay_lambda * age).exp();
             }
-            scored.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         }
 
         Ok(scored
@@ -444,6 +430,27 @@ fn obs_to_proto(o: Observation) -> memlayer_proto::Observation {
     }
 }
 
+fn entity_to_proto(e: memlayer_core::Entity) -> memlayer_proto::GraphEntity {
+    memlayer_proto::GraphEntity {
+        id: e.id,
+        kind: e.kind.as_str().into(),
+        name: e.name,
+        norm_name: e.norm_name,
+    }
+}
+
+fn edge_to_proto(e: memlayer_storage::graph::GraphEdge) -> memlayer_proto::GraphEdge {
+    memlayer_proto::GraphEdge {
+        from_id: e.from_id,
+        to_id: e.to_id,
+        relation: e.relation,
+        weight: e.weight,
+        first_seen_epoch: e.first_seen,
+        last_seen_epoch: e.last_seen,
+        src_observation_id: e.src_observation_id.unwrap_or(0),
+    }
+}
+
 fn filter_context_observations(
     observations: &mut Vec<memlayer_proto::Observation>,
     project_name: &str,
@@ -454,6 +461,20 @@ fn filter_context_observations(
         let state = o.verify_state.as_deref().unwrap_or("unanchored");
         crate::context_filter::context_allows(state, cfg.verify.serve_stale, include_stale)
     });
+}
+
+/// Unix epoch seconds for a `created_at` string (RFC3339 or SQLite form).
+/// Falls back to "now" when unparseable so a graph mention timestamp never
+/// breaks the write path.
+fn created_at_epoch(created_at: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+        })
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp())
 }
 
 /// Age in days since `created_at` (RFC3339 or SQLite `datetime('now')` form).
@@ -540,13 +561,179 @@ fn finalize_context_hits(
     include_stale: bool,
     max_per_type: u32,
     max_tokens: u32,
+    query: Option<&str>,
 ) -> (Vec<memlayer_proto::Observation>, i32) {
     let hits = crate::token_budget::apply_max_per_type(hits, max_per_type);
     let mut recent = observations_to_proto(conn, hits);
     filter_context_observations(&mut recent, project_name, include_stale);
-    let (recent, tokens_used) =
+    let (packed, tokens_primary) =
         crate::token_budget::pack_proto_by_token_budget(recent, max_tokens);
-    (recent, tokens_used as i32)
+    let mut recent = packed;
+    // Graph expansion (spec: graph-briefing): when enabled + the caller gave a
+    // query, append the cue-neighborhood as extra briefing memory, capped to a
+    // budget_pct share of max_tokens. Never re-packs the primary hits, so a
+    // graph-enabled query cannot displace direct hits.
+    if let Some(q) = query {
+        let cfg = memlayer_core::config::load_resolved(Some(project_name));
+        if cfg.graph.enabled && cfg.graph.budget_pct > 0.0 {
+            let budget = (max_tokens as f64 * cfg.graph.budget_pct) as usize;
+            if budget > 0 {
+                let expansion =
+                    graph_expansion(conn, q, project_name, include_stale, &cfg.graph, budget);
+                let before = recent.len();
+                recent.extend(expansion);
+                tracing::debug!(
+                    project = %project_name,
+                    primary = before,
+                    graph = recent.len() - before,
+                    "context graph expansion",
+                );
+            }
+        }
+    }
+    (recent, (tokens_primary as i32))
+}
+
+/// Budgeted cue-neighborhood expansion for `obs context` (spec: graph-briefing).
+/// Pure read path: query entities → 1-2 hop neighbors → observations co-mentioning
+/// them → rank → fill up to `budget` estimated tokens. Withdrawn observation
+/// states use the same rules as the primary path (serve_stale from config).
+fn graph_expansion(
+    conn: &rusqlite::Connection,
+    query: &str,
+    project_name: &str,
+    include_stale: bool,
+    cfg: &memlayer_core::config::GraphConfig,
+    budget: usize,
+) -> Vec<memlayer_proto::Observation> {
+    use memlayer_core::config::normalize_entity_name;
+    use memlayer_retrieval::graph_rank::{graph_score, GraphHit};
+
+    let mut out = Vec::new();
+    let seed_names = memlayer_extract::entity_resolve::query_entities(query);
+    if seed_names.is_empty() {
+        return out;
+    }
+    let serve_stale = memlayer_core::config::load_resolved(Some(project_name))
+        .verify
+        .serve_stale;
+
+    let mut seed_ids: Vec<i64> = Vec::new();
+    for name in &seed_names {
+        let norm = normalize_entity_name(name);
+        if norm.is_empty() {
+            continue;
+        }
+        let matches = memlayer_storage::graph::entity_lookup(conn, &norm, 20);
+        if let Some(e) = matches
+            .iter()
+            .find(|e| e.norm_name == norm)
+            .or_else(|| matches.first())
+        {
+            seed_ids.push(e.id);
+        }
+        if seed_ids.len() >= usize::from(cfg.max_query_entities) {
+            break;
+        }
+    }
+    if seed_ids.is_empty() {
+        return out;
+    }
+
+    let edge_types: Vec<&str> = if cfg.edge_types.is_empty() {
+        vec!["mentions"]
+    } else {
+        cfg.edge_types.iter().map(|s| s.as_str()).collect()
+    };
+
+    let mut entity_ids: Vec<i64> = Vec::new();
+    // (entity_id, observation_id, hop) candidates from BFS.
+    let mut cand: Vec<(i64, i64, u8)> = Vec::new();
+    for &seed in &seed_ids {
+        entity_ids.push(seed);
+        let nb =
+            memlayer_storage::graph::neighbors(conn, seed, cfg.hops, &edge_types, cfg.degree_cap);
+        for (entity_id, hop) in nb {
+            entity_ids.push(entity_id);
+            cand.push((entity_id, seed, hop as u8));
+        }
+        cand.push((seed, seed, 0));
+    }
+    entity_ids.sort_unstable();
+    entity_ids.dedup();
+
+    let obs_ids = memlayer_storage::graph::observations_for_entities(conn, &entity_ids, 64);
+    if obs_ids.is_empty() {
+        return out;
+    }
+
+    // Build graph hits per observation: any entity in the BFS frontier that
+    // co-mentions it contributes a (hop, weight) hit; graph_score aggregates.
+    let mut scored: Vec<(i64, f64)> = Vec::new();
+    let mut budget_used = 0usize;
+    for &obs_id in &obs_ids {
+        let obskey = memlayer_storage::write::ObservationKey::Id(obs_id);
+        let Ok(o) = memlayer_storage::read::get(conn, &obskey) else {
+            continue;
+        };
+        let est =
+            memlayer_core::tokens::estimate_observation_tokens(&o.r#type, &o.title, &o.content)
+                as usize;
+        if est > budget {
+            continue;
+        }
+        if !crate::context_filter::context_allows(
+            o.verify_state.as_str(),
+            serve_stale,
+            include_stale,
+        ) {
+            continue;
+        }
+        let hits_for_obs: Vec<GraphHit> = cand
+            .iter()
+            .filter(|(entity_id, _, _)| mentions_entity(conn, *entity_id, obs_id))
+            .map(|(entity_id, _, hop)| GraphHit {
+                observation_id: obs_id as u64,
+                entity_id: *entity_id,
+                hop: *hop,
+                edge_weight: 1.0,
+                relation: memlayer_core::config::EdgeRelation::Mentions,
+            })
+            .collect();
+        if hits_for_obs.is_empty() {
+            continue;
+        }
+        let ranks = graph_score(&hits_for_obs, cfg.boost);
+        if let Some((_, score)) = ranks.first().copied() {
+            if score <= 0.0 {
+                continue;
+            }
+            if budget_used + est > budget {
+                continue;
+            }
+            budget_used += est;
+            scored.push((obs_id, score));
+        }
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    for (obs_id, _score) in scored {
+        let obskey = memlayer_storage::write::ObservationKey::Id(obs_id);
+        if let Ok(o) = memlayer_storage::read::get(conn, &obskey) {
+            out.push(obs_to_proto(o));
+        }
+    }
+    out
+}
+
+/// True when `entity_id` has a mention row for `observation_id`.
+fn mentions_entity(conn: &rusqlite::Connection, entity_id: i64, observation_id: i64) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM entity_mentions WHERE entity_id = ?1 AND observation_id = ?2",
+        rusqlite::params![entity_id, observation_id],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 /// Parse and stamp anchors for a just-saved observation. Returns an optional
@@ -590,9 +777,7 @@ async fn stamp_observation_anchors(
             reply: tx,
         }))?;
         await_write_reply(rx).await?;
-        return Ok(Some(
-            "not a git repo; anchors saved as unanchored".into(),
-        ));
+        return Ok(Some("not a git repo; anchors saved as unanchored".into()));
     };
 
     let head = match git::head_sha(repo) {
@@ -741,9 +926,85 @@ fn parse_cursor(c: &Option<ProtoCursor>) -> Result<Option<StorageCursor>> {
 
 #[tonic::async_trait]
 impl Memlayer for MemlayerService {
+    async fn list_entities(
+        &self,
+        req: Request<memlayer_proto::ListEntitiesRequest>,
+    ) -> Result<Response<memlayer_proto::ListEntitiesResponse>, Status> {
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let mut entities =
+            graph_q::entity_lookup(&conn, &r.norm_prefix, (r.limit.clamp(1, u32::MAX)) as usize);
+        if !r.kind_filter.is_empty() {
+            if memlayer_core::config::EntityKind::parse(&r.kind_filter).is_none() {
+                return Err(Status::invalid_argument(format!(
+                    "unknown entity kind: {}",
+                    r.kind_filter
+                )));
+            }
+            entities.retain(|e| e.kind.as_str() == r.kind_filter);
+        }
+        Ok(Response::new(memlayer_proto::ListEntitiesResponse {
+            entities: entities.into_iter().map(entity_to_proto).collect(),
+        }))
+    }
+
+    async fn get_entity(
+        &self,
+        req: Request<memlayer_proto::GetEntityRequest>,
+    ) -> Result<Response<memlayer_proto::GetEntityResponse>, Status> {
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let entity = map(graph_q::get_entity_by_id(&conn, r.id))?;
+        Ok(Response::new(memlayer_proto::GetEntityResponse {
+            entity: Some(entity_to_proto(entity)),
+        }))
+    }
+
+    async fn graph_query(
+        &self,
+        req: Request<memlayer_proto::GraphQueryRequest>,
+    ) -> Result<Response<memlayer_proto::GraphQueryResponse>, Status> {
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let hops = r.hops.clamp(1, 2) as u8;
+        let edge_types: Vec<&str> = if r.edge_types.is_empty() {
+            vec!["mentions", "fixes", "contradicts"]
+        } else {
+            r.edge_types.iter().map(|s| s.as_str()).collect()
+        };
+        let degree_cap = memlayer_core::config::load_resolved(Some(&r.project_name))
+            .graph
+            .degree_cap;
+        let neighbors = graph_q::neighbors(&conn, r.entity_id, hops, &edge_types, degree_cap);
+        let limit = r.limit.clamp(1, 64) as usize;
+        let edges = map(graph_q::edges_for_entities(
+            &conn,
+            neighbors
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<i64>>()
+                .as_slice(),
+            &edge_types,
+            limit,
+        ))?;
+
+        let mut ids: Vec<i64> = neighbors.iter().map(|(id, _)| *id).collect();
+        if !ids.contains(&r.entity_id) {
+            ids.push(r.entity_id);
+        }
+        let entities = map(graph_q::entities_by_ids(&conn, &ids))?;
+        Ok(Response::new(memlayer_proto::GraphQueryResponse {
+            entities: entities.into_iter().map(entity_to_proto).collect(),
+            edges: edges.into_iter().map(edge_to_proto).collect(),
+        }))
+    }
+
     // ---- Observation lifecycle ----
 
-    #[instrument(skip(self, req), fields(rpc="SaveObservation"))]
+    #[instrument(skip(self, req), fields(rpc = "SaveObservation"))]
     async fn save_observation(
         &self,
         req: Request<SaveObservationRequest>,
@@ -760,8 +1021,7 @@ impl Memlayer for MemlayerService {
         let mut topic_key = r.topic_key.clone().filter(|s| !s.trim().is_empty());
         if topic_key.is_none() {
             if let Ok(conn) = project.open_read_conn() {
-                if let Ok(k) =
-                    crate::suggest_topic_key::suggest(&conn, &r.r#type, &r.title, &scope)
+                if let Ok(k) = crate::suggest_topic_key::suggest(&conn, &r.r#type, &r.title, &scope)
                 {
                     topic_key = Some(k);
                 }
@@ -780,11 +1040,15 @@ impl Memlayer for MemlayerService {
             code_anchor: r.code_anchor.clone().or_else(|| r.anchors.first().cloned()),
             dedupe_window_secs: self.state.dedupe_window.as_secs(),
             max_content_chars: self.state.max_content_chars,
-                    skip_supersede: false,
+            skip_supersede: false,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        map(project.write.send(WriteRequest::SaveObservation { input, reply: tx }))?;
-        let obs = rx.await.map_err(|_| Status::internal("write thread crashed"))?;
+        map(project
+            .write
+            .send(WriteRequest::SaveObservation { input, reply: tx }))?;
+        let obs = rx
+            .await
+            .map_err(|_| Status::internal("write thread crashed"))?;
         let mut obs = map(obs)?;
         let mut warnings_pending: Vec<String> = Vec::new();
 
@@ -810,13 +1074,8 @@ impl Memlayer for MemlayerService {
                         None
                     }
                 });
-            match stamp_observation_anchors(
-                &project,
-                repo.as_deref(),
-                obs.id,
-                &anchor_strings,
-            )
-            .await
+            match stamp_observation_anchors(&project, repo.as_deref(), obs.id, &anchor_strings)
+                .await
             {
                 Ok(Some(w)) => warnings_pending.push(w),
                 Ok(None) => {
@@ -893,10 +1152,10 @@ impl Memlayer for MemlayerService {
 
         if let Some(pool) = &self.state.resolve_pool {
             if let Ok(conn) = project.open_read_conn() {
-                if let Ok(rels) =
-                    memlayer_storage::get_relations_for_observation(&conn, obs.id)
-                {
-                    for rel in rels.into_iter().filter(|r| r.relation_type == "conflicts_with")
+                if let Ok(rels) = memlayer_storage::get_relations_for_observation(&conn, obs.id) {
+                    for rel in rels
+                        .into_iter()
+                        .filter(|r| r.relation_type == "conflicts_with")
                     {
                         let old_id = if rel.source_id == obs.id {
                             rel.target_id
@@ -910,6 +1169,35 @@ impl Memlayer for MemlayerService {
                         });
                     }
                 }
+            }
+        }
+
+        // Graph indexing is opt-in like extract: only when the resolved
+        // project config enables [graph]. Rides the per-project write thread
+        // like every other write (never a second connection).
+        if memlayer_core::config::load_resolved(Some(&r.project_name))
+            .graph
+            .enabled
+        {
+            let epoch = created_at_epoch(&obs.created_at);
+            let (title, content) = (obs.title.clone(), obs.content.clone());
+            let anchors = if anchor_strings.is_empty() {
+                Vec::new()
+            } else {
+                anchor_strings.clone()
+            };
+            let (gtx, grx) = tokio::sync::oneshot::channel();
+            if let Err(e) = project.write.send(WriteRequest::IndexGraph {
+                observation_id: obs.id,
+                title,
+                content,
+                anchors,
+                created_at_epoch: epoch,
+                reply: gtx,
+            }) {
+                tracing::warn!(error = %e, obs_id = obs.id, "graph index enqueue failed");
+            } else if grx.await.ok().and_then(Result::ok).is_none() {
+                tracing::warn!(obs_id = obs.id, "graph index write failed (write thread)");
             }
         }
 
@@ -930,7 +1218,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="GetObservation"))]
+    #[instrument(skip(self, req), fields(rpc = "GetObservation"))]
     async fn get_observation(
         &self,
         req: Request<GetObservationRequest>,
@@ -950,7 +1238,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="UpdateObservation"))]
+    #[instrument(skip(self, req), fields(rpc = "UpdateObservation"))]
     async fn update_observation(
         &self,
         req: Request<UpdateObservationRequest>,
@@ -973,14 +1261,18 @@ impl Memlayer for MemlayerService {
             code_anchor: r.code_anchor,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        map(project.write.send(WriteRequest::UpdateObservation { key, patch, reply: tx }))?;
+        map(project.write.send(WriteRequest::UpdateObservation {
+            key,
+            patch,
+            reply: tx,
+        }))?;
         let obs = await_write_reply(rx).await?;
         Ok(Response::new(UpdateObservationResponse {
             observation: Some(obs_to_proto(obs)),
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="DeleteObservation"))]
+    #[instrument(skip(self, req), fields(rpc = "DeleteObservation"))]
     async fn delete_observation(
         &self,
         req: Request<DeleteObservationRequest>,
@@ -1005,7 +1297,7 @@ impl Memlayer for MemlayerService {
         Ok(Response::new(DeleteObservationResponse {}))
     }
 
-    #[instrument(skip(self, req), fields(rpc="SearchObservations"))]
+    #[instrument(skip(self, req), fields(rpc = "SearchObservations"))]
     async fn search_observations(
         &self,
         req: Request<SearchObservationsRequest>,
@@ -1013,7 +1305,11 @@ impl Memlayer for MemlayerService {
         let _g = self.enter_rpc();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
-        let limit = if r.limit == 0 { read_q::DEFAULT_LIMIT } else { r.limit };
+        let limit = if r.limit == 0 {
+            read_q::DEFAULT_LIMIT
+        } else {
+            r.limit
+        };
         let conn = map(project.open_read_conn())?;
         if r.all_projects {
             let mode = self.resolved_search_mode(r.mode.as_deref(), &r.project_name);
@@ -1033,13 +1329,19 @@ impl Memlayer for MemlayerService {
                         const RRF_DEPTH: i64 = 30;
                         const RRF_K: u32 = 60;
                         // BM25 ids from the global mirror.
-                        let bm25_keys: Vec<(String, i64)> = if let Some(global) = &self.state.global_db {
-                            let guard = global.lock();
-                            match guard.search(&r.query, RRF_DEPTH) {
-                                Ok(hits) => hits.into_iter().map(|h| (h.project.clone(), h.source_id)).collect(),
-                                Err(_) => vec![],
-                            }
-                        } else { vec![] };
+                        let bm25_keys: Vec<(String, i64)> =
+                            if let Some(global) = &self.state.global_db {
+                                let guard = global.lock();
+                                match guard.search(&r.query, RRF_DEPTH) {
+                                    Ok(hits) => hits
+                                        .into_iter()
+                                        .map(|h| (h.project.clone(), h.source_id))
+                                        .collect(),
+                                    Err(_) => vec![],
+                                }
+                            } else {
+                                vec![]
+                            };
 
                         // Dense ids from per-project fan-out.
                         let projects = map(ProjectRegistry::list_known_on_disk())?;
@@ -1050,8 +1352,13 @@ impl Memlayer for MemlayerService {
                                 (name, path)
                             })
                             .collect();
-                        let dense_hits = map(read_q::search_dense_multi(&project_paths, &q_vec, RRF_DEPTH))?;
-                        let dense_keys: Vec<(String, i64)> = dense_hits.iter()
+                        let dense_hits = map(read_q::search_dense_multi(
+                            &project_paths,
+                            &q_vec,
+                            RRF_DEPTH,
+                        ))?;
+                        let dense_keys: Vec<(String, i64)> = dense_hits
+                            .iter()
                             .map(|(proj, obs)| (proj.clone(), obs.id))
                             .collect();
 
@@ -1061,25 +1368,41 @@ impl Memlayer for MemlayerService {
                         );
 
                         // Build a lookup from (project, id) to Observation.
-                        let mut obs_map: std::collections::HashMap<(String, i64), memlayer_proto::Observation> =
-                            std::collections::HashMap::new();
+                        let mut obs_map: std::collections::HashMap<
+                            (String, i64),
+                            memlayer_proto::Observation,
+                        > = std::collections::HashMap::new();
                         if let Some(global) = &self.state.global_db {
                             let guard = global.lock();
                             if let Ok(bm25_obs) = guard.search(&r.query, RRF_DEPTH) {
                                 for h in bm25_obs {
                                     let key = (h.project.clone(), h.source_id);
-                                    obs_map.entry(key).or_insert_with(|| memlayer_proto::Observation {
-                                        id: h.source_id, sync_id: String::new(), session_id: String::new(),
-                                        r#type: h.r#type, title: h.title, content: h.content,
-                                        tool_name: None, scope: "project".into(), created_by: None,
-                                        topic_key: h.topic_key, normalized_hash: None,
-                                        revision_count: 1, duplicate_count: 1, last_seen_at: None,
-                                        created_at: h.created_at.clone(), updated_at: h.created_at,
-                                        deleted_at: None, review_after: None, project_name: Some(h.project),
-                                        code_anchor: None,
-                                        supersedes_ids: vec![],
-                                        superseded_count: 0,
-                                    verify_state: None,
+                                    obs_map.entry(key).or_insert_with(|| {
+                                        memlayer_proto::Observation {
+                                            id: h.source_id,
+                                            sync_id: String::new(),
+                                            session_id: String::new(),
+                                            r#type: h.r#type,
+                                            title: h.title,
+                                            content: h.content,
+                                            tool_name: None,
+                                            scope: "project".into(),
+                                            created_by: None,
+                                            topic_key: h.topic_key,
+                                            normalized_hash: None,
+                                            revision_count: 1,
+                                            duplicate_count: 1,
+                                            last_seen_at: None,
+                                            created_at: h.created_at.clone(),
+                                            updated_at: h.created_at,
+                                            deleted_at: None,
+                                            review_after: None,
+                                            project_name: Some(h.project),
+                                            code_anchor: None,
+                                            supersedes_ids: vec![],
+                                            superseded_count: 0,
+                                            verify_state: None,
+                                        }
                                     });
                                 }
                             }
@@ -1099,7 +1422,11 @@ impl Memlayer for MemlayerService {
                             .filter_map(|k| obs_map.remove(&k))
                             .collect();
 
-                        return Ok(Response::new(SearchObservationsResponse { observations, warning: None, tokens_used: None }));
+                        return Ok(Response::new(SearchObservationsResponse {
+                            observations,
+                            warning: None,
+                            tokens_used: None,
+                        }));
                     }
                 }
                 // Fall through to BM25-only if no embedder.
@@ -1135,7 +1462,7 @@ impl Memlayer for MemlayerService {
                         code_anchor: None,
                         supersedes_ids: vec![],
                         superseded_count: 0,
-                    verify_state: None,
+                        verify_state: None,
                     })
                     .collect();
                 return Ok(Response::new(SearchObservationsResponse {
@@ -1201,7 +1528,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="ListObservations"))]
+    #[instrument(skip(self, req), fields(rpc = "ListObservations"))]
     async fn list_observations(
         &self,
         req: Request<ListObservationsRequest>,
@@ -1210,7 +1537,11 @@ impl Memlayer for MemlayerService {
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
         let cur = map(parse_cursor(&r.cursor))?;
-        let limit = if r.limit == 0 { read_q::DEFAULT_LIMIT } else { r.limit };
+        let limit = if r.limit == 0 {
+            read_q::DEFAULT_LIMIT
+        } else {
+            r.limit
+        };
         let conn = map(project.open_read_conn())?;
         let (rows, next) = map(read_q::list(
             &conn,
@@ -1232,7 +1563,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="RecentObservations"))]
+    #[instrument(skip(self, req), fields(rpc = "RecentObservations"))]
     async fn recent_observations(
         &self,
         req: Request<RecentObservationsRequest>,
@@ -1240,7 +1571,11 @@ impl Memlayer for MemlayerService {
         let _g = self.enter_rpc();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
-        let limit = if r.limit == 0 { read_q::DEFAULT_LIMIT } else { r.limit };
+        let limit = if r.limit == 0 {
+            read_q::DEFAULT_LIMIT
+        } else {
+            r.limit
+        };
         let conn = map(project.open_read_conn())?;
         let rows = map(read_q::recent(&conn, limit, r.scope.as_deref()))?;
         Ok(Response::new(RecentObservationsResponse {
@@ -1259,7 +1594,11 @@ impl Memlayer for MemlayerService {
         let _g = self.enter_rpc();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
-        let limit = if r.recent_limit <= 0 { 10 } else { r.recent_limit };
+        let limit = if r.recent_limit <= 0 {
+            10
+        } else {
+            r.recent_limit
+        };
         let conn = map(project.open_read_conn())?;
 
         let cfg = memlayer_core::config::load_resolved(Some(&r.project_name));
@@ -1277,6 +1616,7 @@ impl Memlayer for MemlayerService {
                 r.include_stale,
                 max_per_type,
                 max_tokens,
+                None,
             );
             let snapshot = ContextSnapshot {
                 recent_observations: recent,
@@ -1291,7 +1631,8 @@ impl Memlayer for MemlayerService {
         // When the caller provides a query, retrieve for that query using the
         // resolved search mode (config default hybrid). Empty query keeps the
         // recent + active-topics briefing.
-        let recents = match r.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        let query_ref = r.query.as_deref().map(str::trim).filter(|q| !q.is_empty());
+        let recents = match query_ref {
             Some(q) => {
                 let hits = if self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
                     == memlayer_retrieval::hybrid::HybridMode::Hybrid
@@ -1316,6 +1657,7 @@ impl Memlayer for MemlayerService {
                     r.include_stale,
                     max_per_type,
                     max_tokens,
+                    None,
                 );
                 let snapshot = ContextSnapshot {
                     recent_observations: recent,
@@ -1342,6 +1684,7 @@ impl Memlayer for MemlayerService {
             r.include_stale,
             max_per_type,
             max_tokens,
+            query_ref,
         );
         let snapshot = ContextSnapshot {
             recent_observations: recent,
@@ -1367,8 +1710,7 @@ impl Memlayer for MemlayerService {
             None => return Err(Status::invalid_argument("missing timeline anchor")),
         };
         let conn = map(project.open_read_conn())?;
-        let (before, anchor, after) =
-            map(read_q::timeline(&conn, &key, r.before, r.after))?;
+        let (before, anchor, after) = map(read_q::timeline(&conn, &key, r.before, r.after))?;
         Ok(Response::new(TimelineResponse {
             before: before.into_iter().map(obs_to_proto).collect(),
             anchor: Some(obs_to_proto(anchor)),
@@ -1384,7 +1726,11 @@ impl Memlayer for MemlayerService {
         let _g = self.enter_rpc();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
-        let scope = if r.scope.is_empty() { "project".to_string() } else { r.scope };
+        let scope = if r.scope.is_empty() {
+            "project".to_string()
+        } else {
+            r.scope
+        };
         let conn = map(project.open_read_conn())?;
         let key = map(crate::suggest_topic_key::suggest(
             &conn, &r.r#type, &r.title, &scope,
@@ -1475,7 +1821,11 @@ impl Memlayer for MemlayerService {
 
         let extract_pool = match &self.state.extract_pool {
             Some(p) => p,
-            None => return Err(Status::failed_precondition("extract worker pool is not running")),
+            None => {
+                return Err(Status::failed_precondition(
+                    "extract worker pool is not running",
+                ))
+            }
         };
 
         let conn = map(project.open_read_conn())?;
@@ -1535,7 +1885,10 @@ impl Memlayer for MemlayerService {
                 _ => skipped += 1,
             }
         }
-        Ok(Response::new(ReextractObservationsResponse { queued, skipped }))
+        Ok(Response::new(ReextractObservationsResponse {
+            queued,
+            skipped,
+        }))
     }
 
     /// Bulk re-embedding (Spec 1d). Enqueues observations without embeddings
@@ -1552,11 +1905,9 @@ impl Memlayer for MemlayerService {
             let guard = self.state.embed_pool.read();
             match guard.as_ref() {
                 Some(p) => p.clone(),
-                None => {
-                    return Err(Status::failed_precondition(
-                        "embed worker pool is not running (BGE-small still loading or failed to load)",
-                    ))
-                }
+                None => return Err(Status::failed_precondition(
+                    "embed worker pool is not running (BGE-small still loading or failed to load)",
+                )),
             }
         };
 
@@ -1564,18 +1915,22 @@ impl Memlayer for MemlayerService {
         if r.force {
             // Wipe existing embeddings for this project first.
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            map(project.write.send(
-                memlayer_storage::write::WriteRequest::Custom {
+            map(project
+                .write
+                .send(memlayer_storage::write::WriteRequest::Custom {
                     f: Box::new(|conn| {
                         conn.execute("DELETE FROM observations_vec", [])
-                            .map_err(|e| memlayer_core::error::Error::internal(format!("delete vec: {e}")))?;
+                            .map_err(|e| {
+                                memlayer_core::error::Error::internal(format!("delete vec: {e}"))
+                            })?;
                         conn.execute("DELETE FROM observation_embedding_meta", [])
-                            .map_err(|e| memlayer_core::error::Error::internal(format!("delete meta: {e}")))?;
+                            .map_err(|e| {
+                                memlayer_core::error::Error::internal(format!("delete meta: {e}"))
+                            })?;
                         Ok(())
                     }),
                     reply: reply_tx,
-                },
-            ))?;
+                }))?;
             let del_result = reply_rx
                 .await
                 .map_err(|_| Status::internal("write thread crashed during reindex clear"))?;
@@ -1616,7 +1971,11 @@ impl Memlayer for MemlayerService {
                 _ => skipped += 1,
             }
         }
-        Ok(Response::new(ReindexObservationsResponse { queued, skipped, cleared }))
+        Ok(Response::new(ReindexObservationsResponse {
+            queued,
+            skipped,
+            cleared,
+        }))
     }
 
     /// Re-verify code anchors against the project's git repo.
@@ -1705,7 +2064,7 @@ impl Memlayer for MemlayerService {
 
     // ---- Sessions ----
 
-    #[instrument(skip(self, req), fields(rpc="StartSession"))]
+    #[instrument(skip(self, req), fields(rpc = "StartSession"))]
     async fn start_session(
         &self,
         req: Request<StartSessionRequest>,
@@ -1731,12 +2090,14 @@ impl Memlayer for MemlayerService {
             recent_observations: recent.into_iter().map(obs_to_proto).collect(),
             active_topics: topics
                 .into_iter()
-                .map(|(topic_key, scope, latest_title, updated_at)| TopicSummary {
-                    topic_key,
-                    scope,
-                    latest_title,
-                    updated_at,
-                })
+                .map(
+                    |(topic_key, scope, latest_title, updated_at)| TopicSummary {
+                        topic_key,
+                        scope,
+                        latest_title,
+                        updated_at,
+                    },
+                )
                 .collect(),
         };
         Ok(Response::new(StartSessionResponse {
@@ -1745,7 +2106,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="EndSession"))]
+    #[instrument(skip(self, req), fields(rpc = "EndSession"))]
     async fn end_session(
         &self,
         req: Request<EndSessionRequest>,
@@ -1766,7 +2127,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="SaveSessionSummary"))]
+    #[instrument(skip(self, req), fields(rpc = "SaveSessionSummary"))]
     async fn save_session_summary(
         &self,
         req: Request<SaveSessionSummaryRequest>,
@@ -1787,7 +2148,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="GetSession"))]
+    #[instrument(skip(self, req), fields(rpc = "GetSession"))]
     async fn get_session(
         &self,
         req: Request<GetSessionRequest>,
@@ -1847,7 +2208,10 @@ impl Memlayer for MemlayerService {
         map(project.write.send(WriteRequest::Custom {
             f: Box::new(move |conn: &mut rusqlite::Connection| {
                 let n = conn
-                    .execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![session_id])
+                    .execute(
+                        "DELETE FROM sessions WHERE id = ?1",
+                        rusqlite::params![session_id],
+                    )
                     .map_err(|e| Error::internal(format!("delete session: {e}")))?;
                 if n == 0 {
                     return Err(Error::not_found(format!("session {session_id}")));
@@ -1862,7 +2226,7 @@ impl Memlayer for MemlayerService {
 
     // ---- Prompts ----
 
-    #[instrument(skip(self, req), fields(rpc="SavePrompt"))]
+    #[instrument(skip(self, req), fields(rpc = "SavePrompt"))]
     async fn save_prompt(
         &self,
         req: Request<SavePromptRequest>,
@@ -1871,7 +2235,9 @@ impl Memlayer for MemlayerService {
         map(self.check_writeable())?;
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
-        let sync_id = r.sync_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let sync_id = r
+            .sync_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::SavePrompt {
             sync_id,
@@ -1885,7 +2251,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="SearchPrompts"))]
+    #[instrument(skip(self, req), fields(rpc = "SearchPrompts"))]
     async fn search_prompts(
         &self,
         req: Request<SearchPromptsRequest>,
@@ -1901,7 +2267,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    #[instrument(skip(self, req), fields(rpc="RecentPrompts"))]
+    #[instrument(skip(self, req), fields(rpc = "RecentPrompts"))]
     async fn recent_prompts(
         &self,
         req: Request<RecentPromptsRequest>,
@@ -1931,7 +2297,9 @@ impl Memlayer for MemlayerService {
             None => return Err(Status::invalid_argument("missing prompt key")),
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        map(project.write.send(WriteRequest::DeletePrompt { key, reply: tx }))?;
+        map(project
+            .write
+            .send(WriteRequest::DeletePrompt { key, reply: tx }))?;
         await_write_reply(rx).await?;
         Ok(Response::new(DeletePromptResponse {}))
     }
@@ -2020,24 +2388,29 @@ impl Memlayer for MemlayerService {
         // SaveObservation / UpdateObservation / etc. that the registry has
         // queued for the same target.
         let project = map(self.state.registry.get_or_open(&to_norm))?;
-        let outcome: std::sync::Arc<std::sync::Mutex<Option<memlayer_storage::projects_admin::MergeOutcome>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let outcome: std::sync::Arc<
+            std::sync::Mutex<Option<memlayer_storage::projects_admin::MergeOutcome>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
         let outcome_slot = outcome.clone();
         let from_for_closure = from_path.clone();
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        map(project.write.send(memlayer_storage::write::WriteRequest::Custom {
-            f: Box::new(move |conn| {
-                let merged = memlayer_storage::projects_admin::merge_into_target_conn(
-                    conn,
-                    &from_for_closure,
-                )?;
-                *outcome_slot.lock().expect("outcome mutex") = Some(merged);
-                Ok(())
-            }),
-            reply: reply_tx,
-        }))?;
+        map(project
+            .write
+            .send(memlayer_storage::write::WriteRequest::Custom {
+                f: Box::new(move |conn| {
+                    let merged = memlayer_storage::projects_admin::merge_into_target_conn(
+                        conn,
+                        &from_for_closure,
+                    )?;
+                    *outcome_slot.lock().expect("outcome mutex") = Some(merged);
+                    Ok(())
+                }),
+                reply: reply_tx,
+            }))?;
         map(reply_rx.await.map_err(|_| {
-            memlayer_core::error::Error::Unavailable("merge_projects: write thread reply lost".into())
+            memlayer_core::error::Error::Unavailable(
+                "merge_projects: write thread reply lost".into(),
+            )
         }))
         .and_then(map)?;
         let outcome = outcome
@@ -2104,7 +2477,9 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<PruneProjectsResponse>, Status> {
         let _g = self.enter_rpc();
         let names = map(projects_admin::prune_candidates())?;
-        Ok(Response::new(PruneProjectsResponse { would_remove: names }))
+        Ok(Response::new(PruneProjectsResponse {
+            would_remove: names,
+        }))
     }
 
     // ---- Tokens (admin-only in TCP mode / Spec 2) ----
@@ -2183,10 +2558,7 @@ impl Memlayer for MemlayerService {
         }))
     }
 
-    async fn stats(
-        &self,
-        req: Request<StatsRequest>,
-    ) -> Result<Response<StatsResponse>, Status> {
+    async fn stats(&self, req: Request<StatsRequest>) -> Result<Response<StatsResponse>, Status> {
         let _g = self.enter_rpc();
         let r = req.into_inner();
         let mut out = Vec::new();
@@ -2255,19 +2627,25 @@ impl Memlayer for MemlayerService {
         &self,
         _req: Request<SyncImportRequest>,
     ) -> Result<Response<SyncImportResponse>, Status> {
-        Err(Status::unimplemented("SyncImport: implemented in spec-task-5"))
+        Err(Status::unimplemented(
+            "SyncImport: implemented in spec-task-5",
+        ))
     }
     async fn sync_export_json(
         &self,
         _req: Request<SyncExportJsonRequest>,
     ) -> Result<Response<SyncExportJsonResponse>, Status> {
-        Err(Status::unimplemented("SyncExportJson: implemented in Spec 3"))
+        Err(Status::unimplemented(
+            "SyncExportJson: implemented in Spec 3",
+        ))
     }
     async fn sync_import_json(
         &self,
         _req: Request<SyncImportJsonRequest>,
     ) -> Result<Response<SyncImportJsonResponse>, Status> {
-        Err(Status::unimplemented("SyncImportJson: implemented in Spec 3"))
+        Err(Status::unimplemented(
+            "SyncImportJson: implemented in Spec 3",
+        ))
     }
     async fn sync_export_md(
         &self,
@@ -2349,15 +2727,10 @@ impl Memlayer for MemlayerService {
 ///
 /// Spec sections: NFR6 (no token secrets in logs), EH-8 (CreateToken handler
 /// logs token name only).
-pub fn generate_and_store_token(
-    store: &TokenStore,
-    name: &str,
-    is_admin: bool,
-) -> Result<String> {
+pub fn generate_and_store_token(store: &TokenStore, name: &str, is_admin: bool) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut secret_bytes = [0u8; 32];
-    getrandom::getrandom(&mut secret_bytes)
-        .map_err(|e| Error::internal(format!("OS RNG: {e}")))?;
+    getrandom::getrandom(&mut secret_bytes).map_err(|e| Error::internal(format!("OS RNG: {e}")))?;
     let secret_hex = hex::encode(secret_bytes);
     let mut hasher = Sha256::new();
     hasher.update(secret_hex.as_bytes());
@@ -2442,7 +2815,10 @@ mod tests {
             fn enabled(&self, _: &Metadata<'_>) -> bool {
                 true
             }
-            fn register_callsite(&self, _: &'static Metadata<'static>) -> tracing::subscriber::Interest {
+            fn register_callsite(
+                &self,
+                _: &'static Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
                 tracing::subscriber::Interest::always()
             }
             fn new_span(&self, _: &Attributes<'_>) -> Id {
@@ -2468,35 +2844,19 @@ mod tests {
                                 use std::fmt::Write;
                                 let _ = write!(self.0, " {}={:?}", field.name(), value);
                             }
-                            fn record_str(
-                                &mut self,
-                                field: &tracing::field::Field,
-                                value: &str,
-                            ) {
+                            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
                                 use std::fmt::Write;
                                 let _ = write!(self.0, " {}={}", field.name(), value);
                             }
-                            fn record_bool(
-                                &mut self,
-                                field: &tracing::field::Field,
-                                value: bool,
-                            ) {
+                            fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
                                 use std::fmt::Write;
                                 let _ = write!(self.0, " {}={}", field.name(), value);
                             }
-                            fn record_u64(
-                                &mut self,
-                                field: &tracing::field::Field,
-                                value: u64,
-                            ) {
+                            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
                                 use std::fmt::Write;
                                 let _ = write!(self.0, " {}={}", field.name(), value);
                             }
-                            fn record_i64(
-                                &mut self,
-                                field: &tracing::field::Field,
-                                value: i64,
-                            ) {
+                            fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
                                 use std::fmt::Write;
                                 let _ = write!(self.0, " {}={}", field.name(), value);
                             }
@@ -2570,5 +2930,67 @@ mod tests {
         let s1 = generate_and_store_token(&store, "alice", false).unwrap();
         let s2 = generate_and_store_token(&store, "bob", false).unwrap();
         assert_ne!(s1, s2, "two OsRng draws must not collide");
+    }
+
+    #[test]
+    fn graph_expansion_returns_co_mentioning_observations() {
+        memlayer_storage::pragmas::ensure_sqlite_vec_extension();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        memlayer_storage::run_migrations(&mut conn).unwrap();
+        // Seed concepts matching backtick cues our query_entities will extract.
+        let e1 = memlayer_storage::graph::upsert_entity(&conn, "concept", "validate", 1).unwrap();
+        let e2 = memlayer_storage::graph::upsert_entity(&conn, "concept", "refresh", 1).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, directory) VALUES ('x', '/tmp')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO observations (sync_id, session_id, type, title, content)
+             VALUES ('s1','x','decision','validate before refresh','content goes here')",
+            [],
+        )
+        .unwrap();
+        let obs_id: i64 = conn
+            .query_row("SELECT id FROM observations", [], |r| r.get(0))
+            .unwrap();
+        memlayer_storage::graph::insert_mention(&conn, e1, obs_id, None, "backtick").unwrap();
+        memlayer_storage::graph::insert_mention(&conn, e2, obs_id, None, "backtick").unwrap();
+        memlayer_storage::graph::insert_edge(&conn, e1, e2, "mentions", 1.0, 1, 1, Some(obs_id))
+            .unwrap();
+
+        let cfg = memlayer_core::config::GraphConfig {
+            enabled: true,
+            hops: 2,
+            boost: 0.15,
+            edge_types: vec!["mentions".into(), "fixes".into(), "contradicts".into()],
+            budget_pct: 1.0,
+            degree_cap: 256,
+            max_query_entities: 3,
+        };
+        // Query cues = backtick tokens the resolver will pick up.
+        let hits = graph_expansion(&conn, "use `validate` and `refresh`", "", false, &cfg, 2000);
+        assert_eq!(hits.len(), 1, "seeded observation must be returned");
+        assert_eq!(hits[0].id, obs_id);
+    }
+
+    #[test]
+    fn graph_expansion_empty_seed_returns_empty() {
+        memlayer_storage::pragmas::ensure_sqlite_vec_extension();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        memlayer_storage::run_migrations(&mut conn).unwrap();
+        let cfg = memlayer_core::config::GraphConfig {
+            enabled: true,
+            hops: 2,
+            boost: 0.15,
+            edge_types: vec!["mentions".into()],
+            budget_pct: 1.0,
+            degree_cap: 256,
+            max_query_entities: 3,
+        };
+        // No recognizable cues in the query → no seed entities → no expansion.
+        assert!(
+            graph_expansion(&conn, "plain prose with no cues", "", false, &cfg, 2000).is_empty()
+        );
     }
 }

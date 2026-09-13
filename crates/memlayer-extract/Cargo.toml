@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+memlayer-core = { path = "../memlayer-core" }
 tokio       = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }

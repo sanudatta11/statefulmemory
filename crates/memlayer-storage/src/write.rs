@@ -98,6 +98,17 @@ pub enum WriteRequest {
         facts: Vec<NewFact>,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Index one observation into the cue-entity graph (`entities`,
+    /// `entity_mentions`, `entity_edges`). Sent by the daemon after a save
+    /// commits when `graph.enabled` is set for the project. Spec: graph-briefing.
+    IndexGraph {
+        observation_id: i64,
+        title: String,
+        content: String,
+        anchors: Vec<String>,
+        created_at_epoch: i64,
+        reply: oneshot::Sender<Result<()>>,
+    },
     /// Run an ad-hoc closure under the write connection. Used by sync import,
     /// project merge, and other multi-row operations.
     Custom {
@@ -195,7 +206,14 @@ pub fn spawn_write_thread(
     thread::Builder::new()
         .name(format!("memlayer-write-{project_id}"))
         .spawn(move || {
-            run_write_loop(pid_clone, conn, rx, batch_max, batch_window, conflict_classifier);
+            run_write_loop(
+                pid_clone,
+                conn,
+                rx,
+                batch_max,
+                batch_window,
+                conflict_classifier,
+            );
         })
         .map_err(|e| Error::internal(format!("spawn write thread: {e}")))?;
     debug!(%project_id, "spawned write thread");
@@ -347,6 +365,26 @@ fn process_batch(
                     let _ = reply.send(r);
                 }));
             }
+            WriteRequest::IndexGraph {
+                observation_id,
+                title,
+                content,
+                anchors,
+                created_at_epoch,
+                reply,
+            } => {
+                let r = handle_index_graph(
+                    &tx,
+                    observation_id,
+                    &title,
+                    &content,
+                    &anchors,
+                    created_at_epoch,
+                );
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
             WriteRequest::Custom { f, reply } => {
                 // Custom needs a `&mut Connection` but we hold a Transaction.
                 // We commit the in-flight tx, then run the closure against the
@@ -418,8 +456,7 @@ fn handle_save_observation(
 
     let now = mtime::now_rfc3339();
     let normalized_hash = dedupe::hash(&input.content);
-    let review_after =
-        dedupe::review_months_for_type(&input.r#type).map(mtime::months_from_now);
+    let review_after = dedupe::review_months_for_type(&input.r#type).map(mtime::months_from_now);
 
     // 2. Topic-key upsert: if (topic_key, scope) match a non-deleted row,
     //    update it in place and return. (SC-5, EC-9)
@@ -481,7 +518,10 @@ fn handle_save_observation(
     handle_upsert_session(tx, &input.session_id, "")
         .map_err(|e| Error::internal(format!("auto-upsert session: {e}")))?;
 
-    let sync_id = input.sync_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let sync_id = input
+        .sync_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     tx.execute(
         "INSERT INTO observations
             (sync_id, session_id, type, title, content, tool_name, scope,
@@ -645,13 +685,11 @@ fn handle_save_prompt(
         return Err(Error::invalid("prompt content is empty"));
     }
     // Idempotency: existing sync_id returns the same row.
-    if let Ok(p) = tx
-        .query_row(
-            "SELECT id, sync_id, session_id, content, created_at FROM user_prompts WHERE sync_id = ?1",
-            params![sync_id],
-            crate::models::Prompt::from_row,
-        )
-    {
+    if let Ok(p) = tx.query_row(
+        "SELECT id, sync_id, session_id, content, created_at FROM user_prompts WHERE sync_id = ?1",
+        params![sync_id],
+        crate::models::Prompt::from_row,
+    ) {
         return Ok(p);
     }
     tx.execute(
@@ -717,7 +755,10 @@ fn handle_update_obs(
     let topic_key = patch.topic_key.as_deref().or(existing.topic_key.as_deref());
     let scope = patch.scope.as_deref().unwrap_or(&existing.scope);
     let r#type = patch.r#type.as_deref().unwrap_or(&existing.r#type);
-    let code_anchor = patch.code_anchor.as_deref().or(existing.code_anchor.as_deref());
+    let code_anchor = patch
+        .code_anchor
+        .as_deref()
+        .or(existing.code_anchor.as_deref());
     let normalized_hash = dedupe::hash(content);
     tx.execute(
         "UPDATE observations
@@ -840,6 +881,61 @@ fn handle_insert_facts(
             f.extracted_by,
         ])
         .map_err(|e| Error::internal(format!("insert fact: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Build the graph layer for one observation: upsert entities mined
+/// deterministically from title/content/anchors, wire mentions, then link the
+/// observation's entities pairwise with the `mentions` relation. Pair-edge
+/// rules are fixed by the graph-briefing spec: undirected co-mention is
+/// recorded directionally (first-seen order) at weight 1.0 with
+/// `src_observation_id` set for provenance.
+fn handle_index_graph(
+    tx: &rusqlite::Transaction<'_>,
+    observation_id: i64,
+    title: &str,
+    content: &str,
+    anchors: &[String],
+    created_at_epoch: i64,
+) -> Result<()> {
+    use memlayer_core::config::MentionSource;
+
+    let entities = memlayer_extract::entity_resolve::extract_entities(title, content, anchors);
+    if entities.is_empty() {
+        return Ok(());
+    }
+    let mut entity_ids: Vec<i64> = Vec::with_capacity(entities.len());
+    for e in &entities {
+        let id = crate::graph::upsert_entity(tx, e.kind.as_str(), &e.name, created_at_epoch)?;
+        let offsets = match e.source {
+            MentionSource::Backtick | MentionSource::Token => {
+                Some(format!("[{},{}]", e.offsets.0, e.offsets.1))
+            }
+            _ => None,
+        };
+        crate::graph::insert_mention(
+            tx,
+            id,
+            observation_id,
+            offsets.as_deref(),
+            e.source.as_str(),
+        )?;
+        entity_ids.push(id);
+    }
+    for i in 0..entity_ids.len() {
+        for j in (i + 1)..entity_ids.len() {
+            crate::graph::insert_edge(
+                tx,
+                entity_ids[i],
+                entity_ids[j],
+                "mentions",
+                1.0,
+                created_at_epoch,
+                created_at_epoch,
+                Some(observation_id),
+            )?;
+        }
     }
     Ok(())
 }
@@ -1096,7 +1192,7 @@ mod tests {
             code_anchor: None,
             dedupe_window_secs: 60 * 60 * 24 * 30,
             max_content_chars: 50_000,
-                    skip_supersede: false,
+            skip_supersede: false,
         }
     }
 
@@ -1439,5 +1535,123 @@ mod tests {
             .unwrap()
             .expect("observation must be persisted after process_batch");
         assert_eq!(fetched.content, "hello-from-batch");
+    }
+
+    /// IndexGraph riding the real write thread: entities / mentions / pairwise
+    /// `mentions` edges must persist and be visible to the graph read fns.
+    /// FK on entity_mentions.observation_id requires the observation row to
+    /// exist first, so the thread batch is [SaveObservation, IndexGraph].
+    #[test]
+    fn write_thread_index_graph_persists_entities_mentions_and_edges() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("t.db");
+
+        // Ensure an observation row exists for the FK before indexing.
+        {
+            let conn = crate::db::open_write(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO observations (id, sync_id, session_id, type, title, content)
+                 VALUES (1, 'sync1', 's1', 'decision', 't', 'c')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let handle = spawn_write_thread(
+            "gproj".into(),
+            db_path.clone(),
+            8,
+            Duration::from_millis(5),
+            None,
+        )
+        .unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .send(WriteRequest::IndexGraph {
+                observation_id: 1,
+                title: "Fix loader".to_string(),
+                content: "see `Widget` inside crates/foo/bar.rs".to_string(),
+                anchors: vec!["src/auth.rs::run".to_string()],
+                created_at_epoch: 1_700_000_000,
+                reply: reply_tx,
+            })
+            .unwrap();
+        reply_rx
+            .blocking_recv()
+            .expect("IndexGraph reply must fire")
+            .expect("IndexGraph must succeed");
+
+        let conn = crate::db::open_read(&db_path).unwrap();
+        // Entities: anchor pair + backtick pair, deduped by norm name.
+        let lookup = |prefix: &str| {
+            crate::graph::entity_lookup(&conn, prefix, 10)
+                .into_iter()
+                .map(|e| e.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lookup("src/auth.rs"), vec!["src/auth.rs".to_string()]);
+        assert_eq!(lookup("run"), vec!["run".to_string()]);
+        assert_eq!(lookup("widget"), vec!["Widget".to_string()]);
+        assert_eq!(
+            lookup("crates/foo/bar.rs"),
+            vec!["crates/foo/bar.rs".to_string()]
+        );
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 4);
+
+        let mentions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entity_mentions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mentions, 4);
+
+        // Pairwise edges among the observation's 4 entities = 6 unique pairs.
+        let edges: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entity_edges WHERE relation = 'mentions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(edges, 6);
+        let (weight, first_seen, last_seen): (f64, i64, i64) = conn
+            .query_row(
+                "SELECT weight, first_seen, last_seen FROM entity_edges LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(weight, 1.0);
+        assert_eq!(first_seen, 1_700_000_000);
+        assert_eq!(last_seen, 1_700_000_000);
+
+        // Idempotent re-index: mention dedupe on (entity, obs, source) keeps
+        // row counts stable, though edges accumulate weight by design.
+        let (reply_tx2, reply_rx2) = oneshot::channel();
+        handle
+            .send(WriteRequest::IndexGraph {
+                observation_id: 1,
+                title: "Fix loader".to_string(),
+                content: "see `Widget` inside crates/foo/bar.rs".to_string(),
+                anchors: vec!["src/auth.rs::run".to_string()],
+                created_at_epoch: 1_700_000_100,
+                reply: reply_tx2,
+            })
+            .unwrap();
+        reply_rx2
+            .blocking_recv()
+            .expect("IndexGraph reply must fire")
+            .expect("IndexGraph re-index must succeed");
+        let mentions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entity_mentions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mentions, 4);
     }
 }

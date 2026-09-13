@@ -16,6 +16,7 @@
 //! re-exports `rrf` and `rerank` so its existing callers keep working.
 
 pub mod facts_fuse;
+pub mod graph_rank;
 pub mod hybrid;
 pub mod rerank;
 pub mod rrf;

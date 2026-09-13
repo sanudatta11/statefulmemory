@@ -157,13 +157,13 @@ impl Config {
 
     /// Returns `true` if the daemon should bind TCP rather than UDS.
     pub fn is_tcp_mode(&self) -> bool {
-        self.listen.as_deref().is_some_and(|s| s.starts_with("tcp://"))
+        self.listen
+            .as_deref()
+            .is_some_and(|s| s.starts_with("tcp://"))
     }
 
     fn validate(&self) -> Result<()> {
-        if self.is_tcp_mode()
-            && (self.tls_cert_path.is_none() || self.tls_key_path.is_none())
-        {
+        if self.is_tcp_mode() && (self.tls_cert_path.is_none() || self.tls_key_path.is_none()) {
             return Err(Error::FailedPrecondition(
                 "TCP mode requires both MEMLAYER_TLS_CERT and MEMLAYER_TLS_KEY".into(),
             ));
@@ -236,6 +236,7 @@ pub struct MemlayerConfig {
     pub conflict: ConflictConfig,
     pub search: SearchConfig,
     pub verify: VerifyConfig,
+    pub graph: GraphConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -287,7 +288,10 @@ pub struct EmbedConfig {
 
 impl Default for EmbedConfig {
     fn default() -> Self {
-        Self { workers: 2, quantize: false }
+        Self {
+            workers: 2,
+            quantize: false,
+        }
     }
 }
 
@@ -355,6 +359,153 @@ pub struct VerifyConfig {
     /// unprovable observations. Search still returns them flagged.
     /// Unanchored observations are never filtered.
     pub serve_stale: bool,
+}
+
+/// Entity-graph / briefing-expansion layer (spec: graph-briefing).
+/// Ships default-off; flips to default-on only after the CI multi-hop gate
+/// (+5 pts) and p95 latency gate pass.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct GraphConfig {
+    /// Master switch. When false, no graph reads/writes happen and search /
+    /// context output is byte-identical to pre-graph behavior.
+    pub enabled: bool,
+    /// Max BFS hops from the query centroid (hard cap 2 everywhere).
+    pub hops: u8,
+    /// Post-fusion multiplier applied to graph-lift-only hits.
+    pub boost: f64,
+    /// Edge relations followed during traversal. `co_occurs` excluded by
+    /// default (noise control).
+    pub edge_types: Vec<String>,
+    /// Max share of the briefing token budget spent on graph-expanded hits.
+    pub budget_pct: f64,
+    /// Skip traversal into entities with more than this many mentions.
+    pub degree_cap: usize,
+    /// Max number of schema/entity nodes supporting graph decision tree per query.
+    pub max_query_entities: u8,
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hops: 2,
+            boost: 0.15,
+            edge_types: vec!["mentions".into(), "fixes".into(), "contradicts".into()],
+            budget_pct: 0.4,
+            degree_cap: 256,
+            max_query_entities: 3,
+        }
+    }
+}
+
+/// Entity node kinds for the briefing graph (spec: graph-briefing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntityKind {
+    File,
+    Symbol,
+    Concept,
+    Person,
+    Agent,
+}
+
+impl EntityKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EntityKind::File => "file",
+            EntityKind::Symbol => "symbol",
+            EntityKind::Concept => "concept",
+            EntityKind::Person => "person",
+            EntityKind::Agent => "agent",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "file" => Some(EntityKind::File),
+            "symbol" => Some(EntityKind::Symbol),
+            "concept" => Some(EntityKind::Concept),
+            "person" => Some(EntityKind::Person),
+            "agent" => Some(EntityKind::Agent),
+            _ => None,
+        }
+    }
+}
+
+/// Edge relations between cues. `co_occurs` is written only for high-weight
+/// pairs; graph traversal filters it out by default via
+/// [`GraphConfig::edge_types`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeRelation {
+    Mentions,
+    Fixes,
+    Contradicts,
+    About,
+    CoOccurs,
+}
+
+impl EdgeRelation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EdgeRelation::Mentions => "mentions",
+            EdgeRelation::Fixes => "fixes",
+            EdgeRelation::Contradicts => "contradicts",
+            EdgeRelation::About => "about",
+            EdgeRelation::CoOccurs => "co_occurs",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "mentions" => Some(EdgeRelation::Mentions),
+            "fixes" => Some(EdgeRelation::Fixes),
+            "contradicts" => Some(EdgeRelation::Contradicts),
+            "about" => Some(EdgeRelation::About),
+            "co_occurs" => Some(EdgeRelation::CoOccurs),
+            _ => None,
+        }
+    }
+}
+
+/// One entity row, shared across daemon/proto/CLI renderers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Entity {
+    pub id: i64,
+    pub kind: EntityKind,
+    pub name: String,
+    pub norm_name: String,
+}
+
+/// Normalize an entity display name to its lookup key.
+/// Casefold + strip non-alphanumeric (keep `.`/`/`/`_`/`::` for paths).
+pub fn normalize_entity_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_alphanumeric() || matches!(ch, '.' | '/' | '_' | ':') {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+/// How a mention was mined (carried in `entity_mentions.source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MentionSource {
+    Anchor,
+    Backtick,
+    Topic,
+    Token,
+}
+
+impl MentionSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MentionSource::Anchor => "anchor",
+            MentionSource::Backtick => "backtick",
+            MentionSource::Topic => "topic",
+            MentionSource::Token => "token",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -572,6 +723,23 @@ fn apply_memlayer_env_overrides(cfg: &mut MemlayerConfig) {
             tracing::warn!(value = %v, "ignoring MEMLAYER_SEARCH_MAX_PER_TYPE: not an integer");
         }
     }
+    if let Ok(v) = std::env::var("MEMLAYER_GRAPH_ENABLED") {
+        cfg.graph.enabled = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_GRAPH_HOPS") {
+        if let Ok(n) = v.parse::<u8>() {
+            cfg.graph.hops = n.min(2);
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_GRAPH_HOPS: not an integer (max 2)");
+        }
+    }
+    if let Ok(v) = std::env::var("MEMLAYER_GRAPH_BOOST") {
+        if let Ok(n) = v.parse::<f64>() {
+            cfg.graph.boost = n;
+        } else {
+            tracing::warn!(value = %v, "ignoring MEMLAYER_GRAPH_BOOST: not a float");
+        }
+    }
 }
 
 fn parse_bool_env(v: &str) -> bool {
@@ -709,6 +877,9 @@ mod memlayer_config_tests {
             "MEMLAYER_RERANK_TIMEOUT_SECS",
             "MEMLAYER_EMBED_WORKERS",
             "MEMLAYER_SEARCH_MODE",
+            "MEMLAYER_GRAPH_ENABLED",
+            "MEMLAYER_GRAPH_HOPS",
+            "MEMLAYER_GRAPH_BOOST",
         ] {
             std::env::remove_var(k);
         }
@@ -723,7 +894,9 @@ mod memlayer_config_tests {
 
     #[test]
     fn default_extract_disabled_haiku() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_data_dir();
         let cfg = load_resolved(None);
@@ -736,7 +909,9 @@ mod memlayer_config_tests {
 
     #[test]
     fn precedence_env_overrides_project_overrides_global_overrides_default() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
 
@@ -787,7 +962,9 @@ model = "sonnet"
 
     #[test]
     fn invalid_per_project_falls_back_to_global() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
 
@@ -815,7 +992,9 @@ model = "sonnet"
 
     #[test]
     fn unknown_keys_warn_but_dont_fail() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
 
@@ -840,7 +1019,9 @@ hello = "world"
     #[test]
     fn project_overlay_preserves_global_section() {
         // Sanity: per-project file with only [rerank] must not erase [extract].
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_data_dir();
         std::fs::write(
@@ -869,7 +1050,9 @@ model = "sonnet"
 
     #[test]
     fn search_config_default_is_hybrid() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let c = MemlayerConfig::default();
         assert_eq!(c.search.mode, "hybrid");

@@ -1,6 +1,6 @@
 //! The MCP server struct and its tool registry.
 //!
-//! `MemoryServer` hosts the seven `memory_*` tools via rmcp's `#[tool_router]`.
+//! `MemoryServer` hosts the eight `memory_*` tools via rmcp's `#[tool_router]`.
 //! Each tool maps onto an existing daemon gRPC RPC through [`LazyClient`].
 
 use std::path::PathBuf;
@@ -8,14 +8,18 @@ use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler, ServiceExt};
+use rmcp::{
+    tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler, ServiceExt,
+};
 use serde_json::json;
 
 use crate::client::LazyClient;
 use crate::error::McpError;
 use crate::render;
 use crate::scope::resolve_project;
-use crate::tools::{AddArgs, ContextArgs, DecideArgs, FactsArgs, HealthArgs, RecentArgs, SearchArgs};
+use crate::tools::{
+    AddArgs, ContextArgs, DecideArgs, FactsArgs, GraphQueryArgs, HealthArgs, RecentArgs, SearchArgs,
+};
 
 fn default_search_mode() -> String {
     memlayer_core::config::load_resolved(None).search.mode
@@ -119,7 +123,9 @@ fn is_meta_less_discover(line: &str) -> bool {
     };
     let version_ok = meta.get(DISCOVER_META_PROTOCOL_VERSION).is_some_and(|v| {
         v.as_str().is_some_and(|s| !s.is_empty())
-            || v.get("name").and_then(|n| n.as_str()).is_some_and(|s| !s.is_empty())
+            || v.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|s| !s.is_empty())
     });
     let caps_ok = meta
         .get(DISCOVER_META_CLIENT_CAPABILITIES)
@@ -235,7 +241,11 @@ impl MemoryServer {
     /// Save an observation (decision/fix/pattern/note/feedback) to project
     /// memory. The daemon auto-starts on first use; the calling agent is
     /// recorded automatically. Returns the new observation id.
-    #[tool(annotations(read_only_hint = false, destructive_hint = false, open_world_hint = false))]
+    #[tool(annotations(
+        read_only_hint = false,
+        destructive_hint = false,
+        open_world_hint = false
+    ))]
     async fn memory_add(
         &self,
         Parameters(args): Parameters<AddArgs>,
@@ -380,7 +390,11 @@ impl MemoryServer {
     /// Recommend a decision from stored memories; auto-runs the resolution
     /// judge on open conflicts. Use after memory_search when the user must
     /// choose between conflicting notes. The daemon auto-starts on first use.
-    #[tool(annotations(read_only_hint = false, destructive_hint = false, open_world_hint = false))]
+    #[tool(annotations(
+        read_only_hint = false,
+        destructive_hint = false,
+        open_world_hint = false
+    ))]
     async fn memory_decide(
         &self,
         Parameters(args): Parameters<DecideArgs>,
@@ -421,6 +435,77 @@ impl MemoryServer {
             })).collect::<Vec<_>>(),
             "wrote_resolution": resp.wrote_resolution,
             "resolution_observation_id": resp.resolution_observation_id,
+        })))
+    }
+
+    /// Query the entity graph around a named entity. Resolves the name via
+    /// the daemon's entity index, then walks up to `hops` edges. The daemon
+    /// auto-starts on first use.
+    #[tool(annotations(read_only_hint = true, open_world_hint = false))]
+    async fn memory_graph_query(
+        &self,
+        Parameters(args): Parameters<GraphQueryArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let project = resolve_project(&self.base_project, args.project.as_deref())?;
+        let norm = memlayer_core::config::normalize_entity_name(&args.entity);
+        if norm.is_empty() {
+            return Err(McpError::BadArgs {
+                message: "entity name must not be empty".into(),
+            }
+            .into());
+        }
+        let relation_filter = match &args.relation_filter {
+            None => String::new(),
+            Some(r) => match memlayer_core::config::EdgeRelation::parse(r) {
+                Some(_) => r.clone(),
+                None => {
+                    return Err(McpError::BadArgs {
+                        message: format!("{r:?} is not a valid relation; expected one of mentions, fixes, contradicts, about, co_occurs"),
+                    }
+                    .into())
+                }
+            },
+        };
+        let list = self
+            .client
+            .call(|mut c| {
+                let project = project.clone();
+                let norm = norm.clone();
+                async move {
+                    c.list_entities(memlayer_proto::ListEntitiesRequest {
+                        project_name: project,
+                        norm_prefix: norm.clone(),
+                        kind_filter: String::new(),
+                        limit: 50,
+                    })
+                    .await
+                    .map(|r| r.into_inner())
+                }
+            })
+            .await?;
+        let Some(seed) = pick_entity(&list.entities, &norm).cloned() else {
+            return Err(McpError::BadArgs {
+                message: format!("entity {:?} not found in project", args.entity),
+            }
+            .into());
+        };
+        let req = memlayer_proto::GraphQueryRequest {
+            project_name: project,
+            entity_id: seed.id,
+            hops: args.hops.unwrap_or(2).min(2) as u32,
+            edge_types: Vec::new(),
+            limit: args.limit.unwrap_or(64),
+            relation_filter,
+        };
+        let resp = self
+            .client
+            .call(|mut c| {
+                let req = req.clone();
+                async move { c.graph_query(req).await.map(|r| r.into_inner()) }
+            })
+            .await?;
+        Ok(CallToolResult::structured(json!({
+            "graph": render::graph_view(&resp),
         })))
     }
 
@@ -523,6 +608,16 @@ impl MemoryServer {
             "checks": checks,
         })))
     }
+}
+
+fn pick_entity<'a>(
+    entities: &'a [memlayer_proto::GraphEntity],
+    norm: &str,
+) -> Option<&'a memlayer_proto::GraphEntity> {
+    if let Some(exact) = entities.iter().find(|e| e.norm_name == norm) {
+        return Some(exact);
+    }
+    entities.iter().min_by_key(|e| e.name.len())
 }
 
 #[tool_handler]
@@ -678,7 +773,10 @@ mod tests {
             v2.get("result").is_some(),
             "expected initialize result, got {line2}"
         );
-        assert!(v2["result"]["serverInfo"]["name"] == "memlayer-mcp" || v2["result"].get("capabilities").is_some());
+        assert!(
+            v2["result"]["serverInfo"]["name"] == "memlayer-mcp"
+                || v2["result"].get("capabilities").is_some()
+        );
 
         drop(client_wr);
         let _ = serve.await;

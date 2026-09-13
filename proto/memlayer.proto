@@ -291,6 +291,61 @@ message GetFactsResponse {
 }
 
 // ---
+// Entity graph (spec: graph-briefing). Additive.
+// ---
+
+message GraphEntity {
+  int64  id        = 1;
+  string kind      = 2;   // file | symbol | concept | person | agent
+  string name      = 3;
+  string norm_name = 4;
+}
+
+message GraphEdge {
+  int64  from_id             = 1;
+  int64  to_id               = 2;
+  string relation            = 3;
+  double weight              = 4;
+  int64  first_seen_epoch    = 5;
+  int64  last_seen_epoch     = 6;
+  int64  src_observation_id  = 7;
+}
+
+message ListEntitiesRequest {
+  string project_name = 1;
+  string norm_prefix  = 2;   // empty = all (limit applies)
+  string kind_filter  = 3;   // "" = any; else one of the five kinds
+  uint32 limit        = 4;   // default 50 server-side
+}
+
+message ListEntitiesResponse {
+  repeated GraphEntity entities = 1;
+}
+
+message GetEntityRequest {
+  string project_name = 1;
+  int64  id           = 2;
+}
+
+message GetEntityResponse {
+  GraphEntity entity = 1;
+}
+
+message GraphQueryRequest {
+  string project_name = 1;
+  int64  entity_id    = 2;   // required seed
+  uint32 hops         = 3;   // server clamps to 2
+  repeated string edge_types = 4;  // empty = server default set
+  uint32 limit        = 5;   // default 64 server-side
+  string relation_filter = 6; // optional single-relation narrowing
+}
+
+message GraphQueryResponse {
+  repeated GraphEntity entities = 1;
+  repeated GraphEdge edges      = 2;
+}
+
+// ---
 // Observation history (Spec 5).
 // ---
 
@@ -809,6 +864,11 @@ service Memlayer {
 
   // Atomic facts (retrieval-promotion spec).
   rpc GetFacts               (GetFactsRequest)               returns (GetFactsResponse);
+
+  // Entity graph (spec: graph-briefing). Additive only.
+  rpc ListEntities           (ListEntitiesRequest)           returns (ListEntitiesResponse);
+  rpc GetEntity              (GetEntityRequest)              returns (GetEntityResponse);
+  rpc GraphQuery             (GraphQueryRequest)             returns (GraphQueryResponse);
 
   // Observation history — walk the superseded_by_id chain (Spec 5).
   rpc GetObservationHistory  (GetObservationHistoryRequest)  returns (GetObservationHistoryResponse);

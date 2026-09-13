@@ -11,6 +11,7 @@ description = "Per-project SQLite+FTS5 storage layer for memlayer."
 [dependencies]
 memlayer-core = { path = "../memlayer-core" }
 memlayer-embed = { path = "../memlayer-embed" }
+memlayer-extract = { path = "../memlayer-extract" }
 
 rusqlite.workspace = true
 refinery.workspace = true

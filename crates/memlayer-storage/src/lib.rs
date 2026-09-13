@@ -9,15 +9,17 @@
 //! `refinery::embed_migrations!`. Every connection sets the pragmas in
 //! `pragmas::apply_pragmas` (PRD §5.2).
 
+pub mod anchor;
 pub mod conflict_judge;
 pub mod cursor;
 pub mod db;
 pub mod dedupe;
 pub mod diskmon;
+pub mod doctor;
 pub mod facts;
 pub mod global;
+pub mod graph;
 pub mod models;
-pub mod doctor;
 pub mod pragmas;
 pub mod projects_admin;
 pub mod prompts;
@@ -28,7 +30,6 @@ pub mod sessions;
 pub mod stats;
 pub mod sync_state;
 pub mod write;
-pub mod anchor;
 
 pub use anchor::{Anchor, VerifyState};
 pub use db::{open_read, open_write, Migrate};

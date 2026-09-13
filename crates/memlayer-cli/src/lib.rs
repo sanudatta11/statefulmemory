@@ -19,29 +19,30 @@ pub mod agents;
 pub mod audit;
 pub mod autospawn;
 pub mod cli;
+pub mod cmd_config;
 pub mod cmd_daemon;
 pub mod cmd_decide;
 pub mod cmd_doctor;
 pub mod cmd_eval;
+pub mod cmd_graph;
 pub mod cmd_hook;
 pub mod cmd_logs;
 pub mod cmd_mcp;
 pub mod cmd_mem;
 pub mod cmd_obs;
-pub mod cmd_config;
 pub mod cmd_project;
 pub mod cmd_prompt;
 pub mod cmd_session;
 pub mod cmd_skill;
-pub mod cmd_tui;
-pub mod cmd_uninstall;
 pub mod cmd_sync;
 pub mod cmd_team;
-pub mod cmd_version;
+pub mod cmd_tui;
+pub mod cmd_uninstall;
 pub mod cmd_verify;
-pub mod git_hooks;
+pub mod cmd_version;
 pub mod exit;
 pub mod formatter;
+pub mod git_hooks;
 pub mod mcp_install;
 pub mod project_detect;
 pub mod render;
@@ -97,7 +98,9 @@ mod globals_tests {
     /// is required to set the env var when not already set.
     #[test]
     fn init_globals_no_color_sets_env_var() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Snapshot and clear the env so the test is hermetic regardless of
         // how the developer's shell is configured.
         let original = std::env::var_os("NO_COLOR");

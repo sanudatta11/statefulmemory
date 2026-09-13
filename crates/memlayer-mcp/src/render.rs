@@ -3,7 +3,7 @@
 //! Tools return compact JSON (not prose) so agents can branch on fields.
 //! Content bodies are truncated to keep tool payloads small.
 
-use memlayer_proto::{Fact, Observation};
+use memlayer_proto::{Fact, GraphEntity, GraphQueryResponse, Observation};
 use serde_json::{json, Value};
 
 /// Max characters of observation `content` included in list/search hits.
@@ -53,6 +53,63 @@ pub fn fact_row(fact: &Fact) -> Value {
         "temporal": fact.temporal,
         "salience": fact.salience,
         "extracted_by": fact.extracted_by,
+    })
+}
+
+fn entity_label(e: &GraphEntity) -> String {
+    format!("{}:{}", e.kind, e.name)
+}
+
+pub fn graph_view(resp: &GraphQueryResponse) -> Value {
+    let by_id: std::collections::HashMap<i64, &GraphEntity> =
+        resp.entities.iter().map(|e| (e.id, e)).collect();
+    let label = |id: i64| -> String {
+        by_id
+            .get(&id)
+            .map(|e| entity_label(e))
+            .unwrap_or_else(|| id.to_string())
+    };
+    let seed = resp.entities.first().map(entity_label);
+    let edges = resp
+        .edges
+        .iter()
+        .map(|e| {
+            let mut row = json!({
+                "from": label(e.from_id),
+                "relation": e.relation,
+                "to": label(e.to_id),
+                "weight": e.weight,
+            });
+            if e.src_observation_id != 0 {
+                row["src_observation_id"] = json!(e.src_observation_id);
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    let mut text = format!(
+        "memory_graph_query: {} edges from {}",
+        resp.edges.len(),
+        seed.as_deref().unwrap_or("unknown")
+    );
+    for e in &resp.edges {
+        let line = format!(
+            "\n{} --[{} w={:.2}]--> {}{}",
+            label(e.from_id),
+            e.relation,
+            e.weight,
+            label(e.to_id),
+            if e.src_observation_id != 0 {
+                format!(" (obs {})", e.src_observation_id)
+            } else {
+                String::new()
+            }
+        );
+        text.push_str(&line);
+    }
+    json!({
+        "seed": seed,
+        "edges": edges,
+        "header": text,
     })
 }
 

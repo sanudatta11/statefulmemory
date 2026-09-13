@@ -33,7 +33,7 @@ memlayer-eval (benchmarks only) · memlayer-tests (needs live daemon)
 
 ## Conventions
 
-- Migrations: `migrations/V{N}__name.sql`, head **V10** (`verify_state`).
+- Migrations: `migrations/V{N}__name.sql`, head **V11** (`graph_briefing`).
   Prefer `IF NOT EXISTS` / additive `ALTER TABLE`.
 - All DB writes go through the per-project write thread (`WriteRequest`).
   Never open a second write connection from workers/RPC handlers.
@@ -166,11 +166,14 @@ memlayer obs context --query "…" --max-tokens 500
 memlayer verify
 memlayer decide "Should we …?"
 memlayer mem export --out backup.mem
+memlayer graph query <entity> --hops 2
+memlayer graph rebuild         # backfill entities/edges from anchors
+memlayer graph stats
 ```
 
 MCP tools (stdio via `memlayer mcp`): `memory_search`, `memory_recent`,
 `memory_context`, `memory_add`, `memory_facts`, `memory_health`,
-`memory_decide`.
+`memory_decide`, `memory_graph_query`.
 
 ## RPC / schema reminders
 
@@ -181,11 +184,26 @@ MCP tools (stdio via `memlayer mcp`): `memory_search`, `memory_recent`,
 - Save accepts repeated `--anchor` / proto `anchors`; stamps commit + digest
   when cwd (or project repo) is a git work tree.
 
+## Entity graph (spec: .catalyst/specs/graph-briefing/spec.md)
+
+- Schema head **V11** (`graph_briefing`): `entities`, `entity_mentions`,
+  `entity_edges`. Migrations still under `migrations/`, refinery-embedded.
+- Config `[graph]` (default **off** until CI multi-hop gate +5 pts passes):
+  `enabled`, `hops` (≤2), `boost`, `edge_types`, `budget_pct`, `degree_cap`,
+  `max_query_entities`. Env: `MEMLAYER_GRAPH_ENABLED/HOPS/BOOST`.
+- Entity extraction is **heuristics-only** (`memlayer-extract::entity_resolve`),
+  no LLM on save or retrieval. `obs context` graph expansion is budget-capped
+  (`budget_pct` × `max_tokens`) and never displaces primary hits.
+- Writes ride `WriteRequest::IndexGraph` on the per-project write thread — never
+  a second write connection.
+- RPCs (additive): `ListEntities`, `GetEntity`, `GraphQuery`.
+
 ## Roadmap status (short)
 
 Shipped: hybrid default, MCP, Decide, `.mem` archives, in-force
 `supersedes_ids`, staleness eval, anchors + verify + git hooks, optional decay /
-evidence window / token budget.
+evidence window / token budget, **entity graph (V11) + `graph` CLI + MCP tool +
+CI gates (graph-smoke / mem-roundtrip / eval regression)**.
 
 Still open: graphify bridge / auto-anchor, multi-relation `obs judge`, eval CI
 scorecard promotion. Details: `docs/ROADMAP.md`.

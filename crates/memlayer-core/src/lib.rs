@@ -11,6 +11,7 @@ pub mod project;
 pub mod time;
 pub mod tokens;
 
+pub use config::{normalize_entity_name, EdgeRelation, Entity, EntityKind, MentionSource};
 pub use error::{Error, ErrorKind, Result};
 
 /// Shared by unit tests that mutate process-global `MEMLAYER_*` env vars.

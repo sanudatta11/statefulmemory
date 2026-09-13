@@ -2366,6 +2366,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "memlayer-core",
  "parking_lot",
  "rusqlite",
  "serde",
@@ -2426,6 +2427,7 @@ dependencies = [
  "hex",
  "memlayer-core",
  "memlayer-embed",
+ "memlayer-extract",
  "nix",
  "once_cell",
  "parking_lot",

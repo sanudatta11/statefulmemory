@@ -1,4 +1,4 @@
-//! Typed argument structs for the seven `memory_*` MCP tools.
+//! Typed argument structs for the eight `memory_*` MCP tools.
 //!
 //! Each derives `serde::Deserialize` (for decoding tool-call arguments) and
 //! `schemars::JsonSchema` (so rmcp can advertise a JSON-Schema to the agent).
@@ -109,11 +109,26 @@ pub struct DecideArgs {
     pub project: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct GraphQueryArgs {
+    /// Entity name to resolve as the graph seed (e.g. "src/foo.rs" or "auth").
+    pub entity: String,
+    /// Depth of traversal (0–2, default 2).
+    pub hops: Option<u8>,
+    /// Optional single-relation narrowing (e.g. "imports").
+    pub relation_filter: Option<String>,
+    /// Maximum edges/entities to return (default 64).
+    pub limit: Option<u32>,
+    /// Project to query; defaults to the cwd project.
+    pub project: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::server::MemoryServer;
 
-    const EXPECTED: [&str; 7] = [
+    const EXPECTED: [&str; 8] = [
         "memory_search",
         "memory_add",
         "memory_context",
@@ -121,16 +136,17 @@ mod tests {
         "memory_recent",
         "memory_health",
         "memory_decide",
+        "memory_graph_query",
     ];
 
     #[test]
-    fn registry_lists_exactly_seven_tools() {
+    fn registry_lists_exactly_eight_tools() {
         let names: Vec<String> = MemoryServer::tool_router()
             .list_all()
             .into_iter()
             .map(|t| t.name.to_string())
             .collect();
-        assert_eq!(names.len(), 7, "got {names:?}");
+        assert_eq!(names.len(), 8, "got {names:?}");
         for want in EXPECTED {
             assert!(names.iter().any(|n| n == want), "missing tool {want}");
         }
