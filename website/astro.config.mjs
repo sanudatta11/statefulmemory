@@ -64,10 +64,11 @@ export default defineConfig({
 						{ label: 'Portability', slug: 'docs/export-import' },
 					],
 				},
-{
-					label: 'Enterprise',
+				{
+					label: 'Interfaces',
 					items: [
-						{ label: 'Self-hosting runbooks', slug: 'docs/enterprise' },
+						{ label: 'Web UI', slug: 'docs/ui' },
+						{ label: 'MCP tools', slug: 'docs/integrations' },
 					],
 				},
 				{
