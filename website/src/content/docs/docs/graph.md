@@ -10,6 +10,10 @@ per-project SQLite, with `co_occurs` edges written but excluded from traversal b
 default (noise control).
 :::
 
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/graph-briefing-v2.mp4" title="Entity graph briefing">
+  Your browser does not support video.
+</video>
+
 The **entity graph** (schema head `V11`) links observations through shared
 entities — files, symbols, concepts, people, agents — and typed edges
 (`mentions`, `fixes`, `contradicts`, `about`). It is what makes

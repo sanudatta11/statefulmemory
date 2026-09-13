@@ -8,6 +8,10 @@ archives are portable `.mem` files: single-file, checksummed, optionally
 seed-encrypted, and since v2 they carry the **entity graph** along with
 observations, facts, relations, sessions, and prompts.
 
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/decide-mem-v2.mp4" title="Decide and mem archives">
+  Your browser does not support video.
+</video>
+
 ## Format
 
 - `MLYR` magic + MessagePack + **zstd level 19**.

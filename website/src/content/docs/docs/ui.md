@@ -7,6 +7,10 @@ description: Browse memory, trace the entity graph, and run Decide from a loopba
 interface. It talks to the daemon over the same UDS gRPC channel the CLI uses,
 so **no extra server, no tokens, no network exposure**.
 
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/ui-tour-v2.mp4" title="memlayer UI tour">
+  Your browser does not support video.
+</video>
+
 ```bash
 memlayer ui
 # memlayer UI → http://127.0.0.1:4687     hit Ctrl-C to stop
