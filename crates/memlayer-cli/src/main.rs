@@ -18,7 +18,7 @@ use memlayer_cli::{autospawn, exit};
 use memlayer_cli::{
     cmd_daemon, cmd_decide, cmd_doctor, cmd_dream, cmd_eval, cmd_graph, cmd_hook, cmd_logs,
     cmd_mem, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill, cmd_sync, cmd_team, cmd_tui,
-    cmd_uninstall, cmd_verify, cmd_version,
+    cmd_ui, cmd_uninstall, cmd_verify, cmd_version,
 };
 use memlayer_client::{channel as client_channel, ClientError, MemlayerClient};
 use memlayer_proto as p;
@@ -187,6 +187,7 @@ async fn main() -> ExitCode {
             }
             Err(code) => code,
         },
+        Command::Ui(args) => cmd_ui::dispatch(cli.project, &args).await,
         Command::Doctor(args) => {
             let project =
                 detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());

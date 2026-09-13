@@ -96,6 +96,9 @@ rustls = "0.23"
 rustls-pemfile = "2"
 rcgen = "0.13"
 
+# HTTP server for `memlayer ui`
+tiny_http = "0.12"
+
 # Misc
 once_cell = "1"
 parking_lot = "0.12"

@@ -102,6 +102,8 @@ pub enum Command {
     Graph(GraphArgs),
     /// Run the review-only consolidation scan (Dream-lite).
     Dream(DreamArgs),
+    /// Serve the loopback web dashboard (browse memory, graph, decide).
+    Ui(UiArgs),
     /// Print version and exit.
     Version,
 }
@@ -123,6 +125,17 @@ pub struct DreamRunArgs {
     /// Write the review report to this path (text). Default: stdout.
     #[arg(long)]
     pub out: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct UiArgs {
+    /// HTTP port to listen on (loopback only).
+    #[arg(long, default_value_t = 4687)]
+    pub port: u16,
+    /// Bind host. Default 127.0.0.1 (loopback). Only loopback is allowed;
+    /// expose over a reverse proxy for LAN use.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
 }
 
 #[derive(Args, Debug)]

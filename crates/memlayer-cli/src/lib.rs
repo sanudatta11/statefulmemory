@@ -38,6 +38,7 @@ pub mod cmd_skill;
 pub mod cmd_sync;
 pub mod cmd_team;
 pub mod cmd_tui;
+pub mod cmd_ui;
 pub mod cmd_uninstall;
 pub mod cmd_verify;
 pub mod cmd_version;
