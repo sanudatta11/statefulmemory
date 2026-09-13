@@ -46,8 +46,8 @@ fn show(a: ConfigShowArgs) -> Result<(), String> {
     if a.raw {
         let path = memlayer_global_config_path();
         if path.exists() {
-            let text = fs::read_to_string(&path)
-                .map_err(|e| format!("read {}: {e}", path.display()))?;
+            let text =
+                fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
             h.write_all(text.as_bytes()).ok();
             if !text.ends_with('\n') {
                 writeln!(h).ok();
@@ -63,7 +63,12 @@ fn show(a: ConfigShowArgs) -> Result<(), String> {
     if let Some(name) = a.project.as_deref() {
         writeln!(h, "# project: {name}").ok();
     }
-    writeln!(h, "# global file:      {}", memlayer_global_config_path().display()).ok();
+    writeln!(
+        h,
+        "# global file:      {}",
+        memlayer_global_config_path().display()
+    )
+    .ok();
     if let Some(name) = a.project.as_deref() {
         writeln!(
             h,
@@ -74,8 +79,8 @@ fn show(a: ConfigShowArgs) -> Result<(), String> {
     }
     writeln!(h).ok();
 
-    let toml_text = toml::to_string_pretty(&cfg)
-        .map_err(|e| format!("serialize resolved config: {e}"))?;
+    let toml_text =
+        toml::to_string_pretty(&cfg).map_err(|e| format!("serialize resolved config: {e}"))?;
     h.write_all(toml_text.as_bytes()).ok();
     Ok(())
 }
@@ -86,7 +91,8 @@ fn get(a: ConfigGetArgs) -> Result<(), String> {
         format!(
             "unknown config key: {}; valid keys: extract.enabled, extract.model, \
              extract.timeout_secs, extract.workers, rerank.model, rerank.timeout_secs, \
-             embed.workers, verify.serve_stale",
+             embed.workers, verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
+             graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities",
             a.key
         )
     })?;
@@ -104,8 +110,7 @@ fn set(a: ConfigSetArgs) -> Result<(), String> {
     };
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("create dir {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("create dir {}: {e}", parent.display()))?;
     }
 
     // Read existing TOML (may be empty/missing).
@@ -153,6 +158,13 @@ fn lookup(cfg: &MemlayerConfig, key: &str) -> Option<String> {
         "rerank.timeout_secs" => cfg.rerank.timeout_secs.to_string(),
         "embed.workers" => cfg.embed.workers.to_string(),
         "verify.serve_stale" => cfg.verify.serve_stale.to_string(),
+        "graph.enabled" => cfg.graph.enabled.to_string(),
+        "graph.hops" => cfg.graph.hops.to_string(),
+        "graph.boost" => cfg.graph.boost.to_string(),
+        "graph.edge_types" => cfg.graph.edge_types.join(","),
+        "graph.budget_pct" => cfg.graph.budget_pct.to_string(),
+        "graph.degree_cap" => cfg.graph.degree_cap.to_string(),
+        "graph.max_query_entities" => cfg.graph.max_query_entities.to_string(),
         _ => return None,
     })
 }
@@ -163,14 +175,12 @@ fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
     let v = value.trim();
     match key {
         "extract.enabled" => {
-            parse_bool(v).ok_or_else(|| {
-                format!("extract.enabled must be true|false (got {value:?})")
-            })?;
+            parse_bool(v)
+                .ok_or_else(|| format!("extract.enabled must be true|false (got {value:?})"))?;
         }
         "verify.serve_stale" => {
-            parse_bool(v).ok_or_else(|| {
-                format!("verify.serve_stale must be true|false (got {value:?})")
-            })?;
+            parse_bool(v)
+                .ok_or_else(|| format!("verify.serve_stale must be true|false (got {value:?})"))?;
         }
         "extract.model" | "rerank.model" | "conflict.model" => {
             if ![
@@ -195,11 +205,43 @@ fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
                 return Err(format!("{key} must be > 0 (got 0)"));
             }
         }
+        "graph.enabled" => {
+            parse_bool(v)
+                .ok_or_else(|| format!("graph.enabled must be true|false (got {value:?})"))?;
+        }
+        "graph.hops" => {
+            let n: u8 = v
+                .parse()
+                .map_err(|_| format!("graph.hops must be an integer 0..=2 (got {value:?})"))?;
+            if n > 2 {
+                return Err(format!("graph.hops must be 0..=2 (got {value:?})"));
+            }
+        }
+        "graph.boost" | "graph.budget_pct" => {
+            v.parse::<f64>()
+                .map_err(|_| format!("{key} must be a float (got {value:?})"))?;
+        }
+        "graph.degree_cap" | "graph.max_query_entities" => {
+            v.parse::<usize>()
+                .map_err(|_| format!("{key} must be a non-negative integer (got {value:?})"))?;
+        }
+        "graph.edge_types" => {
+            // Comma-separated: mentions,fixes,contradicts,about,co_occurs
+            for t in v.split(',') {
+                let t = t.trim();
+                if t.is_empty() {
+                    return Err(format!(
+                        "graph.edge_types must be comma-separated relation names (got {value:?})"
+                    ));
+                }
+            }
+        }
         other => {
             return Err(format!(
                 "unknown config key: {other}; valid keys: extract.enabled, extract.model, \
                  extract.timeout_secs, extract.workers, rerank.model, rerank.timeout_secs, \
-                 embed.workers, verify.serve_stale",
+                 embed.workers, verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
+                 graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities",
             ));
         }
     }
@@ -298,7 +340,9 @@ mod tests {
 
     #[test]
     fn set_get_roundtrip_global() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
 
@@ -324,7 +368,9 @@ mod tests {
 
     #[test]
     fn project_overrides_global_in_show() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
 
@@ -352,7 +398,9 @@ mod tests {
 
     #[test]
     fn set_creates_missing_file() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let dir = fresh_dir();
         let p = dir.path().join("projects").join("brand-new.config.toml");
@@ -369,7 +417,9 @@ mod tests {
 
     #[test]
     fn set_rejects_unknown_key() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
         let err = set(ConfigSetArgs {
@@ -384,7 +434,9 @@ mod tests {
 
     #[test]
     fn set_rejects_bad_value() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
         let err = set(ConfigSetArgs {
@@ -393,13 +445,18 @@ mod tests {
             project: None,
         })
         .unwrap_err();
-        assert!(err.contains("haiku") && err.contains("sonnet"), "msg: {err}");
+        assert!(
+            err.contains("haiku") && err.contains("sonnet"),
+            "msg: {err}"
+        );
         std::env::remove_var("MEMLAYER_DATA_DIR");
     }
 
     #[test]
     fn set_does_not_clobber_unrelated_sections() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
 
@@ -427,7 +484,9 @@ mod tests {
 
     #[test]
     fn get_resolves_known_keys() {
-        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         clear_env();
         let _d = fresh_dir();
         set(ConfigSetArgs {

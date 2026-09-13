@@ -64,7 +64,10 @@ jobs:
           "$BIN" mem export --out "$T/backup.mem"
           test -s "$T/backup.mem" || { echo "export produced empty archive"; exit 1; }
 
-          # Wipe project state, import merges it back.
+          # Wipe project state, import merges it back. Stop the daemon FIRST so
+          # it drops the cached project connection — otherwise import writes to
+          # the just-deleted inode and every read afterward misses the DB.
+          "$BIN" daemon stop
           rm -rf "$T/projects" "$T/global.sqlite" 2>/dev/null || true
           "$BIN" mem import "$T/backup.mem" --mode merge
 
