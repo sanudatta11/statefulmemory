@@ -16,6 +16,7 @@ pub mod db;
 pub mod dedupe;
 pub mod diskmon;
 pub mod doctor;
+pub mod dream;
 pub mod facts;
 pub mod global;
 pub mod graph;

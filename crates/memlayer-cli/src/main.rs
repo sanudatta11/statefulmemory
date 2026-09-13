@@ -16,9 +16,9 @@ use memlayer_cli::formatter::Formatter;
 use memlayer_cli::project_detect::{self, ProjectDetection};
 use memlayer_cli::{autospawn, exit};
 use memlayer_cli::{
-    cmd_daemon, cmd_decide, cmd_doctor, cmd_eval, cmd_graph, cmd_hook, cmd_logs, cmd_mem, cmd_obs,
-    cmd_project, cmd_prompt, cmd_session, cmd_skill, cmd_sync, cmd_team, cmd_tui, cmd_uninstall,
-    cmd_verify, cmd_version,
+    cmd_daemon, cmd_decide, cmd_doctor, cmd_dream, cmd_eval, cmd_graph, cmd_hook, cmd_logs,
+    cmd_mem, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill, cmd_sync, cmd_team, cmd_tui,
+    cmd_uninstall, cmd_verify, cmd_version,
 };
 use memlayer_client::{channel as client_channel, ClientError, MemlayerClient};
 use memlayer_proto as p;
@@ -181,6 +181,12 @@ async fn main() -> ExitCode {
                 cmd_graph::dispatch(None, &project, fmt, args.verb).await
             }
         }
+        Command::Dream(args) => match open_client(cli.output, cli.project).await {
+            Ok((mut client, detection, fmt)) => {
+                cmd_dream::dispatch(&mut client, &detection.normalized, fmt, args.verb).await
+            }
+            Err(code) => code,
+        },
         Command::Doctor(args) => {
             let project =
                 detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());

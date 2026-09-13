@@ -790,6 +790,29 @@ message DoctorResponse {
 }
 
 // ---
+// Dream-lite consolidation scan (review-only, heuristics, no LLM).
+// ---
+
+message DreamScanRequest {
+  string project_name = 1;
+}
+
+message DreamProposalProto {
+  string kind = 1;        // "duplicate" | "supersede"
+  int64  keep_id = 2;
+  int64  drop_id = 3;
+  string reason = 4;
+  double confidence = 5;
+  string keep_title = 6;
+  string drop_title = 7;
+}
+
+message DreamScanResponse {
+  repeated DreamProposalProto proposals = 1;
+  int64 observations_scanned = 2;
+}
+
+// ---
 // Observation Relations (Phase 4)
 // ---
 
@@ -929,4 +952,7 @@ service Memlayer {
 
   // Doctor
   rpc Doctor                 (DoctorRequest)                 returns (DoctorResponse);
+
+  // Dream-lite consolidation (review-only; applies nothing).
+  rpc DreamScan              (DreamScanRequest)              returns (DreamScanResponse);
 }

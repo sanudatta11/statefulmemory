@@ -2716,6 +2716,58 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<DoctorResponse>, Status> {
         Err(Status::unimplemented("Doctor: implemented in Spec 4"))
     }
+
+    async fn dream_scan(
+        &self,
+        req: Request<memlayer_proto::DreamScanRequest>,
+    ) -> Result<Response<memlayer_proto::DreamScanResponse>, Status> {
+        let _g = self.enter_rpc();
+        let r = req.into_inner();
+        let project = map(self.open_project(&r.project_name))?;
+        let conn = map(project.open_read_conn())?;
+        let scanned_len = {
+            let mut st = conn
+                .prepare("SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL")
+                .map_err(|e| Status::internal(format!("dream count: {e}")))?;
+            st.query_row([], |row| row.get::<_, i64>(0))
+                .map_err(|e| Status::internal(format!("dream count row: {e}")))?
+        };
+        let props = map(memlayer_storage::dream::dream_scan(&conn))?;
+        let proposals = props
+            .iter()
+            .map(|p| {
+                let (keep_title, drop_title) =
+                    (obs_title(&conn, p.keep_id), obs_title(&conn, p.drop_id));
+                memlayer_proto::DreamProposalProto {
+                    kind: p.kind.clone(),
+                    keep_id: p.keep_id,
+                    drop_id: p.drop_id,
+                    reason: p.reason.clone(),
+                    confidence: p.confidence,
+                    keep_title,
+                    drop_title,
+                }
+            })
+            .collect();
+        Ok(Response::new(memlayer_proto::DreamScanResponse {
+            proposals,
+            observations_scanned: scanned_len,
+        }))
+    }
+}
+
+/// Best-effort title lookup for a proposal id (empty string on miss).
+fn obs_title(conn: &rusqlite::Connection, id: i64) -> String {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT title FROM observations WHERE id = ?1 AND deleted_at IS NULL",
+        [id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

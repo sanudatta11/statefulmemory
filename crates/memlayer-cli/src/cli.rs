@@ -100,8 +100,29 @@ pub enum Command {
     Tui(TuiArgs),
     /// Inspect the entity cue graph (query / rebuild / stats).
     Graph(GraphArgs),
+    /// Run the review-only consolidation scan (Dream-lite).
+    Dream(DreamArgs),
     /// Print version and exit.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct DreamArgs {
+    #[command(subcommand)]
+    pub verb: DreamVerb,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DreamVerb {
+    /// Scan for consolidation candidates; report only, apply nothing.
+    Run(DreamRunArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DreamRunArgs {
+    /// Write the review report to this path (text). Default: stdout.
+    #[arg(long)]
+    pub out: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

@@ -23,6 +23,7 @@ pub mod cmd_config;
 pub mod cmd_daemon;
 pub mod cmd_decide;
 pub mod cmd_doctor;
+pub mod cmd_dream;
 pub mod cmd_eval;
 pub mod cmd_graph;
 pub mod cmd_hook;

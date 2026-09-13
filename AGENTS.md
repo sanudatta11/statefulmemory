@@ -169,6 +169,7 @@ memlayer mem export --out backup.mem
 memlayer graph query <entity> --hops 2
 memlayer graph rebuild         # backfill entities/edges from anchors
 memlayer graph stats
+memlayer dream run --review    # consolidation scan (review-only, no LLM)
 ```
 
 MCP tools (stdio via `memlayer mcp`): `memory_search`, `memory_recent`,
@@ -200,10 +201,12 @@ MCP tools (stdio via `memlayer mcp`): `memory_search`, `memory_recent`,
 
 ## Roadmap status (short)
 
-Shipped: hybrid default, MCP, Decide, `.mem` archives, in-force
-`supersedes_ids`, staleness eval, anchors + verify + git hooks, optional decay /
-evidence window / token budget, **entity graph (V11) + `graph` CLI + MCP tool +
-CI gates (graph-smoke / mem-roundtrip / eval regression)**.
+Shipped: hybrid default, MCP, Decide, `.mem` archives (**v2 now carries the
+entity graph**), in-force `supersedes_ids`, staleness eval, anchors + verify +
+git hooks, optional decay / evidence window / token budget, **entity graph (V11)
++ `graph` CLI + MCP tool + CI gates (graph-smoke / mem-roundtrip / eval
+regression)**, **Dream-lite review scan (`dream run --review`, heuristic + no
+LLM, applies nothing)**.
 
 Still open: graphify bridge / auto-anchor, multi-relation `obs judge`, eval CI
 scorecard promotion. Details: `docs/ROADMAP.md`.
