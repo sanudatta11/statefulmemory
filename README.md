@@ -97,6 +97,23 @@ Local LoCoMo / staleness analysis lives in the eval harness. Public claims wait
 for disclosed, stratified scorecards — see [LoCoMo eval](https://memlayer.org/docs/locomo/).
 Do not quote smoke or tiny slices against published leaderboards.
 
+<!-- scorecard-start -->
+> **Auto-updated on every push to main.** Last run: `—`
+> **Note:** Smoke benchmark only — not full stratified LoCoMo eval.
+
+| Metric | Value |
+|---|---|
+| **LoCoMo Accuracy** | n/a |
+| **Recall@k** | n/a |
+| **MRR** | n/a |
+| **Multi-hop Accuracy** | n/a |
+| **Retrieval Latency (p50)** | n/a |
+| **Retrieval Latency (p95)** | n/a |
+| **End-to-End Latency (p50)** | n/a |
+| **Benchmark** | locomo |
+| **Eval Gate** | pass |
+<!-- scorecard-end -->
+
 ## Integrations
 
 | Surface | Status |
@@ -180,6 +197,4 @@ at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in memlayer by you shall be dual-licensed as above, without any
-additional terms or conditions.
-by you shall be dual-licensed as above, without any
 additional terms or conditions.
