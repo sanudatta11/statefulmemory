@@ -98,19 +98,19 @@ for disclosed, stratified scorecards — see [LoCoMo eval](https://memlayer.org/
 Do not quote smoke or tiny slices against published leaderboards.
 
 <!-- scorecard-start -->
-> **Auto-updated on every push to main.** Last run: `—`
+> **Auto-updated on every push to main.** Last run: `dev` (2026-09-13)
 > **Note:** Smoke benchmark only — not full stratified LoCoMo eval.
 
 | Metric | Value |
 |---|---|
-| **LoCoMo Accuracy** | n/a |
-| **Recall@k** | n/a |
-| **MRR** | n/a |
+| **LoCoMo Accuracy** | 100.00% |
+| **Recall@k** | 1.0000 |
+| **MRR** | 1.0000 |
 | **Multi-hop Accuracy** | n/a |
-| **Retrieval Latency (p50)** | n/a |
-| **Retrieval Latency (p95)** | n/a |
-| **End-to-End Latency (p50)** | n/a |
-| **Benchmark** | locomo |
+| **Retrieval Latency (p50)** | 0.4 ms |
+| **Retrieval Latency (p95)** | 0.4 ms |
+| **End-to-End Latency (p50)** | 590.3 ms |
+| **Benchmark** | Locomo (bm25, w=0) |
 | **Eval Gate** | pass |
 <!-- scorecard-end -->
 
