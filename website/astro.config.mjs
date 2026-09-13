@@ -57,9 +57,23 @@ export default defineConfig({
 					items: [
 						{ label: 'Observations', slug: 'docs/observations' },
 						{ label: 'Search and context', slug: 'docs/search-context' },
+						{ label: 'Entity graph', slug: 'docs/graph' },
 						{ label: 'Anchors and verify', slug: 'docs/anchors-verify' },
 						{ label: 'Decide', slug: 'docs/decide' },
 						{ label: 'Mem archives', slug: 'docs/mem' },
+						{ label: 'Portability', slug: 'docs/export-import' },
+					],
+				},
+{
+					label: 'Enterprise',
+					items: [
+						{ label: 'Self-hosting runbooks', slug: 'docs/enterprise' },
+					],
+				},
+				{
+					label: 'Enterprise',
+					items: [
+						{ label: 'Self-hosting runbooks', slug: 'docs/enterprise' },
 					],
 				},
 				{
