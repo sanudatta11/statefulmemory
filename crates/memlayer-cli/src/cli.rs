@@ -866,6 +866,12 @@ pub enum TeamVerb {
     TokenList,
     /// Revoke a token by name.
     TokenRevoke(TeamTokenRevokeArgs),
+    /// Grant a principal (token name) a role on a project (admin-only TCP).
+    Grant(TeamGrantArgs),
+    /// Revoke a project grant for a principal (admin-only TCP).
+    GrantRevoke(TeamGrantRevokeArgs),
+    /// List all project grants.
+    GrantList,
 }
 
 #[derive(Args, Debug)]
@@ -889,6 +895,27 @@ pub struct TeamTokenCreateArgs {
 #[derive(Args, Debug)]
 pub struct TeamTokenRevokeArgs {
     pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct TeamGrantArgs {
+    /// Project name to grant access to.
+    #[arg(long)]
+    pub project: String,
+    /// Token principal being granted (token name).
+    #[arg(long)]
+    pub principal: String,
+    /// Role: read or write.
+    #[arg(long, default_value = "read", value_parser = ["read", "write"])]
+    pub role: String,
+}
+
+#[derive(Args, Debug)]
+pub struct TeamGrantRevokeArgs {
+    #[arg(long)]
+    pub project: String,
+    #[arg(long)]
+    pub principal: String,
 }
 
 #[derive(Args, Debug)]

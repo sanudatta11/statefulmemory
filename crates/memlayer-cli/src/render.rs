@@ -62,7 +62,11 @@ fn write_observation_detail(o: &p::Observation, w: &mut dyn Write) -> io::Result
     if let Some(a) = &o.code_anchor {
         writeln!(w, "anchor      {a}")?;
     }
-    if let Some(vs) = o.verify_state.as_deref().filter(|s| *s != "unanchored" && !s.is_empty()) {
+    if let Some(vs) = o
+        .verify_state
+        .as_deref()
+        .filter(|s| *s != "unanchored" && !s.is_empty())
+    {
         writeln!(w, "verify      {vs}")?;
     }
     if !o.supersedes_ids.is_empty() {
@@ -100,10 +104,15 @@ fn write_observation_row(o: &p::Observation, w: &mut dyn Write) -> io::Result<()
         truncate(&o.title, 32),
         snippet
     )?;
-    if let Some(vs) = o.verify_state.as_deref().filter(|s| {
-        matches!(*s, "stale" | "invalidated" | "unprovable")
-    }) {
-        writeln!(w, "         [{vs}] — withdrawn from context; run `memlayer verify`")?;
+    if let Some(vs) = o
+        .verify_state
+        .as_deref()
+        .filter(|s| matches!(*s, "stale" | "invalidated" | "unprovable"))
+    {
+        writeln!(
+            w,
+            "         [{vs}] — withdrawn from context; run `memlayer verify`"
+        )?;
     }
     if !o.supersedes_ids.is_empty() {
         let ids: Vec<String> = o.supersedes_ids.iter().map(|id| id.to_string()).collect();
@@ -195,11 +204,7 @@ impl Render for p::DecideResponse {
         if !self.conflicts.is_empty() {
             writeln!(w, "conflicts:")?;
             for c in &self.conflicts {
-                writeln!(
-                    w,
-                    "  - #{} ~ #{} ({})",
-                    c.a_id, c.b_id, c.status
-                )?;
+                writeln!(w, "  - #{} ~ #{} ({})", c.a_id, c.b_id, c.status)?;
             }
         }
         if self.wrote_resolution {
@@ -379,7 +384,10 @@ impl Render for p::ContextResponse {
         // arrays unconditionally.
         let (recents, topics) = match &self.snapshot {
             Some(s) => (
-                s.recent_observations.iter().map(obs_to_json).collect::<Vec<_>>(),
+                s.recent_observations
+                    .iter()
+                    .map(obs_to_json)
+                    .collect::<Vec<_>>(),
                 s.active_topics
                     .iter()
                     .map(|t| {
@@ -525,7 +533,10 @@ fn write_session_row(s: &p::Session, w: &mut dyn Write) -> io::Result<()> {
         "{:<24}  {:<20}  {:<20}  {}",
         truncate(&s.id, 24),
         truncate(&s.started_at, 20),
-        s.ended_at.as_deref().map(|t| truncate(t, 20)).unwrap_or_else(|| "-".to_string()),
+        s.ended_at
+            .as_deref()
+            .map(|t| truncate(t, 20))
+            .unwrap_or_else(|| "-".to_string()),
         truncate(&s.directory, 40)
     )
 }
@@ -537,7 +548,11 @@ impl Render for p::StartSessionResponse {
         }
         if let Some(snap) = &self.context {
             writeln!(w)?;
-            writeln!(w, "INLINE CONTEXT — {} recent observations", snap.recent_observations.len())?;
+            writeln!(
+                w,
+                "INLINE CONTEXT — {} recent observations",
+                snap.recent_observations.len()
+            )?;
         }
         Ok(())
     }
@@ -800,11 +815,7 @@ impl Render for p::DeleteProjectResponse {
 
 impl Render for p::ConsolidateProjectsResponse {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(
-            w,
-            "{:<32}  {:<32}  SIMILARITY",
-            "FROM", "TO"
-        )?;
+        writeln!(w, "{:<32}  {:<32}  SIMILARITY", "FROM", "TO")?;
         for c in &self.candidates {
             writeln!(
                 w,
@@ -845,10 +856,22 @@ impl Render for p::PruneProjectsResponse {
 
 impl Render for p::SyncStatusResponse {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(w, "last_export_at       {}", self.last_export_at.as_deref().unwrap_or("-"))?;
-        writeln!(w, "last_import_at       {}", self.last_import_at.as_deref().unwrap_or("-"))?;
+        writeln!(
+            w,
+            "last_export_at       {}",
+            self.last_export_at.as_deref().unwrap_or("-")
+        )?;
+        writeln!(
+            w,
+            "last_import_at       {}",
+            self.last_import_at.as_deref().unwrap_or("-")
+        )?;
         writeln!(w, "unseen_chunk_count   {}", self.unseen_chunk_count)?;
-        writeln!(w, "last_error           {}", self.last_error.as_deref().unwrap_or("-"))?;
+        writeln!(
+            w,
+            "last_error           {}",
+            self.last_error.as_deref().unwrap_or("-")
+        )?;
         writeln!(w, "total_exported       {}", self.total_exported_chunks)?;
         writeln!(w, "total_imported       {}", self.total_imported_chunks)?;
         Ok(())
@@ -935,6 +958,37 @@ impl Render for p::ListTokensResponse {
     }
 }
 
+impl Render for p::ListProjectGrantsResponse {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            w,
+            "{:<28}  {:<24}  {:<7}  GRANTED_AT",
+            "PROJECT", "PRINCIPAL", "ROLE"
+        )?;
+        for g in &self.grants {
+            writeln!(
+                w,
+                "{:<28}  {:<24}  {:<7}  {}",
+                truncate(&g.project, 28),
+                truncate(&g.principal, 24),
+                g.role,
+                truncate(&g.granted_at, 20),
+            )?;
+        }
+        Ok(())
+    }
+    fn to_json_value(&self) -> Value {
+        json!({
+            "grants": self.grants.iter().map(|g| json!({
+                "project": g.project,
+                "principal": g.principal,
+                "role": g.role,
+                "granted_at": g.granted_at,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
 impl Render for p::RevokeTokenResponse {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w, "revoked")
@@ -985,7 +1039,12 @@ impl Render for p::GetFactsResponse {
             writeln!(
                 w,
                 "  - ({}, {}, {}){} [extracted by {}, {}]{}",
-                f.subject, f.predicate, f.object, temporal, f.extracted_by, f.extracted_at,
+                f.subject,
+                f.predicate,
+                f.object,
+                temporal,
+                f.extracted_by,
+                f.extracted_at,
                 superseded,
             )?;
         }
@@ -1016,7 +1075,11 @@ impl Render for p::GetObservationHistoryResponse {
                 Some(o) => o,
                 None => continue,
             };
-            let branch = if i == len - 1 { "└── " } else { "├── " };
+            let branch = if i == len - 1 {
+                "└── "
+            } else {
+                "├── "
+            };
             let status = if obs.deleted_at.is_some() {
                 format!("[superseded {}]", obs.deleted_at.as_deref().unwrap_or(""))
             } else {
@@ -1118,7 +1181,7 @@ mod tests {
             code_anchor: None,
             supersedes_ids: vec![],
             superseded_count: 0,
-        verify_state: None,
+            verify_state: None,
         }
     }
 
@@ -1199,7 +1262,9 @@ mod tests {
         // `v["next_cursor"].as_str()`.
         let resp_with = p::ListObservationsResponse {
             observations: vec![sample_observation()],
-            next_cursor: Some(p::Cursor { token: "abc123".into() }),
+            next_cursor: Some(p::Cursor {
+                token: "abc123".into(),
+            }),
         };
         let v = resp_with.to_json_value();
         assert_eq!(v["next_cursor"], json!("abc123"));
@@ -1210,7 +1275,10 @@ mod tests {
             next_cursor: None,
         };
         let v = resp_without.to_json_value();
-        assert!(v["next_cursor"].is_null(), "absent cursor must render as null");
+        assert!(
+            v["next_cursor"].is_null(),
+            "absent cursor must render as null"
+        );
     }
 
     #[test]
@@ -1364,13 +1432,17 @@ mod tests {
             last_seen_at: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
-            deleted_at: if deleted { Some("2026-06-01T00:00:00Z".into()) } else { None },
+            deleted_at: if deleted {
+                Some("2026-06-01T00:00:00Z".into())
+            } else {
+                None
+            },
             review_after: None,
             project_name: None,
             code_anchor: None,
             supersedes_ids: vec![],
             superseded_count: 0,
-        verify_state: None,
+            verify_state: None,
         }
     }
 
@@ -1400,12 +1472,10 @@ mod tests {
     #[test]
     fn history_json_includes_entries_and_superseded_by_id() {
         let resp = p::GetObservationHistoryResponse {
-            entries: vec![
-                p::ObservationHistoryEntry {
-                    observation: Some(sample_obs_with_id(10, false)),
-                    superseded_by_id: Some(11),
-                },
-            ],
+            entries: vec![p::ObservationHistoryEntry {
+                observation: Some(sample_obs_with_id(10, false)),
+                superseded_by_id: Some(11),
+            }],
         };
         let v = resp.to_json_value();
         assert_eq!(v["entries"][0]["superseded_by_id"], 11);

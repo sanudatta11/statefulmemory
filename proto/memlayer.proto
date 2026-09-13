@@ -624,6 +624,34 @@ message RevokeTokenRequest {
 message RevokeTokenResponse {}
 
 // ---
+// Project grants (enterprise ACL)
+// ---
+
+message GrantProjectRequest {
+  string project  = 1;
+  string principal = 2;   // token name
+  string role      = 3;   // "read" | "write"
+}
+message GrantProjectResponse {}
+
+message RevokeProjectGrantRequest {
+  string project  = 1;
+  string principal = 2;
+}
+message RevokeProjectGrantResponse {}
+
+message ListProjectGrantsRequest {}
+message ListProjectGrantsResponse {
+  message Grant {
+    string project    = 1;
+    string principal  = 2;
+    string role       = 3;
+    string granted_at = 4;
+  }
+  repeated Grant grants = 1;
+}
+
+// ---
 // Daemon ops
 // ---
 
@@ -933,6 +961,11 @@ service Memlayer {
   rpc CreateToken            (CreateTokenRequest)            returns (CreateTokenResponse);
   rpc ListTokens             (ListTokensRequest)             returns (ListTokensResponse);
   rpc RevokeToken            (RevokeTokenRequest)            returns (RevokeTokenResponse);
+
+  // Project grants (enterprise ACL)
+  rpc GrantProject           (GrantProjectRequest)           returns (GrantProjectResponse);
+  rpc RevokeProjectGrant     (RevokeProjectGrantRequest)     returns (RevokeProjectGrantResponse);
+  rpc ListProjectGrants      (ListProjectGrantsRequest)      returns (ListProjectGrantsResponse);
 
   // Daemon ops
   rpc DaemonStatus           (DaemonStatusRequest)           returns (DaemonStatusResponse);

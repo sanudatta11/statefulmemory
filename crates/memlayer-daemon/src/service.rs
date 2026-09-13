@@ -126,6 +126,42 @@ impl MemlayerService {
         Ok(())
     }
 
+    /// Enforce project ACLs when (a) we have a token store (TCP mode) and
+    /// (b) the project is gated (has at least one grant). Ungated projects and
+    /// UDS mode stay open — grants are opt-in.
+    fn enforce_grant(
+        &self,
+        auth: Option<&crate::auth::AuthCtx>,
+        project: &str,
+        need_write: bool,
+    ) -> Result<()> {
+        let Some(store) = &self.state.token_store else {
+            return Ok(());
+        };
+        if !store.project_is_gated(project)? {
+            return Ok(());
+        }
+        let Some(auth) = auth else {
+            return Ok(());
+        };
+        if auth.is_admin {
+            return Ok(());
+        }
+        let role = store.grant_role(project, &auth.token_name)?;
+        match role.as_deref() {
+            Some("write") => Ok(()),
+            Some("read") if !need_write => Ok(()),
+            Some(_) => Err(Error::PermissionDenied(format!(
+                "principal '{}' has no write grant on project '{project}'",
+                auth.token_name
+            ))),
+            None => Err(Error::PermissionDenied(format!(
+                "principal '{}' is not granted access to project '{project}'",
+                auth.token_name
+            ))),
+        }
+    }
+
     pub(crate) fn open_project(&self, name: &str) -> Result<Arc<ProjectState>> {
         if name.trim().is_empty() {
             return Err(Error::invalid("project_name is required"));
@@ -1011,8 +1047,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<SaveObservationResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let scope = if r.scope.is_empty() {
             "project".into()
         } else {
@@ -1245,8 +1283,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<UpdateObservationResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let key = match r.key {
             Some(update_observation_request::Key::Id(id)) => ObservationKey::Id(id),
             Some(update_observation_request::Key::SyncId(s)) => ObservationKey::SyncId(s),
@@ -1279,8 +1319,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<DeleteObservationResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let key = match r.key {
             Some(delete_observation_request::Key::Id(id)) => ObservationKey::Id(id),
             Some(delete_observation_request::Key::SyncId(s)) => ObservationKey::SyncId(s),
@@ -1986,8 +2028,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<VerifyAnchorsResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
 
         let repo = map(self.state.registry.get_repo_path(&r.project_name))?
             .filter(|p| memlayer_core::git::is_repo(p))
@@ -2071,8 +2115,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<StartSessionResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         if r.id.trim().is_empty() {
             return Err(Status::invalid_argument("session id is required"));
         }
@@ -2113,8 +2159,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<EndSessionResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::EndSession {
             id: r.id,
@@ -2134,8 +2182,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<SaveSessionSummaryResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::SaveSessionSummary {
             id: r.id,
@@ -2190,8 +2240,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<DeleteSessionResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         // FR12.8: refuse if any active observation references the session.
         let conn = map(project.open_read_conn())?;
         if map(sessions_q::has_observations(&conn, &r.id))? {
@@ -2233,8 +2285,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<SavePromptResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let sync_id = r
             .sync_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -2289,8 +2343,10 @@ impl Memlayer for MemlayerService {
     ) -> Result<Response<DeletePromptResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project = map(self.open_project(&r.project_name))?;
+        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let key = match r.key {
             Some(delete_prompt_request::Key::Id(id)) => PromptKey::Id(id),
             Some(delete_prompt_request::Key::SyncId(s)) => PromptKey::SyncId(s),
@@ -2537,6 +2593,68 @@ impl Memlayer for MemlayerService {
             .ok_or_else(|| Status::failed_precondition("token admin requires TCP mode"))?;
         map(store.revoke(&r.name))?;
         Ok(Response::new(RevokeTokenResponse {}))
+    }
+
+    async fn grant_project(
+        &self,
+        req: Request<memlayer_proto::GrantProjectRequest>,
+    ) -> Result<Response<memlayer_proto::GrantProjectResponse>, Status> {
+        let _g = self.enter_rpc();
+        admin_guard::require_admin(&req)?;
+        let r = req.into_inner();
+        if r.project.trim().is_empty() || r.principal.trim().is_empty() {
+            return Err(Status::invalid_argument(
+                "project and principal are required",
+            ));
+        }
+        let store = self
+            .state
+            .token_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
+        map(store.grant(&r.project, &r.principal, &r.role))?;
+        Ok(Response::new(memlayer_proto::GrantProjectResponse {}))
+    }
+
+    async fn revoke_project_grant(
+        &self,
+        req: Request<memlayer_proto::RevokeProjectGrantRequest>,
+    ) -> Result<Response<memlayer_proto::RevokeProjectGrantResponse>, Status> {
+        let _g = self.enter_rpc();
+        admin_guard::require_admin(&req)?;
+        let r = req.into_inner();
+        let store = self
+            .state
+            .token_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
+        map(store.revoke_grant(&r.project, &r.principal))?;
+        Ok(Response::new(memlayer_proto::RevokeProjectGrantResponse {}))
+    }
+
+    async fn list_project_grants(
+        &self,
+        req: Request<memlayer_proto::ListProjectGrantsRequest>,
+    ) -> Result<Response<memlayer_proto::ListProjectGrantsResponse>, Status> {
+        let _g = self.enter_rpc();
+        admin_guard::require_admin(&req)?;
+        let store = self
+            .state
+            .token_store
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
+        let grants = map(store.list_grants())?
+            .into_iter()
+            .map(|g| memlayer_proto::list_project_grants_response::Grant {
+                project: g.project,
+                principal: g.principal,
+                role: g.role,
+                granted_at: g.granted_at,
+            })
+            .collect();
+        Ok(Response::new(memlayer_proto::ListProjectGrantsResponse {
+            grants,
+        }))
     }
 
     // ---- Daemon ops ----

@@ -18,16 +18,14 @@ use memlayer_proto as p;
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
 use thiserror::Error;
 
-use crate::cli::{TeamTokenCreateArgs, TeamTokenRevokeArgs, TeamVerb};
+use crate::cli::{
+    TeamGrantArgs, TeamGrantRevokeArgs, TeamTokenCreateArgs, TeamTokenRevokeArgs, TeamVerb,
+};
 use crate::cmd_obs::Client;
 use crate::exit;
 use crate::formatter::{Formatter, Render};
 
-pub async fn dispatch(
-    client: Option<&mut Client>,
-    fmt: Formatter,
-    verb: TeamVerb,
-) -> ExitCode {
+pub async fn dispatch(client: Option<&mut Client>, fmt: Formatter, verb: TeamVerb) -> ExitCode {
     let result: Result<(), TeamError> = match verb {
         TeamVerb::InitCa(a) => init_ca(&a.dir, a.force).map_err(TeamError::Init),
         TeamVerb::TokenCreate(a) => match client {
@@ -40,6 +38,18 @@ pub async fn dispatch(
         },
         TeamVerb::TokenRevoke(a) => match client {
             Some(c) => token_revoke(c, a).await,
+            None => Err(TeamError::ClientUnavailable),
+        },
+        TeamVerb::Grant(a) => match client {
+            Some(c) => grant_project(c, a).await,
+            None => Err(TeamError::ClientUnavailable),
+        },
+        TeamVerb::GrantRevoke(a) => match client {
+            Some(c) => revoke_grant(c, a).await,
+            None => Err(TeamError::ClientUnavailable),
+        },
+        TeamVerb::GrantList => match client {
+            Some(c) => list_grants(c, fmt).await,
             None => Err(TeamError::ClientUnavailable),
         },
     };
@@ -179,6 +189,36 @@ async fn token_revoke(client: &mut Client, a: TeamTokenRevokeArgs) -> Result<(),
     client
         .revoke_token(p::RevokeTokenRequest { name: a.name })
         .await?;
+    Ok(())
+}
+
+async fn grant_project(client: &mut Client, a: TeamGrantArgs) -> Result<(), TeamError> {
+    client
+        .grant_project(p::GrantProjectRequest {
+            project: a.project,
+            principal: a.principal,
+            role: a.role,
+        })
+        .await?;
+    Ok(())
+}
+
+async fn revoke_grant(client: &mut Client, a: TeamGrantRevokeArgs) -> Result<(), TeamError> {
+    client
+        .revoke_project_grant(p::RevokeProjectGrantRequest {
+            project: a.project,
+            principal: a.principal,
+        })
+        .await?;
+    Ok(())
+}
+
+async fn list_grants(client: &mut Client, fmt: Formatter) -> Result<(), TeamError> {
+    let resp = client
+        .list_project_grants(p::ListProjectGrantsRequest {})
+        .await?
+        .into_inner();
+    write_render(&resp, fmt).map_err(TeamError::Io)?;
     Ok(())
 }
 
