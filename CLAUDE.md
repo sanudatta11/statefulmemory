@@ -166,8 +166,9 @@ Doctor RPCs — see `proto/statefulmemory.proto`.
 statefulmemory install                 # skills + MCP + Laya prereqs; git hooks when cwd is a repo
 statefulmemory install --no-git-hooks  # skip post-commit verify hooks
 statefulmemory install --no-laya       # skip Laya System-1 sidecar setup
-# smem is the same binary:
+# smem and sm are the same binary:
 smem install
+sm install
 statefulmemory obs save --anchor path::symbol --title "…" --content "…"
 statefulmemory verify [--quiet]        # re-check anchors vs HEAD
 statefulmemory obs context --query "…" --max-tokens 500
@@ -179,7 +180,8 @@ statefulmemory mem export --out backup.mem
 
 Optional HTTP sidecar for typed decide / conflict / query-router signals.
 `smem install` sets it up under `~/.statefulmemory/laya-{sidecar,venv}/` unless
-`--no-laya`. See [`AGENTS.md`](AGENTS.md) and [`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md).
+`--no-laya`. Backend `auto|mlx|torch` — native MLX on Apple Silicon, PyTorch
+elsewhere. See [`AGENTS.md`](AGENTS.md) and [`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md).
 
 ## Pending roadmap (see `docs/ROADMAP.md`)
 

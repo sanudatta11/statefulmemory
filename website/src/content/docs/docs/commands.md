@@ -5,6 +5,9 @@ description: Quick command index — each line links to the detailed guide.
 
 Prefer the feature guides for explanations. This page is a dense index only.
 
+Every command below works identically as `statefulmemory <cmd>`, `smem <cmd>`,
+or `sm <cmd>` — three names, one binary.
+
 ## Install and agents
 
 ```bash

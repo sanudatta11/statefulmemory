@@ -13,6 +13,8 @@ pub const HOOK_END: &str = "# <<< statefulmemory <<<";
 
 const HOOK_BODY: &str = r#"if command -v smem >/dev/null 2>&1; then
   (smem verify --quiet >/dev/null 2>&1 &)
+elif command -v sm >/dev/null 2>&1; then
+  (sm verify --quiet >/dev/null 2>&1 &)
 elif command -v statefulmemory >/dev/null 2>&1; then
   (statefulmemory verify --quiet >/dev/null 2>&1 &)
 fi

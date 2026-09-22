@@ -3,7 +3,7 @@ title: Config
 description: statefulmemory features and configuration overlays.
 ---
 
-`smem install` / `statefulmemory install` writes `~/.statefulmemory/config.toml` with
+`smem install` / `sm install` / `statefulmemory install` writes `~/.statefulmemory/config.toml` with
 hybrid search, the conflict judge, extract, and **Laya System-1** enabled.
 Code defaults also enable `conflict.enabled` and `search.mode = "hybrid"`.
 Extract and Laya stay opt-in in code defaults (no LLM / sidecar on unit tests)
@@ -51,8 +51,27 @@ Merge order (highest wins): env vars → project overlay → global → code def
 `STATEFULMEMORY_SEARCH_MAX_PER_TYPE`,
 `STATEFULMEMORY_LAYA_ENABLED`, `STATEFULMEMORY_LAYA_URL`, `STATEFULMEMORY_LAYA_TIMEOUT_MS`,
 `STATEFULMEMORY_LAYA_ROUTER`, `STATEFULMEMORY_LAYA_DECIDE`, `STATEFULMEMORY_LAYA_CONFLICT`,
+`STATEFULMEMORY_LAYA_BACKEND` (`auto` | `mlx` | `torch`),
 `STATEFULMEMORY_LLM_BIN`, `STATEFULMEMORY_LLM_PROVIDER`, `STATEFULMEMORY_LLM_MODEL`
 (legacy `STATEFULMEMORY_CLAUDE_MODEL` is the same as `STATEFULMEMORY_LLM_MODEL`).
+
+### Laya sidecar backend
+
+`[laya] backend` picks the sidecar inference runtime:
+
+- `auto` (default): `laya-mlx` on Apple Silicon (macOS 14+, Python ≥ 3.11),
+  PyTorch `laya` everywhere else
+- `mlx`: force the native MLX runtime (published P50 on an M3 Max: 13.4 ms for
+  the 421M checkpoint, 7.4 ms multilingual; no PyTorch dependency)
+- `torch`: force the PyTorch / Transformers `laya` package (CUDA / Linux servers)
+
+Default `timeout_ms = 80` fits the single-question router/conflict calls but
+drops decide / resolve on MLX (~100–200 ms for 2–3 question batches) — use
+`timeout_ms = 250` for those call sites.
+
+`smem doctor` and `GET /health` report the active backend. All three run the
+same Laya checkpoints with identical typed output schemas; the choice is
+purely about hardware.
 
 See the repository [`AGENTS.md`](https://github.com/sanudatta11/statefulmemory/blob/main/AGENTS.md)
 (OpenCode / Codex / local LLMs) and

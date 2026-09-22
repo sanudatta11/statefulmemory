@@ -14,6 +14,9 @@ export PATH="$HOME/.local/bin:$PATH"
 statefulmemory --version
 ```
 
+`statefulmemory`, `smem`, and `sm` are the same binary — every command in this
+tour can be run as `sm <cmd>` for brevity.
+
 Full notes: [Install](/docs/install/). Deployment modes (self-host vs
 StatefulMemory Cloud): [Self-hosting and Cloud](/docs/self-hosting/).
 

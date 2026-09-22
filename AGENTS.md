@@ -14,7 +14,8 @@ StatefulMemory Cloud (managed SaaS). Optional LLM steps (extract, conflict judge
 rerank, Decide) shell out to whichever agent CLI is on `PATH`. On self-host,
 hybrid search/context does not require a third-party search API key.
 
-**CLI:** primary binary `statefulmemory`; shorthand **`smem`** (same binary).
+**CLI:** primary binary `statefulmemory`; shorthands **`smem`** and **`sm`**
+(same binary).
 Data dir `~/.statefulmemory`; env prefix `STATEFULMEMORY_*`. Clean break from
 legacy `memlayer`: `smem uninstall --purge` then `smem install`.
 
@@ -247,10 +248,17 @@ Override:
 [laya]
 enabled = true
 url = "http://127.0.0.1:8765"   # or http://team-host:8765
-timeout_ms = 80
+timeout_ms = 250                # MLX decide/conflict need >80ms; router ~30ms
+backend = "auto"                # auto | mlx | torch
 ```
 
-Env: `STATEFULMEMORY_LAYA_ENABLED/URL/TIMEOUT_MS/ROUTER/DECIDE/CONFLICT`.
+Env: `STATEFULMEMORY_LAYA_ENABLED/URL/TIMEOUT_MS/ROUTER/DECIDE/CONFLICT/BACKEND`.
+
+Backend: `auto` prefers **laya-mlx** (native Apple Silicon port, same Laya
+checkpoints) on macOS 14+ / Python ≥ 3.11, else PyTorch `laya`. Sidecar
+`/health` reports the active backend. Raise `timeout_ms` for decide/conflict
+(two/three-question batches measured 100–200 ms on MLX; single-question
+router/conflict ~30 ms).
 
 ## Roadmap status (short)
 

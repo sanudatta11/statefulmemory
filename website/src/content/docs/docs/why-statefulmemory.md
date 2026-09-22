@@ -16,6 +16,7 @@ CLI help do not roast peers by name.
 - Cloud SaaS: managed hosting for teams that do not want to run the daemon
 - Hybrid BM25 + dense retrieval on the self-host path without a search API key
 - Fourteen `statefulmemory install` targets plus seven MCP tools
+  (`statefulmemory` / `smem` / `sm` are the same binary)
 - Code anchors + git verify (stale withdrawal from context)
 - Optional LLM steps via your agent CLI
 - **Effective context** (`smem context compile`): pack decisions / anchors / facts

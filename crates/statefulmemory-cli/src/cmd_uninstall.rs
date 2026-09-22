@@ -1,6 +1,6 @@
-//! `statefulmemory uninstall` / `smem uninstall` — remove skill files, settings
-//! patches, and MCP registration. With `--purge`, also wipe data dirs, model
-//! caches, binaries, and legacy `memlayer` residue.
+//! `statefulmemory uninstall` / `smem uninstall` / `sm uninstall` — remove skill
+//! files, settings patches, and MCP registration. With `--purge`, also wipe data
+//! dirs, model caches, binaries, and legacy `memlayer` residue.
 
 use std::fs;
 use std::io::{self, Write as IoWrite};
@@ -174,6 +174,9 @@ async fn dispatch_purge(home: &Path, cwd: &Path) -> ExitCode {
     let _ = std::process::Command::new("smem")
         .args(["daemon", "stop"])
         .status();
+    let _ = std::process::Command::new("sm")
+        .args(["daemon", "stop"])
+        .status();
     let _ = std::process::Command::new("memlayer")
         .args(["daemon", "stop"])
         .status();
@@ -194,9 +197,11 @@ async fn dispatch_purge(home: &Path, cwd: &Path) -> ExitCode {
     let bins = [
         home.join(".local/bin/statefulmemory"),
         home.join(".local/bin/smem"),
+        home.join(".local/bin/sm"),
         home.join(".local/bin/memlayer"),
         PathBuf::from("/usr/local/bin/statefulmemory"),
         PathBuf::from("/usr/local/bin/smem"),
+        PathBuf::from("/usr/local/bin/sm"),
         PathBuf::from("/usr/local/bin/memlayer"),
     ];
     let skill_dirs = [

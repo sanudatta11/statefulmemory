@@ -11,13 +11,13 @@ out of the box (typed decide / conflict / query router).
 
 ```bash
 git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
-make prereqs && make install    # → ~/.local/bin/statefulmemory (+ smem)
+make prereqs && make install    # → ~/.local/bin/statefulmemory (+ smem, sm)
 export PATH="$HOME/.local/bin:$PATH"
-statefulmemory --version        # same binary: smem --version
+statefulmemory --version        # same binary: smem --version / sm --version
 ```
 
 The daemon auto-starts on first use (self-host default: Unix domain socket).
-Put `~/.local/bin` on your `PATH` permanently if `statefulmemory` / `smem` is not
+Put `~/.local/bin` on your `PATH` permanently if `statefulmemory` / `smem` / `sm` is not
 found after install. Team TCP self-host and **StatefulMemory Cloud** (managed SaaS): see
 [Self-hosting and Cloud](/docs/self-hosting/).
 
@@ -25,7 +25,7 @@ found after install. Team TCP self-host and **StatefulMemory Cloud** (managed Sa
 
 | Path | Role |
 | --- | --- |
-| `~/.local/bin/statefulmemory` (+ `smem`) | CLI binary (same code) |
+| `~/.local/bin/statefulmemory` (+ `smem`, `sm`) | CLI binary (same code) |
 | `~/.statefulmemory/` | Data dir (created on first use) |
 | `~/.statefulmemory/config.toml` | Written/merged by `install` (includes `[laya]` when missing) |
 | `~/.statefulmemory/laya-sidecar/` | Laya FastAPI app (unless `--no-laya`) |
@@ -36,7 +36,7 @@ found after install. Team TCP self-host and **StatefulMemory Cloud** (managed Sa
 From any project directory (after the binary is on `PATH`):
 
 ```bash
-statefulmemory install                 # or: smem install
+statefulmemory install                 # or: smem install / sm install
 statefulmemory install --no-git-hooks  # skip post-commit / post-merge / post-checkout
 statefulmemory install --no-laya       # skip Python venv / sidecar spawn
 ```
@@ -55,8 +55,8 @@ Full agent matrix: [Wire into your agent](/docs/agents/).
 ## Sanity checks
 
 ```bash
-statefulmemory daemon status
-statefulmemory doctor          # includes Laya enabled / url / health
+statefulmemory daemon status        # same as: smem daemon status / sm daemon status
+statefulmemory doctor              # includes Laya enabled / url / health
 ```
 
 ## Next steps

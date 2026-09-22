@@ -184,8 +184,10 @@ install: release
 	mkdir -p $(INSTALL_DIR)
 	install -m 755 $(BINARY) $(INSTALL_DIR)/statefulmemory
 	install -m 755 $(BINARY) $(INSTALL_DIR)/smem
+	install -m 755 $(BINARY) $(INSTALL_DIR)/sm
 	@echo "Installed: $(INSTALL_DIR)/statefulmemory"
 	@echo "Installed: $(INSTALL_DIR)/smem  (shorthand)"
+	@echo "Installed: $(INSTALL_DIR)/sm    (shorthand)"
 	@$(INSTALL_DIR)/smem --version
 	@echo "Make sure $(INSTALL_DIR) is on your PATH."
 skill-install: install

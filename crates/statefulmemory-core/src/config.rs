@@ -395,6 +395,10 @@ pub struct LayaConfig {
     pub model_router: String,
     /// Below this confidence, treat Laya answer as failure → fallback.
     pub min_confidence: f64,
+    /// Sidecar inference backend: `auto` | `mlx` | `torch`.
+    /// `auto` prefers `laya-mlx` on Apple Silicon (Python ≥ 3.11) and falls
+    /// back to the PyTorch `laya` package elsewhere.
+    pub backend: String,
 }
 
 impl Default for LayaConfig {
@@ -409,6 +413,7 @@ impl Default for LayaConfig {
             model_decide: "typed-decisions".into(),
             model_router: "english".into(),
             min_confidence: 0.35,
+            backend: "auto".into(),
         }
     }
 }
@@ -858,6 +863,14 @@ fn apply_statefulmemory_env_overrides(cfg: &mut StatefulMemoryConfig) {
             tracing::warn!(value = %v, "ignoring STATEFULMEMORY_LAYA_MIN_CONFIDENCE: not a float");
         }
     }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_BACKEND") {
+        let b = v.trim().to_ascii_lowercase();
+        if b == "auto" || b == "mlx" || b == "torch" {
+            cfg.laya.backend = b;
+        } else {
+            tracing::warn!(value = %v, "ignoring STATEFULMEMORY_LAYA_BACKEND: must be auto, mlx, or torch");
+        }
+    }
 }
 
 fn parse_bool_env(v: &str) -> bool {
@@ -910,6 +923,7 @@ conflict = true
 model_decide = "typed-decisions"
 model_router = "english"
 min_confidence = 0.35
+backend = "auto"
 
 [storage]
 backend = "sqlite"
@@ -1024,6 +1038,7 @@ mod statefulmemory_config_tests {
             "STATEFULMEMORY_GRAPH_HOPS",
             "STATEFULMEMORY_GRAPH_BOOST",
             "STATEFULMEMORY_GRAPH_RANKER",
+            "STATEFULMEMORY_LAYA_BACKEND",
         ] {
             std::env::remove_var(k);
         }
@@ -1048,6 +1063,36 @@ mod statefulmemory_config_tests {
         assert_eq!(cfg.extract.model, ModelKind::Haiku);
         assert_eq!(cfg.rerank.model, ModelKind::Haiku);
         assert_eq!(cfg.embed.workers, 2);
+        std::env::remove_var("STATEFULMEMORY_DATA_DIR");
+    }
+
+    #[test]
+    fn laya_backend_env_accepts_valid_rejects_invalid() {
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let _d = fresh_data_dir();
+
+        let cfg = load_resolved(None);
+        assert_eq!(cfg.laya.backend, "auto");
+
+        std::env::set_var("STATEFULMEMORY_LAYA_BACKEND", "mlx");
+        let cfg = load_resolved(None);
+        assert_eq!(cfg.laya.backend, "mlx");
+
+        std::env::set_var("STATEFULMEMORY_LAYA_BACKEND", "TORCH");
+        let cfg = load_resolved(None);
+        assert_eq!(cfg.laya.backend, "torch", "case-insensitive normalize");
+
+        std::env::set_var("STATEFULMEMORY_LAYA_BACKEND", "cuda");
+        let cfg = load_resolved(None);
+        assert_eq!(
+            cfg.laya.backend, "auto",
+            "invalid value ignored — fresh load falls back to default"
+        );
+
+        clear_env();
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }
 

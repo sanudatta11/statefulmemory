@@ -265,6 +265,7 @@ pub fn spawn_local_sidecar(cfg: &LayaConfig) -> Result<bool, String> {
     ])
     .current_dir(&app_dir)
     .env("USE_TF", "0")
+    .env("LAYA_BACKEND", cfg.backend.trim())
     .env("LAYA_HOST", host)
     .env("LAYA_PORT", port.to_string())
     .stdin(std::process::Stdio::null())
@@ -379,6 +380,7 @@ mod tests {
             model_decide: "typed-decisions".into(),
             model_router: "english".into(),
             min_confidence: 0.5,
+            backend: "auto".into(),
         };
         let client = LayaClient::new(&cfg);
         let mut answers = HashMap::new();

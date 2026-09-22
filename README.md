@@ -43,9 +43,9 @@ recommended so `install` can set up the Laya System-1 sidecar out of the box.
 
 ```bash
 git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
-make prereqs && make install    # → ~/.local/bin/statefulmemory (+ smem)
+make prereqs && make install    # → ~/.local/bin/statefulmemory (+ smem, sm)
 export PATH="$HOME/.local/bin:$PATH"
-statefulmemory --version        # same binary as: smem --version
+statefulmemory --version        # same binary as: smem --version / sm --version
 ```
 
 Full guide: [Install](https://statefulmemory.dev/docs/install/).
@@ -54,7 +54,7 @@ Laya sidecar: [`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md).
 ## 30-second example
 
 ```bash
-smem install --agent cursor     # or: statefulmemory install
+smem install --agent cursor     # or: statefulmemory install / sm install
 # installs skills/MCP + Laya sidecar prereqs (venv, deps, local spawn)
 # skip Laya with: smem install --no-laya
 SID=$(uuidgen)
@@ -66,7 +66,7 @@ smem obs context --query "database access layer" --limit 10
 smem decide "Should we keep pgx?"
 ```
 
-Agents use MCP (`smem mcp` / `statefulmemory mcp`) or shell-out. **Python/TypeScript SDKs are not
+Agents use MCP (`smem mcp` / `sm mcp` / `statefulmemory mcp`) or shell-out. **Python/TypeScript SDKs are not
 shipped.** Preference-evolution walkthrough:
 [`demos/preference-evolution.sh`](demos/preference-evolution.sh).
 
@@ -144,12 +144,12 @@ Do not quote smoke or tiny slices against published leaderboards.
 | Surface | Status |
 |---|---|
 | MCP: `memory_search`, `memory_recent`, `memory_context`, `memory_add`, `memory_facts`, `memory_health`, `memory_decide`, `memory_graph_query` | Shipped (`statefulmemory mcp`) |
-| `statefulmemory install` / `smem install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
+| `statefulmemory install` / `smem install` / `sm install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
 | Laya System-1 sidecar (typed router / decide / conflict) | Shipped (`install` sets up local venv; `--no-laya` to skip) |
 | LangGraph, OpenAI Agents SDK, CrewAI, AutoGen, LlamaIndex, Vercel AI SDK | **Not yet** |
 
 ```bash
-statefulmemory install                 # auto-detect (same: smem install)
+statefulmemory install                 # auto-detect (same: smem install / sm install)
 statefulmemory install --agent cursor
 statefulmemory install --all
 statefulmemory install --no-laya       # skip Laya System-1 sidecar prereqs
