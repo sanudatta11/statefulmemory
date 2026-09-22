@@ -1,0 +1,34 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://statefulmemory.dev/",
+      "service-desc": [
+        {
+          "href": "https://statefulmemory.dev/.well-known/openapi.json",
+          "type": "application/openapi+json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://statefulmemory.dev/docs/",
+          "type": "text/html"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://statefulmemory.dev/",
+          "type": "text/html"
+        }
+      ]
+    },
+    {
+      "anchor": "https://statefulmemory.dev/.well-known/agent-skills/index.json",
+      "service-doc": [
+        {
+          "href": "https://statefulmemory.dev/docs/agents/",
+          "type": "text/html"
+        }
+      ]
+    }
+  ]
+}

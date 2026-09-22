@@ -1,0 +1,47 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "StatefulMemory discovery surface",
+    "version": "0.1.0",
+    "description": "Machine-readable discovery documents published by statefulmemory.dev for AI agents: the RFC 9727 API catalog, the llms.txt / llms-full.txt context files, and the Agent Skills index. statefulmemory itself is a local CLI + MCP server + gRPC daemon; this document describes only the public discovery endpoints served from this origin.",
+    "license": { "name": "MIT OR Apache-2.0" }
+  },
+  "servers": [{ "url": "https://statefulmemory.dev" }],
+  "paths": {
+    "/.well-known/api-catalog": {
+      "get": {
+        "operationId": "getApiCatalog",
+        "summary": "RFC 9727 API catalog (application/linkset+json)",
+        "responses": { "200": { "description": "Linkset listing the site's machine-readable APIs" } }
+      }
+    },
+    "/.well-known/agent-skills/index.json": {
+      "get": {
+        "operationId": "getAgentSkillsIndex",
+        "summary": "Agent Skills discovery index",
+        "responses": { "200": { "description": "Index of published agent skills" } }
+      }
+    },
+    "/auth.md": {
+      "get": {
+        "operationId": "getAuthMd",
+        "summary": "Auth.md agent registration / authentication discovery document",
+        "responses": { "200": { "description": "Markdown describing how agents authenticate and register" } }
+      }
+    },
+    "/llms.txt": {
+      "get": {
+        "operationId": "getLlmsTxt",
+        "summary": "Curated llms.txt index",
+        "responses": { "200": { "description": "Curated index of docs for LLM ingestion" } }
+      }
+    },
+    "/llms-full.txt": {
+      "get": {
+        "operationId": "getLlmsFullTxt",
+        "summary": "Full llms.txt product summary",
+        "responses": { "200": { "description": "Plain-text product summary for LLM ingestion" } }
+      }
+    }
+  }
+}

@@ -107,6 +107,29 @@ export default defineConfig({
 					},
 				},
 				{
+					tag: 'link',
+					attrs: {
+						rel: 'api-catalog',
+						type: 'application/linkset+json',
+						href: `${site}/.well-known/api-catalog`,
+					},
+				},
+				{
+					tag: 'link',
+					attrs: {
+						rel: 'describedby',
+						type: 'text/markdown',
+						href: `${site}/auth.md`,
+					},
+				},
+				{
+					tag: 'script',
+					attrs: {
+						src: '/webmcp.js',
+						defer: true,
+					},
+				},
+				{
 					tag: 'meta',
 					attrs: {
 						name: 'robots',

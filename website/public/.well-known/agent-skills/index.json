@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "skills": [
+    {
+      "name": "statefulmemory",
+      "type": "skill-md",
+      "description": "Persistent memory for coding agents — save decisions/patterns/fixes during work, retrieve relevant context at session start. CLI-backed, per-project scoped.",
+      "url": "https://statefulmemory.dev/skills/statefulmemory/SKILL.md",
+      "digest": "sha256:efd8f02e6335efde87945ae3f84e2532b0f7d8273cb15fd28bc81a26b5bc6cd5"
+    }
+  ]
+}
