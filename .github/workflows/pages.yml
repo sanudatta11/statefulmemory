@@ -59,7 +59,7 @@ jobs:
           # which silently drops top-level dot-dirs such as .well-known/.
           # Build the Pages artifact ourselves so agent-discovery files ship.
           tar --dereference --hard-dereference \
-            --directory website/dist \
+            --directory dist \
             -cvf "$RUNNER_TEMP/artifact.tar" \
             .
 
