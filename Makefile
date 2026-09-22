@@ -8,7 +8,8 @@
         eval-locomo-extract eval-locomo-facts \
         eval-locomo eval-locomo-full \
         eval-locomo-e2e eval-locomo-compare eval-staleness \
-        laya-sidecar
+        laya-sidecar \
+        videos videos-poster videos-clean
 
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
@@ -33,6 +34,16 @@ SCORECARD_STALE     := $(EVAL_OUT)/staleness.json
 SCORECARD_STALE_BASE := $(EVAL_OUT)/staleness-baseline.json
 BGE_MODEL_DIR       ?= $(HOME)/.statefulmemory-models/bge-small
 VENDOR_BGE          := $(CURDIR)/crates/statefulmemory-eval/scripts/vendor_bge_model.sh
+
+# HyperFrames demo clips (website/demos/statefulmemory-clips).
+HF_CLIPS_DIR        := $(CURDIR)/website/demos/statefulmemory-clips
+VIDEO_DIR           := $(CURDIR)/website/public/videos
+HF_VERSION          ?= 0.8.36
+HF_QUALITY          ?= high
+POSTER_AT           ?= 0.5
+# Standalone compositions (code-typing is a registry block, not a video).
+CLIPS               := overview anchors-verify decide-mem graph-briefing \
+                       install-agents own-your-memory save-search-context ui-tour
 
 # Eval / hybrid paths need BGE without a manual shell export.
 export STATEFULMEMORY_BGE_MODEL_DIR := $(BGE_MODEL_DIR)
@@ -110,6 +121,11 @@ help:
 	@echo "Laya (Wave 4 System-1)"
 	@echo "  laya-sidecar         Start Laya HTTP sidecar on 127.0.0.1:8765"
 	@echo ""
+	@echo "Videos (HyperFrames demo clips)"
+	@echo "  videos               Re-render all 8 clips → website/public/videos/*-v2.mp4 + posters"
+	@echo "  videos-poster        Regenerate poster JPEGs only (ffmpeg frame extract)"
+	@echo "  videos-clean         Remove generated *-v2.mp4 / *-v2-poster.jpg"
+	@echo "                       HF_QUALITY=draft|standard|high  POSTER_AT=seconds"
 	@echo "Eval (legacy eval binary in crates/statefulmemory-eval)"
 	@echo "  extract-locomo   Extract facts for LoCoMo conv-26 (requires BGE model)"
 	@echo "  run-locomo       Run LoCoMo benchmark (hybrid-rerank, k=20, limit=200)"
@@ -270,6 +286,44 @@ laya-sidecar:
 	cd $(CURDIR)/tools/laya-sidecar && \
 	  USE_TF=0 LAYA_HOST=127.0.0.1 LAYA_PORT=8765 \
 	  python3 -m uvicorn server:app --host 127.0.0.1 --port 8765
+
+# ── Videos (HyperFrames demo clips) ────────────────────────────────────────────
+
+# Re-render every standalone composition into website/public/videos/, then
+# extract a poster frame from each. Requires Node 22+, FFmpeg, and Chrome
+# (the HyperFrames CLI spawns Chrome via Puppeteer for capture).
+videos: videos-check
+	@mkdir -p "$(VIDEO_DIR)"
+	@for c in $(CLIPS); do \
+	  echo "== render $$c =="; \
+	  cd "$(HF_CLIPS_DIR)" && npx --yes hyperframes@$(HF_VERSION) render \
+	    -c "compositions/$$c.html" \
+	    -o "$(VIDEO_DIR)/$$c-v2.mp4" \
+	    --quality $(HF_QUALITY) --quiet || exit 1; \
+	done
+	$(MAKE) videos-poster
+
+videos-poster: videos-check
+	@mkdir -p "$(VIDEO_DIR)"
+	@for c in $(CLIPS); do \
+	  src="$(VIDEO_DIR)/$$c-v2.mp4"; \
+	  [ -f "$$src" ] || { echo "missing $$src (run: make videos)"; exit 1; }; \
+	  ffmpeg -y -loglevel error -ss $(POSTER_AT) -i "$$src" \
+	    -frames:v 1 -q:v 2 "$(VIDEO_DIR)/$$c-v2-poster.jpg"; \
+	  echo "poster  $$c-v2-poster.jpg"; \
+	done
+
+videos-clean:
+	@for c in $(CLIPS); do \
+	  rm -f "$(VIDEO_DIR)/$$c-v2.mp4" "$(VIDEO_DIR)/$$c-v2-poster.jpg"; \
+	done
+	@echo "Removed generated videos/posters from $(VIDEO_DIR)"
+
+videos-check:
+	@command -v node >/dev/null || (echo "error: node not found (need Node 22+)"; exit 1)
+	@command -v npx >/dev/null || (echo "error: npx not found (need Node 22+)"; exit 1)
+	@command -v ffmpeg >/dev/null || (echo "error: ffmpeg not found"; exit 1)
+	@test -d "$(HF_CLIPS_DIR)" || (echo "error: $(HF_CLIPS_DIR) missing"; exit 1)
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 

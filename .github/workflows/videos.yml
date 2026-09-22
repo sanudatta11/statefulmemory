@@ -1,0 +1,51 @@
+name: Videos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: videos
+  cancel-in-progress: true
+
+jobs:
+  render:
+    name: Rebuild demo clips
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Render clips
+        run: make videos
+        env:
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+          HF_QUALITY: high
+
+      - name: Commit regenerated clips
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add website/public/videos
+          if git diff --cached --quiet; then
+            echo "No video changes."
+          else
+            git commit -m "media: re-render HyperFrames clips"
+            git push
+          fi
+
+      - name: Trigger Pages deploy
+        run: gh workflow run pages.yml --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
