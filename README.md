@@ -134,7 +134,7 @@ Do not quote smoke or tiny slices against published leaderboards.
 | **Multi-hop Accuracy** | n/a |
 | **Retrieval Latency (p50)** | 0.4 ms |
 | **Retrieval Latency (p95)** | 0.4 ms |
-| **End-to-End Latency (p50)** | 664.5 ms |
+| **End-to-End Latency (p50)** | 576.8 ms |
 | **Benchmark** | Locomo (bm25, w=0) |
 | **Eval Gate** | pass |
 <!-- scorecard-end -->
