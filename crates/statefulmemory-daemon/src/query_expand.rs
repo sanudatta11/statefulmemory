@@ -85,9 +85,7 @@ pub fn infer_time_range(query: &str, now: DateTime<Utc>) -> Option<TimeRange> {
     .any(|k| lower.contains(k));
     if !has_temporal {
         // Bare ISO date mention.
-        if extract_iso_date(&lower).is_none() {
-            return None;
-        }
+        extract_iso_date(&lower)?;
     }
 
     if lower.contains("yesterday") {

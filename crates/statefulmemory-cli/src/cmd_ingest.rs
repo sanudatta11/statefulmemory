@@ -61,7 +61,7 @@ pub async fn dispatch(
         })
         .unwrap_or_else(|| DEFAULT_EXTS.iter().map(|s| (*s).to_string()).collect());
 
-    let max_bytes = a.max_bytes.unwrap_or(256 * 1024) as u64;
+    let max_bytes = a.max_bytes.unwrap_or(256 * 1024);
     let session_id = a
         .session
         .clone()

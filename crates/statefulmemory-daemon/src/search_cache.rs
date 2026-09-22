@@ -73,14 +73,9 @@ impl SearchCache {
 
     pub fn put(&self, key: String, ids: Vec<i64>) {
         let mut g = self.inner.lock();
-        if g.map.contains_key(&key) {
-            g.map.insert(
-                key,
-                Entry {
-                    ids,
-                    inserted: Instant::now(),
-                },
-            );
+        if let Some(entry) = g.map.get_mut(&key) {
+            entry.ids = ids;
+            entry.inserted = Instant::now();
             return;
         }
         while g.order.len() >= g.cap {

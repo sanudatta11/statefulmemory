@@ -169,6 +169,7 @@ fn obs_json(o: &p::Observation) -> serde_json::Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_text_brief(
     window_label: &str,
     max_tokens: i32,

@@ -377,7 +377,7 @@ fn remove_legacy_hook_markers(cwd: &Path, removed: &mut Vec<String>) {
             .find(LEGACY_END)
             .map(|i| i + LEGACY_END.len())
             .unwrap_or(content.len());
-        let new_content = format!("{}{}", &content[..before], &content[after..].trim_start());
+        let new_content = format!("{}{}", &content[..before], content[after..].trim_start());
         if fs::write(&path, new_content).is_ok() {
             removed.push(format!(
                 "removed legacy memlayer hook block from {}",

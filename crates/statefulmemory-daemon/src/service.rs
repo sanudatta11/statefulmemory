@@ -256,6 +256,7 @@ impl StatefulMemoryService {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn hybrid_search_tiered(
         &self,
         conn: &rusqlite::Connection,
