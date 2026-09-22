@@ -132,9 +132,9 @@ Do not quote smoke or tiny slices against published leaderboards.
 | **Recall@k** | 1.0000 |
 | **MRR** | 1.0000 |
 | **Multi-hop Accuracy** | n/a |
-| **Retrieval Latency (p50)** | 0.4 ms |
-| **Retrieval Latency (p95)** | 0.4 ms |
-| **End-to-End Latency (p50)** | 634.8 ms |
+| **Retrieval Latency (p50)** | 0.3 ms |
+| **Retrieval Latency (p95)** | 0.3 ms |
+| **End-to-End Latency (p50)** | 611.5 ms |
 | **Benchmark** | Locomo (bm25, w=0) |
 | **Eval Gate** | pass |
 <!-- scorecard-end -->
