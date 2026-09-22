@@ -76,8 +76,11 @@ shasum -a 256 public/skills/statefulmemory/SKILL.md   # sha256:<hex>
 ### Cloudflare (required — GitHub Pages cannot set these)
 
 Two checks cannot be satisfied by static files on GitHub Pages, because they
-depend on **response headers** and a non-default **Content-Type**. Apply at
-Cloudflare (zone `statefulmemory.dev`), either as Transform Rules or a Worker.
+depend on **response headers** and a non-default **Content-Type**. Applied at
+Cloudflare (zone `statefulmemory.dev`) as a zone `http_response_headers_transform`
+entrypoint ruleset — id `8d6860a081884a71a19db13b083caa7d` — with two rules
+(homepage `Link` headers, and `content-type: application/linkset+json` for
+`/.well-known/api-catalog`).
 
 1. **Link headers on `/`** (`checks.discoverability.linkHeaders`) — a Transform
    Rule → *Modify Response Header* → *Add* for request `starts with /`:
