@@ -98,7 +98,7 @@ for disclosed, stratified scorecards — see [LoCoMo eval](https://statefulmemor
 Do not quote smoke or tiny slices against published leaderboards.
 
 <!-- scorecard-start -->
-> **Auto-updated on every push to main.** Last run: `dev` (2026-09-13)
+> **Auto-updated on every push to main.** Last run: `dev` (2026-09-22)
 > **Note:** Smoke benchmark only — not full stratified LoCoMo eval.
 
 | Metric | Value |
@@ -107,9 +107,9 @@ Do not quote smoke or tiny slices against published leaderboards.
 | **Recall@k** | 1.0000 |
 | **MRR** | 1.0000 |
 | **Multi-hop Accuracy** | n/a |
-| **Retrieval Latency (p50)** | 0.4 ms |
-| **Retrieval Latency (p95)** | 0.4 ms |
-| **End-to-End Latency (p50)** | 590.3 ms |
+| **Retrieval Latency (p50)** | 0.3 ms |
+| **Retrieval Latency (p95)** | 0.3 ms |
+| **End-to-End Latency (p50)** | 511.9 ms |
 | **Benchmark** | Locomo (bm25, w=0) |
 | **Eval Gate** | pass |
 <!-- scorecard-end -->
