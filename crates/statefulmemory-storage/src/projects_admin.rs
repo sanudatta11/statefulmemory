@@ -517,17 +517,17 @@ mod tests {
 
     #[test]
     fn consolidate_orders_smaller_to_larger() {
-        let projects = vec![pc("statefulmemory", 3), pc("otherproj", 1)];
+        let projects = vec![pc("statefulmemory", 3), pc("statefulmemory-cli", 1)];
         let pairs = consolidate_pairs(&projects, 0.85);
         let p = pairs
             .iter()
             .find(|c| {
-                (c.from == "otherproj" && c.to == "statefulmemory")
-                    || (c.from == "statefulmemory" && c.to == "otherproj")
+                (c.from == "statefulmemory-cli" && c.to == "statefulmemory")
+                    || (c.from == "statefulmemory" && c.to == "statefulmemory-cli")
             })
             .expect("pair present");
-        // Smaller (otherproj, 1 obs) → from; larger (statefulmemory, 3) → to.
-        assert_eq!(p.from, "otherproj");
+        // Smaller (statefulmemory-cli, 1 obs) → from; larger (statefulmemory, 3) → to.
+        assert_eq!(p.from, "statefulmemory-cli");
         assert_eq!(p.to, "statefulmemory");
     }
 
