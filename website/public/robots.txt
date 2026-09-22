@@ -1,5 +1,7 @@
 # Allow indexing and AI search crawlers. Training-only crawlers may be
 # restricted by operators; search/citation bots are welcome.
+# Content Signals — https://contentsignals.org/
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
 
 User-agent: *
 Allow: /

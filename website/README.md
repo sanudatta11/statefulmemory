@@ -101,6 +101,29 @@ curl -sSI https://statefulmemory.dev/ | grep -i '^link:'
 curl -sSI https://statefulmemory.dev/.well-known/api-catalog | grep -i '^content-type:'
 ```
 
+### Markdown for Agents (`markdownNegotiation`)
+
+Also a Cloudflare zone feature, not repo config, and it needs a **Pro or
+Business** plan. Enable in the dashboard under **AI Crawl Control → Markdown
+for Agents → On**, or via API with a token that has **Zone Settings: Edit**:
+
+```bash
+curl -X PATCH "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/settings/content_converter" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  --data-raw '{"value":"on"}'
+```
+
+Verify:
+
+```bash
+curl -sSI -H 'Accept: text/markdown' https://statefulmemory.dev/ | grep -i '^content-type:'
+# → content-type: text/markdown; charset=utf-8
+```
+
+`Content-Signal` is declared in `public/robots.txt` and is preserved on the
+converted Markdown response.
+
 ### OAuth / OIDC discovery (`oauthDiscovery`, `oauthProtectedResource`)
 
 **Not published, intentionally.** statefulmemory has no hosted OAuth/OIDC
