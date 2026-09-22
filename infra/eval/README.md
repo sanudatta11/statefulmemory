@@ -1,7 +1,7 @@
-# memlayer AWS eval stack
+# statefulmemory AWS eval stack
 
 One-shot [CloudFormation](template.yaml) job: boot an EC2 instance, build
-memlayer from a git ref, vendor BGE-small, run the local eval suite, upload
+statefulmemory from a git ref, vendor BGE-small, run the local eval suite, upload
 scorecards to S3, then self-terminate.
 
 ```text
@@ -39,18 +39,18 @@ For Claude instead:
 ```
 
 4. LoCoMo is fetched by Make from SNAP (`locomo10.json`). Dataset terms are
-   research-use; see `crates/memlayer-eval/baselines/locomo.json`.
+   research-use; see `crates/statefulmemory-eval/baselines/locomo.json`.
 
 ## Deploy
 
 ```bash
 # Create the LLM secret once (example: Gemini)
 aws secretsmanager create-secret \
-  --name memlayer/eval/gemini \
+  --name statefulmemory/eval/gemini \
   --secret-string '{"GEMINI_API_KEY":"YOUR_KEY"}'
 
 SECRET_ARN=$(aws secretsmanager describe-secret \
-  --secret-id memlayer/eval/gemini \
+  --secret-id statefulmemory/eval/gemini \
   --query ARN --output text)
 
 # Resolve default VPC + a public subnet (example helper)
@@ -62,7 +62,7 @@ SUBNET_ID=$(aws ec2 describe-subnets \
 
 # Cheap smoke on AWS (5 LoCoMo queries after smoke+staleness)
 aws cloudformation deploy \
-  --stack-name memlayer-eval-smoke \
+  --stack-name statefulmemory-eval-smoke \
   --template-file infra/eval/template.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
@@ -75,7 +75,7 @@ aws cloudformation deploy \
 
 # Full suite (omit QueryLimit)
 aws cloudformation deploy \
-  --stack-name memlayer-eval-full \
+  --stack-name statefulmemory-eval-full \
   --template-file infra/eval/template.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
@@ -91,7 +91,7 @@ aws cloudformation deploy \
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `GitRepo` / `GitRef` | `sanudatta11/memlayer` / `main` | Source to build |
+| `GitRepo` / `GitRef` | `sanudatta11/statefulmemory` / `main` | Source to build |
 | `InstanceType` | `c7i.2xlarge` | CPU box (≥16 GB RAM recommended) |
 | `VpcId` / `SubnetId` | _(required)_ | Network with outbound internet |
 | `LlmProvider` | `gemini` | `gemini` or `claude` |
@@ -103,14 +103,14 @@ aws cloudformation deploy \
 
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name memlayer-eval-smoke \
+  --stack-name statefulmemory-eval-smoke \
   --query 'Stacks[0].Outputs'
 ```
 
 - **S3** — `s3://<ScorecardBucketName>/<stack>/<timestamp>/`
   - `locomo-smoke.json`, `staleness.json`, `staleness-baseline.json`, `locomo-full.json`
-  - `manifest.json`, `memlayer-eval.log`
-- **CloudWatch** — log group `/memlayer/eval/<stack>` (summary + log tail)
+  - `manifest.json`, `statefulmemory-eval.log`
+- **CloudWatch** — log group `/statefulmemory/eval/<stack>` (summary + log tail)
 - **EC2 console** — instance system log while running
 
 ## Local parity
@@ -127,11 +127,11 @@ LIMIT=50 make eval-locomo   # or full without LIMIT
 Pin OpenCode + deepseek-flash (same pair used for promotion slices):
 
 ```bash
-export MEMLAYER_LLM_PROVIDER=opencode
-export MEMLAYER_LLM_BIN=opencode
-export MEMLAYER_LLM_MODEL=opencode-go/deepseek-v4.1-flash
+export STATEFULMEMORY_LLM_PROVIDER=opencode
+export STATEFULMEMORY_LLM_BIN=opencode
+export STATEFULMEMORY_LLM_MODEL=opencode-go/deepseek-v4.1-flash
 # Parallel answer/judge (default 4; raise carefully for rate limits)
-export MEMLAYER_EVAL_CONCURRENCY=4
+export STATEFULMEMORY_EVAL_CONCURRENCY=4
 
 LIMIT=50 make eval-locomo
 # Optional: build facts.db first for fact-level hybrid
@@ -145,13 +145,13 @@ report `rerank_skipped_pct` when the ambiguity gate skips LLM rerank.
 
 For stronger answers with a cheap judge, leave the model pin on flash for
 judge/rerank roles and set a capable answer model via your agent CLI’s role
-mapping (memlayer answer uses the `capable`/`sonnet` role; judge uses `fast`).
+mapping (statefulmemory answer uses the `capable`/`sonnet` role; judge uses `fast`).
 
 Pin the same provider the AWS stack uses when several CLIs are on `PATH`:
 
 ```bash
-export MEMLAYER_LLM_PROVIDER=gemini   # or claude / opencode
-export MEMLAYER_LLM_BIN=gemini
+export STATEFULMEMORY_LLM_PROVIDER=gemini   # or claude / opencode
+export STATEFULMEMORY_LLM_BIN=gemini
 ```
 
 OpenCode on the CFN AMI is out of scope until there is a supported install

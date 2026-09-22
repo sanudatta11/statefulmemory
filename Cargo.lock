@@ -2220,298 +2220,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
-name = "memlayer-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm",
- "dirs 5.0.1",
- "fs2",
- "is-terminal",
- "memlayer-client",
- "memlayer-core",
- "memlayer-daemon",
- "memlayer-eval",
- "memlayer-extract",
- "memlayer-mcp",
- "memlayer-proto",
- "memlayer-storage",
- "memlayer-sync",
- "nix",
- "ratatui",
- "rcgen",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 1.0.69",
- "tiny_http",
- "tokio",
- "toml",
- "tonic",
- "tracing",
-]
-
-[[package]]
-name = "memlayer-client"
-version = "0.1.0"
-dependencies = [
- "hyper-util",
- "memlayer-proto",
- "rustls",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tonic",
- "tower 0.5.3",
- "tracing",
-]
-
-[[package]]
-name = "memlayer-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs 5.0.1",
- "once_cell",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "memlayer-daemon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "crossbeam-channel",
- "fs2",
- "getrandom 0.2.17",
- "hex",
- "memlayer-core",
- "memlayer-embed",
- "memlayer-extract",
- "memlayer-proto",
- "memlayer-retrieval",
- "memlayer-storage",
- "memlayer-sync",
- "nix",
- "once_cell",
- "parking_lot",
- "prost",
- "prost-types",
- "rcgen",
- "rusqlite",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tonic",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "memlayer-embed"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "hf-hub",
- "parking_lot",
- "rusqlite",
- "serde_json",
- "sha2",
- "tempfile",
- "tokenizers",
- "tracing",
- "zerocopy 0.7.35",
-]
-
-[[package]]
-name = "memlayer-eval"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "memlayer-core",
- "memlayer-embed",
- "memlayer-extract",
- "memlayer-retrieval",
- "memlayer-storage",
- "refinery",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "sqlite-vec",
- "tempfile",
- "thiserror 1.0.69",
- "tiktoken-rs",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "memlayer-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "memlayer-core",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "memlayer-mcp"
-version = "0.1.0"
-dependencies = [
- "memlayer-client",
- "memlayer-core",
- "memlayer-proto",
- "rmcp",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tonic",
- "tracing",
-]
-
-[[package]]
-name = "memlayer-proto"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-types",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "memlayer-retrieval"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "memlayer-core",
- "memlayer-extract",
- "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "memlayer-storage"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "crossbeam-channel",
- "hex",
- "memlayer-core",
- "memlayer-embed",
- "memlayer-extract",
- "nix",
- "once_cell",
- "parking_lot",
- "refinery",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "sqlite-vec",
- "strsim",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "memlayer-sync"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "chacha20poly1305",
- "chrono",
- "hex",
- "memlayer-core",
- "memlayer-storage",
- "rmp-serde",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "unicode-normalization",
- "uuid",
- "zeroize",
- "zstd",
-]
-
-[[package]]
-name = "memlayer-tests"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "chrono",
- "hex",
- "hyper-util",
- "memlayer-cli",
- "memlayer-client",
- "memlayer-core",
- "memlayer-proto",
- "nix",
- "predicates",
- "rcgen",
- "rusqlite",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tonic",
- "tower 0.4.13",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zstd",
-]
-
-[[package]]
 name = "memmap2"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4014,6 +3722,299 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "statefulmemory-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs 5.0.1",
+ "fs2",
+ "is-terminal",
+ "nix",
+ "ratatui",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "statefulmemory-client",
+ "statefulmemory-core",
+ "statefulmemory-daemon",
+ "statefulmemory-eval",
+ "statefulmemory-extract",
+ "statefulmemory-mcp",
+ "statefulmemory-proto",
+ "statefulmemory-storage",
+ "statefulmemory-sync",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tiny_http",
+ "tokio",
+ "toml",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "statefulmemory-client"
+version = "0.1.0"
+dependencies = [
+ "hyper-util",
+ "rustls",
+ "statefulmemory-proto",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tonic",
+ "tower 0.5.3",
+ "tracing",
+]
+
+[[package]]
+name = "statefulmemory-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs 5.0.1",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "statefulmemory-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "crossbeam-channel",
+ "fs2",
+ "getrandom 0.2.17",
+ "hex",
+ "nix",
+ "once_cell",
+ "parking_lot",
+ "prost",
+ "prost-types",
+ "rcgen",
+ "rusqlite",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "sha2",
+ "statefulmemory-core",
+ "statefulmemory-embed",
+ "statefulmemory-extract",
+ "statefulmemory-proto",
+ "statefulmemory-retrieval",
+ "statefulmemory-storage",
+ "statefulmemory-sync",
+ "subtle",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "statefulmemory-embed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "hf-hub",
+ "parking_lot",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokenizers",
+ "tracing",
+ "zerocopy 0.7.35",
+]
+
+[[package]]
+name = "statefulmemory-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlite-vec",
+ "statefulmemory-core",
+ "statefulmemory-embed",
+ "statefulmemory-extract",
+ "statefulmemory-retrieval",
+ "statefulmemory-storage",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tiktoken-rs",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "statefulmemory-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "statefulmemory-core",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "statefulmemory-mcp"
+version = "0.1.0"
+dependencies = [
+ "rmcp",
+ "serde",
+ "serde_json",
+ "statefulmemory-client",
+ "statefulmemory-core",
+ "statefulmemory-proto",
+ "thiserror 1.0.69",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "statefulmemory-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "statefulmemory-retrieval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "statefulmemory-core",
+ "statefulmemory-extract",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "statefulmemory-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "crossbeam-channel",
+ "hex",
+ "nix",
+ "once_cell",
+ "parking_lot",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlite-vec",
+ "statefulmemory-core",
+ "statefulmemory-embed",
+ "statefulmemory-extract",
+ "strsim",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "statefulmemory-sync"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "chacha20poly1305",
+ "chrono",
+ "hex",
+ "rmp-serde",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "statefulmemory-core",
+ "statefulmemory-storage",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "statefulmemory-tests"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "chrono",
+ "hex",
+ "hyper-util",
+ "nix",
+ "predicates",
+ "rcgen",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "statefulmemory-cli",
+ "statefulmemory-client",
+ "statefulmemory-core",
+ "statefulmemory-proto",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tower 0.4.13",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zstd",
+]
 
 [[package]]
 name = "static_assertions"

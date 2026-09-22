@@ -1,18 +1,18 @@
 ---
 title: Integrations
-description: Shipped memlayer install targets and MCP tools versus wishlist frameworks that are not available yet.
+description: Shipped statefulmemory install targets and MCP tools versus wishlist frameworks that are not available yet.
 ---
 
-Memlayer wires into coding agents via **`memlayer install`** (skills / rules /
-MCP registration) and the stdio MCP server **`memlayer mcp`**. Agents can also
+StatefulMemory wires into coding agents via **`statefulmemory install`** (skills / rules /
+MCP registration) and the stdio MCP server **`statefulmemory mcp`**. Agents can also
 shell out to the CLI. There is no Python or TypeScript Memory SDK today.
 
 ## Shipped: install targets (14)
 
 ```bash
-memlayer install                 # auto-detect
-memlayer install --agent cursor  # one agent (+ shared .agents when needed)
-memlayer install --all
+statefulmemory install                 # auto-detect
+statefulmemory install --agent cursor  # one agent (+ shared .agents when needed)
+statefulmemory install --all
 ```
 
 | Id | Agent |
@@ -36,7 +36,7 @@ Config paths and local-LLM env: [Wire into your agent](/docs/agents/).
 
 ## Shipped: MCP tools
 
-Launched as `memlayer mcp` (stdio):
+Launched as `statefulmemory mcp` (stdio):
 
 | Tool | Purpose |
 |---|---|
@@ -66,8 +66,8 @@ them as shipped:
 - Vercel AI SDK
 - Python / TypeScript Memory SDK
 
-**Memlayer Cloud** (managed SaaS) is a product offering alongside self-host —
+**StatefulMemory Cloud** (managed SaaS) is a product offering alongside self-host —
 see [Self-hosting and Cloud](/docs/self-hosting/). It is not an “integration”
 in the agent-framework sense.
 
-See [Why memlayer](/docs/why-memlayer/) for positioning.
+See [Why statefulmemory](/docs/why-statefulmemory/) for positioning.

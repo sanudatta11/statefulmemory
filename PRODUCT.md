@@ -8,23 +8,23 @@ web
 
 ## Users
 
-Primary visitors are developers and operators of AI coding agents (Claude Code, Cursor, Windsurf, and peers) who need durable project memory. They may prefer self-host (data on their machines) or Memlayer Cloud (managed SaaS). On memlayer.org they evaluate the offer and look up install / agent-wiring / CLI answers.
+Primary visitors are developers and operators of AI coding agents (Claude Code, Cursor, Windsurf, and peers) who need durable project memory. They may prefer self-host (data on their machines) or StatefulMemory Cloud (managed SaaS). On statefulmemory.dev they evaluate the offer and look up install / agent-wiring / CLI answers.
 
 ## Product Purpose
 
-memlayer is persistent memory infrastructure for coding agents: thin CLI + MCP → gRPC daemon → per-project SQLite (FTS5 + optional hybrid). It stores decisions, patterns, fixes, and notes and surfaces the right ones for the next session. **Self-host** (laptop UDS or team TCP+TLS) and **Memlayer Cloud** (managed SaaS) are both product offerings. Success for the public site means a visitor understands both paths in one viewport and can install or wire an agent without leaving the docs.
+statefulmemory is persistent memory infrastructure for coding agents: thin CLI + MCP → gRPC daemon → per-project SQLite (FTS5 + optional hybrid). It stores decisions, patterns, fixes, and notes and surfaces the right ones for the next session. **Self-host** (laptop UDS or team TCP+TLS) and **StatefulMemory Cloud** (managed SaaS) are both product offerings. Success for the public site means a visitor understands both paths in one viewport and can install or wire an agent without leaving the docs.
 
 ## Positioning
 
-Coding-agent memory with a real open-source self-host path **and** a Cloud SaaS path — not a bare vector DB, and not a Python Memory SDK yet (agents use MCP or shell-out). Mechanism on self-host: daemon + per-project SQLite (BM25 / optional hybrid). Cloud: same client surfaces, managed hosting. Engineering comparison belongs on [Why memlayer](https://memlayer.org/docs/why-memlayer/); product UI/CLI help stays peer-name free.
+Coding-agent memory with a real open-source self-host path **and** a Cloud SaaS path — not a bare vector DB, and not a Python Memory SDK yet (agents use MCP or shell-out). Mechanism on self-host: daemon + per-project SQLite (BM25 / optional hybrid). Cloud: same client surfaces, managed hosting. Engineering comparison belongs on [Why statefulmemory](https://statefulmemory.dev/docs/why-statefulmemory/); product UI/CLI help stays peer-name free.
 
 ## Operating Context
 
-Used beside coding agents in git repos on macOS/Linux (WSL OK; Windows out of scope for CLI v1). Rituals: install binary, `memlayer install` for agent MCP/skills, `obs save` / `obs search` / `obs context`. Default listen is UDS; team TCP+TLS for self-hosted teams; Memlayer Cloud for managed SaaS. Docs live at https://memlayer.org; source at github.com/sanudatta11/memlayer.
+Used beside coding agents in git repos on macOS/Linux (WSL OK; Windows out of scope for CLI v1). Rituals: install binary, `statefulmemory install` for agent MCP/skills, `obs save` / `obs search` / `obs context`. Default listen is UDS; team TCP+TLS for self-hosted teams; StatefulMemory Cloud for managed SaaS. Docs live at https://statefulmemory.dev; source at github.com/sanudatta11/statefulmemory.
 
 ## Capabilities and Constraints
 
-- Public surface is an Astro Starlight docs site in `website/`, deployed to GitHub Pages with custom domain memlayer.org.
+- Public surface is an Astro Starlight docs site in `website/`, deployed to GitHub Pages with custom domain statefulmemory.dev.
 - Product is OSS (MIT OR Apache-2.0) for the self-host stack; Windows out of scope for the CLI v1.
 - Site v1: no analytics; text wordmark (no custom logo mark yet); unversioned docs tracking main.
 - Docs content tracks the README thesis; internal PRD stays out of public nav; public roadmap pointer is `docs/ROADMAP.md`.
@@ -32,7 +32,7 @@ Used beside coding agents in git repos on macOS/Linux (WSL OK; Windows out of sc
 
 ## Brand Commitments
 
-- Name: **memlayer** (lowercase wordmark).
+- Name: **statefulmemory** (lowercase wordmark).
 - Voice: direct, technical, concrete — CLI/commands over hype.
 - Binding references: coding-agent memory; **self-host + Cloud SaaS**; agent integrations in README and Integrations docs.
 - User-approved design defaults: OSS framework-style docs (not heavy purple SaaS chrome); terminal/local-tool visual direction preferred for the self-host story.

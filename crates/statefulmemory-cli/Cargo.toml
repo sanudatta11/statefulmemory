@@ -1,0 +1,61 @@
+[package]
+name = "statefulmemory-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "statefulmemory CLI: clap dispatch, output formatting, project detection, daemon auto-spawn."
+
+[[bin]]
+name = "statefulmemory"
+path = "src/main.rs"
+
+[[bin]]
+name = "smem"
+path = "src/main.rs"
+
+[lib]
+name = "statefulmemory_cli"
+path = "src/lib.rs"
+
+[dependencies]
+statefulmemory-core = { path = "../statefulmemory-core" }
+statefulmemory-proto = { path = "../statefulmemory-proto" }
+statefulmemory-client = { path = "../statefulmemory-client" }
+statefulmemory-daemon = { path = "../statefulmemory-daemon" }
+statefulmemory-mcp = { path = "../statefulmemory-mcp" }
+statefulmemory-eval = { path = "../statefulmemory-eval" }
+statefulmemory-extract = { path = "../statefulmemory-extract" }
+statefulmemory-storage = { path = "../statefulmemory-storage" }
+statefulmemory-sync = { path = "../statefulmemory-sync" }
+
+tiny_http.workspace = true
+
+tempfile = "3"
+clap.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+
+is-terminal.workspace = true
+fs2.workspace = true
+nix.workspace = true
+rcgen.workspace = true
+
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,22 +1,22 @@
-# memlayer Retrieval Roadmap
+# statefulmemory Retrieval Roadmap
 
-> Promotion plan for the three eval-side crates (`memlayer-embed`,
-> `memlayer-extract`, `memlayer-eval`) from scaffolding into the
+> Promotion plan for the three eval-side crates (`statefulmemory-embed`,
+> `statefulmemory-extract`, `statefulmemory-eval`) from scaffolding into the
 > production daemon. Companion to [ROADMAP.md](ROADMAP.md), which covers
 > the broader v1.0 milestone.
 
 ## Status
 
-- ✅ **Section 1 (`memlayer-embed`)**: hybrid retrieval landed in
+- ✅ **Section 1 (`statefulmemory-embed`)**: hybrid retrieval landed in
   `.catalyst/specs/retrieval-promotion/` (2026-06-18). Daemon now embeds
   saves async via a worker pool, exposes `obs search --mode hybrid` and
   `obs context --mode hybrid`, V4 migration adds `observations_vec`
   (vec0) + `observation_embedding_meta`.
-- ✅ **Section 2 (`memlayer-extract`)**: same spec, opt-in via
-  `memlayer config set extract.enabled true`. V5 migration adds the
+- ✅ **Section 2 (`statefulmemory-extract`)**: same spec, opt-in via
+  `statefulmemory config set extract.enabled true`. V5 migration adds the
   `facts` table + `facts_fts`; extract worker shells out to Haiku or
   Sonnet (selectable per-project), `obs facts <id>` returns the facts.
-- ⏳ **Section 3 (`memlayer-eval`)**: CI scorecard wiring is the only
+- ⏳ **Section 3 (`statefulmemory-eval`)**: CI scorecard wiring is the only
   piece still unshipped. Tracked as the `eval-promotion` spec.
 
 The three sections below describe each crate's contribution, costs, and
@@ -32,11 +32,11 @@ costs, and the order in which they should land.
 The single most important question answered here: **what do we get from
 fully integrating these three crates, and in what order?**
 
-## 1. `memlayer-embed` — dense semantic retrieval
+## 1. `statefulmemory-embed` — dense semantic retrieval
 
 **What it is today:** `BgeSmallEmbedder` (BGE-small-en-v1.5, 384-dim,
 candle-rs CPU inference) + `EmbeddingCache` (SQLite, sha256-keyed BLOB
-storage) + int8 `quantize` via `embed.quantize` / `memlayer reindex`.
+storage) + int8 `quantize` via `embed.quantize` / `statefulmemory reindex`.
 
 **What full production integration adds:**
 
@@ -44,7 +44,7 @@ storage) + int8 `quantize` via `embed.quantize` / `memlayer reindex`.
 |---|---|---|
 | Paraphrase recall | Cosine similarity over BGE-small finds "JWT validation" when query is "auth token check" | +8-12 pts on LoCoMo open-domain category |
 | Better supersession candidate detection | V3's BM25 picks lexical neighbor; embedding picks semantic neighbor — fewer false negatives where prior obs uses different vocabulary | Multi-hop / adversarial categories: +1-2 pts |
-| `memlayer obs similar <id>` | Cosine top-K against any observation as anchor | New UX, no benchmark category |
+| `statefulmemory obs similar <id>` | Cosine top-K against any observation as anchor | New UX, no benchmark category |
 | Cross-language fuzz match | "auth", "authentification", "authn" all collide in embedding space | Real-world session usability lift |
 | Hybrid + RRF default | RRF(BM25 top-30, dense top-30) — production default via `search.mode = "hybrid"` | Composite +10-15 pts on LoCoMo overall |
 
@@ -55,7 +55,7 @@ storage) + int8 `quantize` via `embed.quantize` / `memlayer reindex`.
 | Save latency | +20-50ms per save (CPU BGE-small) | Async embedding worker thread; save returns before embed done; vector backfilled on next read |
 | Storage | +1.5 KB per observation (384 × f32) | int8 quantize halves to 768 B (4× with 768-dim if upgrading to BGE-base) |
 | Cold-start | First save needs HuggingFace model download (~120 MB) | Bundle model in install package OR lazy fetch on first save with progress bar |
-| sqlite-vec dep | Loadable extension, +~600 KB binary | Statically link via `rusqlite` features; already proven in `memlayer-eval` |
+| sqlite-vec dep | Loadable extension, +~600 KB binary | Statically link via `rusqlite` features; already proven in `statefulmemory-eval` |
 | 10M-scale memory | ~15 GB embeddings raw, ~3.75 GB int8 | Quantize promotion (Spec 5 in primary roadmap) |
 
 **Schema impact (V4 migration):**
@@ -76,10 +76,10 @@ CREATE TABLE observation_embedding_meta (
 
 **Backfill strategy:** on daemon startup, if `observations_vec` row count
 < `observations` non-deleted count, schedule a background worker thread
-to embed missing rows. Bounded by `MEMLAYER_EMBED_WORKERS` (default 2)
+to embed missing rows. Bounded by `STATEFULMEMORY_EMBED_WORKERS` (default 2)
 so it doesn't compete with foreground saves.
 
-## 2. `memlayer-extract` — fact-level retrieval
+## 2. `statefulmemory-extract` — fact-level retrieval
 
 **What it is today:** `HaikuExtractor` shells out to Claude Haiku per turn
 → returns `Fact { subject, predicate, object, temporal, salience,
@@ -89,7 +89,7 @@ model output.
 
 **What full production integration adds:**
 
-This is the **single most powerful token-reduction lever** memlayer can
+This is the **single most powerful token-reduction lever** statefulmemory can
 pull. Today, retrieving "what's John's deadline" returns the full 800-char
 observation that *mentions* the deadline. With facts, retrieval returns:
 
@@ -112,9 +112,9 @@ observation that *mentions* the deadline. With facts, retrieval returns:
 | Cost | Magnitude | Mitigation |
 |---|---|---|
 | Per-save LLM call | ~200-500 ms + ~$0.0001 (Haiku) | Async; `obs save` returns before extract; facts backfilled |
-| Cost runaway at scale | $0.0001 × 10M obs = $1000 | Opt-in via `MEMLAYER_EXTRACT=1` env var; default off |
-| Network dependency | Daemon needs Anthropic API access | Cache hits avoid network; `claude` CLI fallback (already supported in `memlayer-extract`) |
-| Extraction quality | Haiku occasionally hallucinates facts | `evidence_obs_id` lets users audit; `MEMLAYER_AUDIT_FULL=1` logs the extraction chain |
+| Cost runaway at scale | $0.0001 × 10M obs = $1000 | Opt-in via `STATEFULMEMORY_EXTRACT=1` env var; default off |
+| Network dependency | Daemon needs Anthropic API access | Cache hits avoid network; `claude` CLI fallback (already supported in `statefulmemory-extract`) |
+| Extraction quality | Haiku occasionally hallucinates facts | `evidence_obs_id` lets users audit; `STATEFULMEMORY_AUDIT_FULL=1` logs the extraction chain |
 
 **Schema impact (V5 migration):**
 
@@ -141,7 +141,7 @@ CREATE VIRTUAL TABLE facts_fts USING fts5(
 observation cascades to its facts. This avoids a parallel storage system
 — observations remain the source of truth, facts are a *projection*.
 
-## 3. `memlayer-eval` — continuous benchmarking
+## 3. `statefulmemory-eval` — continuous benchmarking
 
 **What it is today:** standalone benchmark harness with
 `BenchmarkKind::{Locomo, Longmemeval, Beam1m, Beam10m}` + `RunReport` +
@@ -169,7 +169,7 @@ the full retrieval pipeline (`retrieve.rs`, `retrieve_hybrid.rs`,
 
 **Production wiring:**
 
-1. New `memlayer eval` CLI verb (or standalone binary `memlayer-eval`) —
+1. New `statefulmemory eval` CLI verb (or standalone binary `statefulmemory-eval`) —
    runs a benchmark and prints / writes JSON.
 2. CI job (`.github/workflows/eval.yml`) — runs PR-level subset on every
    PR; writes scorecard delta as a PR comment.
@@ -183,17 +183,17 @@ mode against a copy of the project DB.
 
 The three crates are not independent. The right order:
 
-1. **`memlayer-eval` production wiring first.** Without a scorecard, the
+1. **`statefulmemory-eval` production wiring first.** Without a scorecard, the
    embed and extract promotions can't be measured. ~1 week. No daemon
    changes needed — eval runs standalone, just adds CI + scorecard
    publishing.
 
-2. **`memlayer-embed` second.** Wire the embedder into the daemon's save
+2. **`statefulmemory-embed` second.** Wire the embedder into the daemon's save
    path (async background) + add `--mode hybrid` to search/context.
-   Validate via `memlayer-eval` that LoCoMo lifts +10-15 pts. ~2-3 weeks.
+   Validate via `statefulmemory-eval` that LoCoMo lifts +10-15 pts. ~2-3 weeks.
 
-3. **`memlayer-extract` third.** Add the `facts` table + opt-in
-   extraction worker (`MEMLAYER_EXTRACT=1`). Validate via `memlayer-eval`
+3. **`statefulmemory-extract` third.** Add the `facts` table + opt-in
+   extraction worker (`STATEFULMEMORY_EXTRACT=1`). Validate via `statefulmemory-eval`
    that LoCoMo temporal/multi-hop categories lift. ~2 weeks.
 
 This ordering means each promotion is *measurable* at the moment it
@@ -208,8 +208,8 @@ hybrid mode.
 |---|---|---|---|---|
 | Today (BM25 only) | 55-62% | 60-65% | not measured | ~2-3× |
 | + eval scorecard published | 55-62% (no change — measurement only) | 60-65% | 50-55% | ~2-3× |
-| + memlayer-embed in daemon | 70-77% | 80-85% | 58-62% | ~2-3× (retrieval is not the token driver here — content is) |
-| + memlayer-extract (facts) | 73-80% | 84-89% | 60-65% | **8-15×** ← fact-level retrieval is the token-reduction lever |
+| + statefulmemory-embed in daemon | 70-77% | 80-85% | 58-62% | ~2-3× (retrieval is not the token driver here — content is) |
+| + statefulmemory-extract (facts) | 73-80% | 84-89% | 60-65% | **8-15×** ← fact-level retrieval is the token-reduction lever |
 | + Haiku rerank (opt-in) | 78-85% | 88-92% | 62-65% | 8-15× |
 | Eval-tuned ceiling (per spec targets) | 91.6% | 94.8% | 64.1% / 48.6% | n/a |
 
@@ -225,13 +225,13 @@ full-rerank, full-cache, full-extract path on every query.
   writes new in batches. Costs CPU but no data loss.
 - **Fact extraction quality.** Haiku occasionally hallucinates facts that
   don't appear in the source text. Plan: every fact carries
-  `evidence_obs_id`; consumers can verify; `MEMLAYER_AUDIT_FULL=1` logs
+  `evidence_obs_id`; consumers can verify; `STATEFULMEMORY_AUDIT_FULL=1` logs
   the prompt+response for spot-checks.
 - **Eval gameability.** A change can lift LoCoMo while regressing real
   production behavior (e.g. overfitting to LoCoMo's question
   distribution). Plan: also run LongMemEval + a held-out internal eval
   set on every PR to catch this.
-- **Cost runaway with extract.** If a user has `MEMLAYER_EXTRACT=1` and
+- **Cost runaway with extract.** If a user has `STATEFULMEMORY_EXTRACT=1` and
   saves 10K observations, that's $1 of Haiku. Plan: per-day budget cap
   env var, bail with a stderr warning.
 
@@ -249,9 +249,9 @@ full-rerank, full-cache, full-extract path on every query.
 
 ## 8. References
 
-- `crates/memlayer-embed/` — `BgeSmallEmbedder`, `EmbeddingCache`, `quantize`
-- `crates/memlayer-extract/` — `HaikuExtractor`, `Fact`, `ExtractionCache`
-- `crates/memlayer-eval/` — `BenchmarkKind`, `retrieve_hybrid`, `rrf`,
+- `crates/statefulmemory-embed/` — `BgeSmallEmbedder`, `EmbeddingCache`, `quantize`
+- `crates/statefulmemory-extract/` — `HaikuExtractor`, `Fact`, `ExtractionCache`
+- `crates/statefulmemory-eval/` — `BenchmarkKind`, `retrieve_hybrid`, `rrf`,
   `rerank`
 - `.catalyst/specs/retrieval-upgrade-v1/spec.md` — eval-side hybrid
   retrieval design (already approved, partially implemented)

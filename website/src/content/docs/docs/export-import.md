@@ -3,7 +3,7 @@ title: Portability (export/import)
 description: Own your memory — `.mem` archives now carry the entity graph, merge with dedupe semantics, and round-trip cleanly.
 ---
 
-"Own your memory system" starts with *can you take it elsewhere?* memlayer
+"Own your memory system" starts with *can you take it elsewhere?* statefulmemory
 archives are portable `.mem` files: single-file, checksummed, optionally
 seed-encrypted, and since v2 they carry the **entity graph** along with
 observations, facts, relations, sessions, and prompts.
@@ -14,7 +14,7 @@ observations, facts, relations, sessions, and prompts.
 
 ## Format
 
-- `MLYR` magic + MessagePack + **zstd level 19**.
+- `SMEM` magic + MessagePack + **zstd level 19**.
 - Default XOR obfuscation; optional **Argon2id + XChaCha20-Poly1305** seed
   encryption (`--seed-file` / `--seed-phrase`).
 - Deterministic ordering — an archive diff is readable in `git diff`.
@@ -22,11 +22,11 @@ observations, facts, relations, sessions, and prompts.
 ## Export / import
 
 ```bash
-memlayer mem export --out backup.mem
-memlayer mem export --out backup.mem --seed-phrase "…"     # encrypted
+statefulmemory mem export --out backup.mem
+statefulmemory mem export --out backup.mem --seed-phrase "…"     # encrypted
 
-memlayer mem import backup.mem                              # merge (default)
-memlayer mem import backup.mem --mode replace               # wipe + insert
+statefulmemory mem import backup.mem                              # merge (default)
+statefulmemory mem import backup.mem --mode replace               # wipe + insert
 ```
 
 `.mem` v2 includes `entities`, `entity_mentions`, and `entity_edges`; imports
@@ -37,7 +37,7 @@ decode — the graph fields are `serde`-optional.
 
 ## No lock-in
 
-- `memlayer mem export` is your **data-removal / portability story** for
+- `statefulmemory mem export` is your **data-removal / portability story** for
   compliance questionnaires.
 - `graph rebuild` re-derives entities/edges from anchors after an import if a
   graph payload is absent.

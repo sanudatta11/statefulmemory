@@ -1,0 +1,37 @@
+[package]
+name = "statefulmemory-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "End-to-end integration tests against the running statefulmemory daemon."
+
+[dependencies]
+statefulmemory-core = { path = "../statefulmemory-core" }
+statefulmemory-proto = { path = "../statefulmemory-proto" }
+# Depend on statefulmemory-cli so cargo builds the unified `statefulmemory` binary
+# before integration tests. (CARGO_BIN_EXE_* only covers same-package
+# bins; tests locate the artifact via `locate_binary()`.)
+statefulmemory-cli = { path = "../statefulmemory-cli" }
+# statefulmemory-client is needed for TS-15: the CLI binary only talks UDS in v1,
+# so we drive the daemon's TCP+TLS path directly through the client crate.
+statefulmemory-client = { path = "../statefulmemory-client" }
+tokio.workspace = true
+tonic.workspace = true
+tower = "0.4"
+hyper-util = "0.1"
+tempfile = "3"
+nix.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+assert_cmd = "2"
+predicates = "3"
+serde_json.workspace = true
+rcgen.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true
+zstd = "0.13"

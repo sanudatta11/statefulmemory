@@ -1,6 +1,6 @@
 # Spec: Graph Briefing Layer (Agent-Optimized Entity Graph)
 
-Status: in-progress · Target: memlayer v2 Phase 1 · Schema head: V10 → V11 · CI gate: `eval.yml` multi-hop threshold
+Status: in-progress · Target: statefulmemory v2 Phase 1 · Schema head: V10 → V11 · CI gate: `eval.yml` multi-hop threshold
 
 Design basis: cue-tag-content heterogeneous graph (MRAgent, ICML 2026), typed causal
 edges, budgeted subgraph assembly inside `obs context` (token-budget share), provenance
@@ -23,9 +23,9 @@ gates pass.
 - No Neo4j / embedded graph DB / tree-sitter. Pure SQLite.
 - No LLM entity extraction (tier-2 judge pass explicitly deferred).
 - Co-occurrence edges off by default (noise control).
-- Only ONE new agent-facing verb (`memlayer graph query`) + ONE MCP tool
+- Only ONE new agent-facing verb (`statefulmemory graph query`) + ONE MCP tool
   (`memory_graph_query`). Briefing enrichment flows through existing
-  `memlayer obs context` / `memory_context` untouched signatures.
+  `statefulmemory obs context` / `memory_context` untouched signatures.
 - No second write connection; all writes ride the existing `WriteRequest` thread.
 
 ## Schema — migrations/V11__graph_briefing.sql
@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_edges_to   ON entity_edges(to_entity);
 Backfill: one entity row per existing `observation_anchors` entry
 (`source='anchor'`, kind `file` for path part / `symbol` for symbol part), mention
 rows wired in the same pass. Resumable: watermark in existing meta/registry
-mechanism; `memlayer graph rebuild --full` re-runs idempotently
+mechanism; `statefulmemory graph rebuild --full` re-runs idempotently
 (`INSERT OR UPDATE`), no destructive rewrites.
 
 Ownership rule: `entity_edges` owns entity-entity links only.
@@ -74,13 +74,13 @@ relation's observation; relations are never duplicated into edges.
 
 ## Components (crate-by-crate)
 
-### memlayer-core — config + types
+### statefulmemory-core — config + types
 - `GraphConfig { enabled: bool (false), hops: u8 = 2, boost: f64 = 0.15,
   edge_types: Vec<String> = ["mentions","fixes","contradicts"],
   budget_pct: f64 = 0.4, degree_cap: usize = 256 }` under `[graph]`.
 - `EntityKind`, `EdgeRelation`, `GraphQueryOutcome` types shared by all crates.
 
-### memlayer-extract — heuristic resolver (tier 1 only)
+### statefulmemory-extract — heuristic resolver (tier 1 only)
 - `resolve.rs::extract_entities(title, content, anchors) -> Vec<RawEntity>`
   - `path::symbol` anchors → kind symbol/file (zero-cost: anchor rows already exist)
   - backtick tokens in title/content → concept/person/agent via keyword lexicon
@@ -89,7 +89,7 @@ relation's observation; relations are never duplicated into edges.
   - no LLM pass; heuristic miss = absent cue (acceptable degradation)
 - Pure functions, no DB access; daemon wires into write path.
 
-### memlayer-storage — migrations + query helpers
+### statefulmemory-storage — migrations + query helpers
 - V11 file (above); refinery picks it up automatically.
 - `graph.rs`: `entity_lookup(conn, norm_prefix)`, `neighbors(conn, entity_id,
   hops, edge_types, degree_cap)` (recursive CTE, hops ≤ 2 hard cap),
@@ -97,15 +97,15 @@ relation's observation; relations are never duplicated into edges.
   `backfill_from_anchors(conn)`.
 - Read helpers run on read connections only.
 
-### memlayer-retrieval — fusion hook
+### statefulmemory-retrieval — fusion hook
 - `graph.rs::graph_rank_list(...) -> Vec<(id, score)>`: score = Σ
   `edge_weight × type_boost × decay(hop_distance)`; capped result set (64).
-- Query entity extraction reuses `memlayer-extract::resolve` normalizer.
+- Query entity extraction reuses `statefulmemory-extract::resolve` normalizer.
 - Hybrid path (daemon `service.rs::hybrid_search`): third rank list into the
   existing `facts_fuse::fuse_observation_lists_scored` call — no new RRF.
   Post-fusion, graph-lift-only hits get `boost` multiplier.
 
-### memlayer-daemon — write path + context assembly
+### statefulmemory-daemon — write path + context assembly
 - New `WriteRequest::IndexGraph { observation, anchors }` handled inside the
   existing `process_batch` match; also enqueued post-verify from existing flows.
 - `obs context` assembly: after hybrid retrieval, budgeted expansion:
@@ -117,18 +117,18 @@ relation's observation; relations are never duplicated into edges.
     touching withdrawn observations drop from assembly
 - Latency budget: expansion allowed only if hybrid path used ≤ 30 ms of p95 budget.
 
-### memlayer-proto — additive RPCs
+### statefulmemory-proto — additive RPCs
 - `ListEntities(prefix)`, `GetEntity(id)`, `GraphQuery(entity, relation_filter?,
   hops?)` + messages `Entity`, `GraphQueryResult`. No removals/renames;
   server trait impl in `service.rs`, new MCP tool calls `GraphQuery`.
 
-### memlayer-mcp
+### statefulmemory-mcp
 - One new tool `memory_graph_query` (args: entity string, hops ≤ 2,
   relation filter). All other tool signatures unchanged.
 
-### memlayer-cli
-- `memlayer graph query <entity> [--hops N] [--relation R]`,
-  `memlayer graph rebuild --full`, `memlayer graph stats`.
+### statefulmemory-cli
+- `statefulmemory graph query <entity> [--hops N] [--relation R]`,
+  `statefulmemory graph rebuild --full`, `statefulmemory graph stats`.
 
 ## Acceptance
 

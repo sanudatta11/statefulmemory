@@ -28,8 +28,8 @@ Allow: /
 User-agent: Applebot-Extended
 Allow: /
 
-Sitemap: https://memlayer.org/sitemap-index.xml
+Sitemap: https://statefulmemory.dev/sitemap-index.xml
 
 # LLM context files (https://llmstxt.org/)
-# https://memlayer.org/llms.txt
-# https://memlayer.org/llms-full.txt
+# https://statefulmemory.dev/llms.txt
+# https://statefulmemory.dev/llms-full.txt

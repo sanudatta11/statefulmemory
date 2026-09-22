@@ -34,10 +34,10 @@ entities — files, symbols, concepts, people, agents — and typed edges
 ## CLI
 
 ```bash
-memlayer graph query <entity> --hops 2          # traverse the neighborhood
-memlayer graph query <entity> --relation fixes  # narrow to a relation
-memlayer graph rebuild                          # backfill entities from anchors
-memlayer graph stats
+statefulmemory graph query <entity> --hops 2          # traverse the neighborhood
+statefulmemory graph query <entity> --relation fixes  # narrow to a relation
+statefulmemory graph rebuild                          # backfill entities from anchors
+statefulmemory graph stats
 ```
 
 ## Config
@@ -53,8 +53,8 @@ degree_cap = 256     # skip traversal into hub entities
 max_query_entities = 3
 ```
 
-Environment overrides: `MEMLAYER_GRAPH_ENABLED`, `MEMLAYER_GRAPH_HOPS`,
-`MEMLAYER_GRAPH_BOOST`.
+Environment overrides: `STATEFULMEMORY_GRAPH_ENABLED`, `STATEFULMEMORY_GRAPH_HOPS`,
+`STATEFULMEMORY_GRAPH_BOOST`.
 
 ## Rationale (SQLite, not a graph database)
 

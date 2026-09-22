@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  One-shot memlayer eval on EC2: clone git ref, vendor BGE, run
+  One-shot statefulmemory eval on EC2: clone git ref, vendor BGE, run
   eval-locomo-smoke → eval-staleness → eval-locomo, upload scorecards to S3,
   optionally self-terminate. Default LLM path is Gemini CLI + Secrets Manager.
 
@@ -33,7 +33,7 @@ Metadata:
 Parameters:
   GitRepo:
     Type: String
-    Default: https://github.com/sanudatta11/memlayer.git
+    Default: https://github.com/sanudatta11/statefulmemory.git
     Description: Git repository URL to clone on the instance.
 
   GitRef:
@@ -68,7 +68,7 @@ Parameters:
     AllowedValues:
       - gemini
       - claude
-    Description: Agent CLI to install and pin via MEMLAYER_LLM_PROVIDER / MEMLAYER_LLM_BIN.
+    Description: Agent CLI to install and pin via STATEFULMEMORY_LLM_PROVIDER / STATEFULMEMORY_LLM_BIN.
 
   QueryLimit:
     Type: String
@@ -115,18 +115,18 @@ Resources:
         Status: Enabled
       Tags:
         - Key: Purpose
-          Value: memlayer-eval
+          Value: statefulmemory-eval
 
   EvalLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /memlayer/eval/${AWS::StackName}
+      LogGroupName: !Sub /statefulmemory/eval/${AWS::StackName}
       RetentionInDays: 30
 
   EvalSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: memlayer eval egress + optional SSH
+      GroupDescription: statefulmemory eval egress + optional SSH
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         - IpProtocol: "-1"
@@ -155,7 +155,7 @@ Resources:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: MemlayerEvalRuntime
+        - PolicyName: StatefulMemoryEvalRuntime
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -218,7 +218,7 @@ Resources:
         - Key: Name
           Value: !Sub ${AWS::StackName}-eval
         - Key: Purpose
-          Value: memlayer-eval
+          Value: statefulmemory-eval
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
@@ -238,8 +238,8 @@ Resources:
           export INSTANCE_TYPE=${InstanceType}
           export TERMINATE_ON_COMPLETE=${TerminateOnComplete}
           export QUERY_LIMIT='${QueryLimit}'
-          export LOG_FILE=/var/log/memlayer-eval.log
-          BOOT=/tmp/memlayer-bootstrap
+          export LOG_FILE=/var/log/statefulmemory-eval.log
+          BOOT=/tmp/statefulmemory-bootstrap
           rm -rf "$BOOT"
           mkdir -p "$BOOT"
           if git ls-remote --heads "$GIT_REPO" "$GIT_REF" | grep -q .; then

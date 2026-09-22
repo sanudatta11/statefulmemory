@@ -1,25 +1,25 @@
-# Contributing to memlayer
+# Contributing to statefulmemory
 
-Thanks for helping improve memlayer. This guide covers the repository layout
+Thanks for helping improve statefulmemory. This guide covers the repository layout
 and how to build and test locally.
 
 ## Repository layout
 
 ```
-memlayer/
-├── proto/memlayer.proto          # gRPC wire API
+statefulmemory/
+├── proto/statefulmemory.proto          # gRPC wire API
 ├── crates/
-│   ├── memlayer-core/            # config, paths, error types
-│   ├── memlayer-storage/         # SQLite + FTS5 + vec storage + write threads
-│   ├── memlayer-embed/           # BGE-small embedder (candle-rs)
-│   ├── memlayer-extract/         # Claude CLI fact extractor
-│   ├── memlayer-retrieval/       # RRF, reranker, hybrid types
-│   ├── memlayer-daemon/          # gRPC service + worker pools
-│   ├── memlayer-client/          # channel builders (UDS + TCP)
-│   ├── memlayer-cli/             # `memlayer` binary
-│   ├── memlayer-sync/            # export / import
-│   ├── memlayer-eval/            # benchmark harness (LoCoMo / LongMemEval)
-│   └── memlayer-tests/           # integration tests
+│   ├── statefulmemory-core/            # config, paths, error types
+│   ├── statefulmemory-storage/         # SQLite + FTS5 + vec storage + write threads
+│   ├── statefulmemory-embed/           # BGE-small embedder (candle-rs)
+│   ├── statefulmemory-extract/         # Claude CLI fact extractor
+│   ├── statefulmemory-retrieval/       # RRF, reranker, hybrid types
+│   ├── statefulmemory-daemon/          # gRPC service + worker pools
+│   ├── statefulmemory-client/          # channel builders (UDS + TCP)
+│   ├── statefulmemory-cli/             # `statefulmemory` binary
+│   ├── statefulmemory-sync/            # export / import
+│   ├── statefulmemory-eval/            # benchmark harness (LoCoMo / LongMemEval)
+│   └── statefulmemory-tests/           # integration tests
 └── docs/PRD.md                   # authoritative product spec
 ```
 
@@ -28,8 +28,8 @@ memlayer/
 ```bash
 cargo build --workspace --tests   # compile + test code
 cargo test --workspace --lib      # unit tests (no live daemon)
-cargo test -p memlayer-tests      # integration tests (spawns a temp daemon)
-RUST_LOG=memlayer=debug cargo run -p memlayer-cli -- daemon start --foreground
+cargo test -p statefulmemory-tests      # integration tests (spawns a temp daemon)
+RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli -- daemon start --foreground
 ```
 
 CI runs the same build + unit + integration path on every push/PR to `main`

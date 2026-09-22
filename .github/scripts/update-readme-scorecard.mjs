@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Update the README scorecard section from a scorecard.json produced by
-// `memlayer eval --smoke --save-scorecard`.
+// `statefulmemory eval --smoke --save-scorecard`.
 //
 // Usage: node update-readme-scorecard.mjs <scorecard.json> [README.md]
 //

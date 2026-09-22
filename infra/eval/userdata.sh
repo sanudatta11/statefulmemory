@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# memlayer AWS eval one-shot job.
+# statefulmemory AWS eval one-shot job.
 # Invoked from CloudFormation UserData with env vars set (see template.yaml).
 set -euo pipefail
 
-LOG_FILE="${LOG_FILE:-/var/log/memlayer-eval.log}"
+LOG_FILE="${LOG_FILE:-/var/log/statefulmemory-eval.log}"
 mkdir -p "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "=== memlayer eval userdata start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+echo "=== statefulmemory eval userdata start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
 : "${SCORECARD_BUCKET:?SCORECARD_BUCKET required}"
 : "${STACK_NAME:?STACK_NAME required}"
@@ -25,7 +25,7 @@ echo "=== memlayer eval userdata start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 export DEBIAN_FRONTEND=noninteractive
 START_EPOCH=$(date +%s)
 RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
-WORK_DIR=/opt/memlayer
+WORK_DIR=/opt/statefulmemory
 SCORE_PREFIX="${STACK_NAME}/${RUN_TS}"
 SUITE_STATUS=failed
 GIT_SHA=unknown
@@ -40,10 +40,10 @@ on_exit() {
     aws s3 sync "${WORK_DIR}/eval/" "s3://${SCORECARD_BUCKET}/${SCORE_PREFIX}/" \
       --region "${AWS_REGION}" || true
   fi
-  aws s3 cp "${LOG_FILE}" "s3://${SCORECARD_BUCKET}/${SCORE_PREFIX}/memlayer-eval.log" \
+  aws s3 cp "${LOG_FILE}" "s3://${SCORECARD_BUCKET}/${SCORE_PREFIX}/statefulmemory-eval.log" \
     --region "${AWS_REGION}" || true
 
-  cat > /tmp/memlayer-eval-manifest.json <<EOF
+  cat > /tmp/statefulmemory-eval-manifest.json <<EOF
 {
   "stack_name": "${STACK_NAME}",
   "git_repo": "${GIT_REPO}",
@@ -60,7 +60,7 @@ on_exit() {
   "exit_code": ${code}
 }
 EOF
-  aws s3 cp /tmp/memlayer-eval-manifest.json \
+  aws s3 cp /tmp/statefulmemory-eval-manifest.json \
     "s3://${SCORECARD_BUCKET}/${SCORE_PREFIX}/manifest.json" \
     --region "${AWS_REGION}" || true
 
@@ -72,8 +72,8 @@ EOF
     --region "${AWS_REGION}" 2>/dev/null || true
   SUMMARY="suite_status=${SUITE_STATUS} exit=${code} duration_secs=${DURATION_SECS} prefix=s3://${SCORECARD_BUCKET}/${SCORE_PREFIX}/"
   TS_MS=$(($(date +%s) * 1000))
-  CW_JSON=/tmp/memlayer-cw-events.json
-  TAIL_FILE=/tmp/memlayer-eval-tail.txt
+  CW_JSON=/tmp/statefulmemory-cw-events.json
+  TAIL_FILE=/tmp/statefulmemory-eval-tail.txt
   tail -c 200000 "${LOG_FILE}" 2>/dev/null | tr -d '\0' > "${TAIL_FILE}" || true
   python3 -c '
 import json, sys
@@ -103,7 +103,7 @@ json.dump({
       aws ec2 terminate-instances --instance-ids "${IID}" --region "${AWS_REGION}" || true
     fi
   fi
-  echo "=== memlayer eval userdata end $(date -u +%Y-%m-%dT%H:%M:%SZ) exit=${code} ==="
+  echo "=== statefulmemory eval userdata end $(date -u +%Y-%m-%dT%H:%M:%SZ) exit=${code} ==="
 }
 trap on_exit EXIT
 
@@ -151,8 +151,8 @@ case "${LLM_PROVIDER}" in
       echo "ERROR: secret must contain GEMINI_API_KEY for LlmProvider=gemini" >&2
       exit 1
     fi
-    export MEMLAYER_LLM_PROVIDER=gemini
-    export MEMLAYER_LLM_BIN=gemini
+    export STATEFULMEMORY_LLM_PROVIDER=gemini
+    export STATEFULMEMORY_LLM_BIN=gemini
     ;;
   claude)
     npm install -g @anthropic-ai/claude-code
@@ -162,8 +162,8 @@ case "${LLM_PROVIDER}" in
       echo "ERROR: secret must contain ANTHROPIC_API_KEY for LlmProvider=claude" >&2
       exit 1
     fi
-    export MEMLAYER_LLM_PROVIDER=claude
-    export MEMLAYER_LLM_BIN=claude
+    export STATEFULMEMORY_LLM_PROVIDER=claude
+    export STATEFULMEMORY_LLM_BIN=claude
     ;;
   *)
     echo "ERROR: unsupported LLM_PROVIDER=${LLM_PROVIDER} (use gemini|claude)" >&2
@@ -186,7 +186,7 @@ GIT_SHA=$(git -C "${WORK_DIR}" rev-parse HEAD)
 echo "Cloned ${GIT_REPO} @ ${GIT_REF} (sha=${GIT_SHA})"
 
 cd "${WORK_DIR}"
-cargo build --release -p memlayer-cli
+cargo build --release -p statefulmemory-cli
 
 # ── Eval suite (fail-fast; always upload via trap) ───────────────────────────
 echo ">>> make eval-locomo-smoke"

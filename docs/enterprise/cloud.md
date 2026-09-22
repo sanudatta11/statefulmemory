@@ -1,17 +1,17 @@
-# Memlayer Cloud — status and positioning
+# StatefulMemory Cloud — status and positioning
 
-Honest status: **Memlayer Cloud is a stated product path, not a shipping
+Honest status: **StatefulMemory Cloud is a stated product path, not a shipping
 service.** There is no SLA, no region list, and no public endpoint to point a
 client at today. This page says so explicitly so nobody misreads the docs.
 
 ## Status
 
-- **Waitlist / signup:** rolling out on memlayer.org; signup indicates
+- **Waitlist / signup:** rolling out on statefulmemory.dev; signup indicates
   interest. No backfill of capacity, regions, or pricing is committed here.
 - **Regions: TBD.** No region guarantees, no residency commitment, no data
   retention promise for Cloud — those terms will be decided when the managed
   service ships.
-- **SLAs: none.** memlayer makes no uptime, RPO, or RTO commitment for Cloud.
+- **SLAs: none.** statefulmemory makes no uptime, RPO, or RTO commitment for Cloud.
   Treat any SaaS-style claims elsewhere in this repo as roadmap intent, not
   contract.
 
@@ -23,16 +23,16 @@ answer today is: self-host, and rely on your own operational runbook
 
 Everything in this repo is self-hostable and is the primary path:
 
-- Single-user mode via Unix socket (`~/.memlayer/daemon.sock`, mode `0600`).
+- Single-user mode via Unix socket (`~/.statefulmemory/daemon.sock`, mode `0600`).
 - Team mode over TCP + TLS with bearer tokens and per-project grants
-  (`memlayer team init-ca` / `token-create` / `grant`, etc.).
+  (`statefulmemory team init-ca` / `token-create` / `grant`, etc.).
 - Per-project SQLite + FTS5 with an optional BGE-small dense index; hybrid
   search is fully local — no external search API key on self-host.
-- Backup/restore via `memlayer mem export` / `mem import` (`.mem` v2 carries
+- Backup/restore via `statefulmemory mem export` / `mem import` (`.mem` v2 carries
   the entity graph).
 - Optional LLM steps (`extract`, `conflict`, `rerank`, `decide`) shell out to
   whatever agent CLI is on `PATH` — including local/open-source models.
-  Nothing in self-host requires Memlayer Cloud.
+  Nothing in self-host requires StatefulMemory Cloud.
 
 ## What Cloud would add (roadmap, not description)
 
@@ -56,4 +56,4 @@ via MCP/CLI clients) with hosting done by us.
 | Single engineer, one machine | Self-host, UDS mode (out of the box). |
 | Small team, shared daemon | Self-host team daemon (TCP + TLS + grant surface; see `docs/enterprise/self-hosting.md` — note the CLI currently connects over UDS, TCP access rides the client library). |
 | Contractual SLA / DPA / residency | Not available in Cloud yet; self-host under your own ops. |
-| "Just works, managed" | Watch memlayer.org for Cloud waitlist; nothing to configure today. |
+| "Just works, managed" | Watch statefulmemory.dev for Cloud waitlist; nothing to configure today. |

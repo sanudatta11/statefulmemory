@@ -1,9 +1,9 @@
 -- V1__global.sql — global cross-project mirror schema.
 --
--- Stored at `~/.memlayer/global.sqlite` (separate from per-project DBs at
--- `~/.memlayer/projects/<id>.db`). The daemon mirrors every successful
+-- Stored at `~/.statefulmemory/global.sqlite` (separate from per-project DBs at
+-- `~/.statefulmemory/projects/<id>.db`). The daemon mirrors every successful
 -- `save_observation` into this DB so that `obs search --all-projects`
--- can serve a deduped, BM25-ranked view across every memlayer-tracked
+-- can serve a deduped, BM25-ranked view across every statefulmemory-tracked
 -- repo without fan-out at query time.
 --
 -- Observations are *mirrored* from per-project DBs — they retain their

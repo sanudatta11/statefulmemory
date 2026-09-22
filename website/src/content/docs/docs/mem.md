@@ -13,23 +13,23 @@ observations into the local daemon store.
 
 ## When to use it
 
-- Back up before wiping `~/.memlayer/`
+- Back up before wiping `~/.statefulmemory/`
 - Share a project memory pack with a teammate (mind secrets in notes)
 - Encrypt an archive with a seed file / phrase for transit
 
 ## Export
 
 ```bash
-memlayer mem export --out backup.mem
-memlayer mem export --out secret.mem --seed-file ./phrase.txt
-memlayer mem export --out secret.mem --seed-phrase 'your phrase here'
+statefulmemory mem export --out backup.mem
+statefulmemory mem export --out secret.mem --seed-file ./phrase.txt
+statefulmemory mem export --out secret.mem --seed-phrase 'your phrase here'
 ```
 
 ## Import
 
 ```bash
-memlayer mem import backup.mem
-memlayer mem import secret.mem --seed-file ./phrase.txt
+statefulmemory mem import backup.mem
+statefulmemory mem import secret.mem --seed-file ./phrase.txt
 ```
 
 Use the same seed that was used at export for encrypted archives.
@@ -45,5 +45,5 @@ your agent MCP configs. Day-to-day editing still uses
 | Symptom | Fix |
 | --- | --- |
 | Import decrypt error | Wrong `--seed-file` / phrase |
-| Empty archive | Confirm project (`MEMLAYER_PROJECT` / git root) before export |
+| Empty archive | Confirm project (`STATEFULMEMORY_PROJECT` / git root) before export |
 | Huge file | Normal for long histories; prune with soft-delete before export if needed |

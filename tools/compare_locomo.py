@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Compare a memlayer LoCoMo scorecard against published baseline bands.
+"""Compare a statefulmemory LoCoMo scorecard against published baseline bands.
 
-Scorecards come from `memlayer eval --save-scorecard`. This script never
-invents a memlayer score; it only prints the JSON you pass in next to the
+Scorecards come from `statefulmemory eval --save-scorecard`. This script never
+invents a statefulmemory score; it only prints the JSON you pass in next to the
 tracked paper / LLM-judge / retrieval notes.
 """
 
@@ -50,7 +50,7 @@ def render(card: dict, baselines: dict) -> str:
     judge = baselines.get("metrics", {}).get("llm_judge_accuracy", {})
     recall = baselines.get("metrics", {}).get("retrieval_recall", {})
     how = baselines.get("how_to_beat_or_compare", [])
-    ml = baselines.get("memlayer_scorecard", {})
+    ml = baselines.get("statefulmemory_scorecard", {})
 
     f1 = card.get("f1_score")
     token_f1 = card.get("token_f1")
@@ -67,7 +67,7 @@ def render(card: dict, baselines: dict) -> str:
         f"commit:               {card.get('commit_hash', '?')}",
         f"queries:              {card.get('total_queries', '?')}",
         f"correct:              {card.get('correct', '?')}",
-        f"accuracy_pct:         {fmt_pct(card.get('accuracy_pct'))}  (memlayer judge / lexical pass rate)",
+        f"accuracy_pct:         {fmt_pct(card.get('accuracy_pct'))}  (statefulmemory judge / lexical pass rate)",
         f"recall_at_k:          {fmt_ratio(card.get('recall_at_k'))}",
         f"mrr:                  {fmt_ratio(card.get('mrr'))}",
         f"f1 / token_f1:        {f1_note}",
@@ -94,8 +94,8 @@ def render(card: dict, baselines: dict) -> str:
 
     lines.extend(
         [
-            "memlayer smoke: " + ml.get("smoke", ""),
-            "memlayer full:  " + ml.get("full", ""),
+            "statefulmemory smoke: " + ml.get("smoke", ""),
+            "statefulmemory full:  " + ml.get("full", ""),
             "",
             "How to compare / beat:",
         ]
@@ -148,7 +148,7 @@ def render(card: dict, baselines: dict) -> str:
     acc = card.get("accuracy_pct")
     if isinstance(acc, (int, float)) and isinstance(paper_f1, (int, float)):
         lines.append(
-            f"\nPaper GPT-4-turbo token F1 is {paper_f1}. memlayer accuracy_pct is a different "
+            f"\nPaper GPT-4-turbo token F1 is {paper_f1}. statefulmemory accuracy_pct is a different "
             "metric — a higher accuracy_pct does not mean you beat 51.6 F1."
         )
 
@@ -159,7 +159,7 @@ def self_check() -> int:
     import tempfile
 
     baselines = json.loads(Path(__file__).resolve().parents[1].joinpath(
-        "crates/memlayer-eval/baselines/locomo.json"
+        "crates/statefulmemory-eval/baselines/locomo.json"
     ).read_text(encoding="utf-8"))
     smoke = {
         "scorecard_version": "2.0",
@@ -215,12 +215,12 @@ def self_check() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scorecard", type=Path, help="memlayer --save-scorecard JSON")
+    parser.add_argument("--scorecard", type=Path, help="statefulmemory --save-scorecard JSON")
     parser.add_argument(
         "--baselines",
         type=Path,
         default=Path(__file__).resolve().parents[1]
-        / "crates/memlayer-eval/baselines/locomo.json",
+        / "crates/statefulmemory-eval/baselines/locomo.json",
         help="tracked published-reference JSON",
     )
     parser.add_argument(

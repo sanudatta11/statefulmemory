@@ -10,7 +10,7 @@ workstream as its own commit, in the order given.
 
 ## 0. Why this work exists
 
-memlayer already stores observations, supersedes stale ones deterministically,
+statefulmemory already stores observations, supersedes stale ones deterministically,
 and retrieves them locally with no network call. Published conversational
 memory systems are add-only: they never remove a superseded fact and rely on
 the answering model to adjudicate at read time. The 2026 literature measured
@@ -18,7 +18,7 @@ that failure mode on real software history — a retrieval-only pipeline serves
 the *superseded* value 36–38% of the time, and an LLM reranker does not fix it,
 while deterministic supersession drives it to ~0.
 
-memlayer's supersession path already does the right thing (superseded rows are
+statefulmemory's supersession path already does the right thing (superseded rows are
 soft-deleted, so they never reach retrieval), but three things are missing:
 
 1. We never **measure** it, so the advantage is invisible.
@@ -46,7 +46,7 @@ Read `CLAUDE.md` first. These are the ones this spec stresses:
 - **All DB mutations go through the per-project write thread.** Never write
   from an RPC handler or a worker. Use an existing `WriteRequest` variant, or
   `WriteRequest::Custom` for one-off operations
-  (`crates/memlayer-storage/src/write.rs:36`).
+  (`crates/statefulmemory-storage/src/write.rs:36`).
 - **Save stays off the LLM hot path.** Worker pools use `try_queue` and drop on
   full; they never block a save. Follow `embed_worker.rs` / `extract_worker.rs`
   / `resolve_worker.rs`.
@@ -56,9 +56,9 @@ Read `CLAUDE.md` first. These are the ones this spec stresses:
   `refinery::embed_migrations!`. Use `IF NOT EXISTS` and
   `ALTER TABLE ... ADD COLUMN`. Current head is `migrations/V8__observation_relations.sql`,
   so new files start at `V9`.
-- **Config re-resolves per task.** Never cache `MemlayerConfig` at daemon
+- **Config re-resolves per task.** Never cache `StatefulMemoryConfig` at daemon
   startup. New flags need a code default, a TOML key, and a
-  `MEMLAYER_*` env override, matching `crates/memlayer-core/src/config.rs`.
+  `STATEFULMEMORY_*` env override, matching `crates/statefulmemory-core/src/config.rs`.
 - **No new build-time-downloading dependencies.** The workspace deliberately
   avoids crates that fetch at build time (see the candle comment in
   `Cargo.toml`). For git, shell out to the `git` binary — do not add `git2` or
@@ -68,17 +68,17 @@ Test commands (per-crate, avoids full rebuilds):
 
 ```bash
 cargo build --tests --workspace
-cargo test -p memlayer-eval --lib
-cargo test -p memlayer-storage --lib
-cargo test -p memlayer-daemon --lib
-cargo test -p memlayer-cli --lib
-cargo test -p memlayer-retrieval --lib
-cargo test -p memlayer-mcp --lib
+cargo test -p statefulmemory-eval --lib
+cargo test -p statefulmemory-storage --lib
+cargo test -p statefulmemory-daemon --lib
+cargo test -p statefulmemory-cli --lib
+cargo test -p statefulmemory-retrieval --lib
+cargo test -p statefulmemory-mcp --lib
 cargo clippy --workspace -- -D warnings
 python3 tools/compare_locomo.py --self-check
 ```
 
-Integration tests in `crates/memlayer-tests/` need a live daemon socket and
+Integration tests in `crates/statefulmemory-tests/` need a live daemon socket and
 fail in sandboxed environments. Do not treat those failures as your
 regression.
 
@@ -86,7 +86,7 @@ regression.
 
 ## 2. Workstream 1 — Make the eval numbers real
 
-**Problem.** `crates/memlayer-eval/src/scorecard.rs:34-41` sets
+**Problem.** `crates/statefulmemory-eval/src/scorecard.rs:34-41` sets
 `precision = recall = accuracy/100` and derives `f1` from that, so `f1_score`
 is an alias of accuracy and carries no information. There is no per-category
 breakdown (LoCoMo category is passed to the judge via `judge_context` at
@@ -95,7 +95,7 @@ token totals. You cannot diagnose a regression with this.
 
 ### 1.1 Add a retrieval-side gold rank
 
-In `crates/memlayer-eval/src/runner.rs`, replace `gold_in_hits`
+In `crates/statefulmemory-eval/src/runner.rs`, replace `gold_in_hits`
 (line 502) with a rank-returning function and derive the boolean from it:
 
 ```rust
@@ -119,7 +119,7 @@ today.
 
 ### 1.2 Carry category through the dataset layer
 
-`crates/memlayer-eval/src/datasets/mod.rs` — add to `EvalQuery`:
+`crates/statefulmemory-eval/src/datasets/mod.rs` — add to `EvalQuery`:
 
 ```rust
     /// Benchmark-provided category label (e.g. LoCoMo single-hop / multi-hop /
@@ -131,7 +131,7 @@ today.
 Populate it in `datasets/locomo.rs` from the existing `LoCoMoQA::category`
 field. Keep `judge_context` behaviour unchanged. Set `category: None` in
 `longmemeval.rs`, `beam.rs`, and the two smoke fixtures in
-`crates/memlayer-cli/src/cmd_eval.rs` (`smoke_memories` / `smoke_queries`).
+`crates/statefulmemory-cli/src/cmd_eval.rs` (`smoke_memories` / `smoke_queries`).
 
 ### 1.3 Extend `QueryResult` and `RunReport`
 
@@ -180,7 +180,7 @@ summary rows.
 
 ### 1.4 Fix the scorecard
 
-`crates/memlayer-eval/src/scorecard.rs`:
+`crates/statefulmemory-eval/src/scorecard.rs`:
 
 - Bump `scorecard_version` to `"2.0"`.
 - Keep `accuracy_pct` as-is (judge or lexical pass rate).
@@ -215,13 +215,13 @@ summary rows.
 - keep the existing protocol warning logic and the `--self-check` fixture
   (extend the fixtures to the v2 shape so `--self-check` still passes).
 
-Also update `crates/memlayer-eval/baselines/locomo.json`: the
-`memlayer_scorecard` block should describe `recall_at_k` and state that
+Also update `crates/statefulmemory-eval/baselines/locomo.json`: the
+`statefulmemory_scorecard` block should describe `recall_at_k` and state that
 token-F1 is not emitted.
 
 ### Acceptance criteria
 
-- `cargo test -p memlayer-eval --lib` passes.
+- `cargo test -p statefulmemory-eval --lib` passes.
 - `make eval-locomo-smoke` produces a scorecard containing `recall_at_k`,
   `mrr`, and `by_category`, and `tools/compare_locomo.py` renders it.
 - No field named `f1_score` holds a value derived from accuracy.
@@ -242,7 +242,7 @@ value is the barrier, because the agent never goes looking for a newer one.
 
 ### 2.1 Proto
 
-`proto/memlayer.proto`, `message Observation` (field 20 is currently last):
+`proto/statefulmemory.proto`, `message Observation` (field 20 is currently last):
 
 ```proto
   // Set when this observation replaced an earlier one. Lets a client render
@@ -256,7 +256,7 @@ value is the barrier, because the agent never goes looking for a newer one.
 
 ### 2.2 Storage
 
-`crates/memlayer-storage/src/read.rs`:
+`crates/statefulmemory-storage/src/read.rs`:
 
 - Add `superseded_count` to `SELECT_COLS` (line 24). **Careful:**
   `history_chain` hard-codes `row.get(18)` for `superseded_by_id` with a
@@ -268,29 +268,29 @@ value is the barrier, because the agent never goes looking for a newer one.
   service can populate `supersedes_ids` for search/context results in one
   round trip rather than N.
 
-`crates/memlayer-storage/src/models.rs`: add `superseded_count: i32` to
+`crates/statefulmemory-storage/src/models.rs`: add `superseded_count: i32` to
 `Observation` and to `from_row`.
 
 ### 2.3 Service
 
-`crates/memlayer-daemon/src/service.rs` — `obs_to_proto` (around line 384)
+`crates/statefulmemory-daemon/src/service.rs` — `obs_to_proto` (around line 384)
 gains the two fields. For `search`, `context`, and `recent`, batch-fetch the
 superseded ids and fill them in. Keep it to one extra query per RPC.
 
 ### 2.4 CLI rendering
 
-`crates/memlayer-cli/src/render.rs`: when `supersedes_ids` is non-empty,
+`crates/statefulmemory-cli/src/render.rs`: when `supersedes_ids` is non-empty,
 render a line under the observation, e.g.
 
 ```
-  current — supersedes #12 (use `memlayer obs history 47` for the chain)
+  current — supersedes #12 (use `statefulmemory obs history 47` for the chain)
 ```
 
 Text output only; JSON/YAML consumers get the raw fields.
 
 ### 2.5 MCP
 
-`crates/memlayer-mcp/src/server.rs`: include `supersedes_ids` in the
+`crates/statefulmemory-mcp/src/server.rs`: include `supersedes_ids` in the
 `memory_search` and `memory_context` result payloads, and mention in the tool
 descriptions that a result carrying `supersedes_ids` is the in-force value and
 the superseded values are intentionally withheld. That sentence is the thing
@@ -298,7 +298,7 @@ that stops a model from going looking for an older value.
 
 ### Acceptance criteria
 
-- Save two conflicting observations; `memlayer obs search` on the survivor
+- Save two conflicting observations; `statefulmemory obs search` on the survivor
   shows the supersedes line, and the superseded one is absent from results.
 - `history_chain` tests still pass (this is the regression risk).
 
@@ -316,7 +316,7 @@ it is the one our actual user feels.
 
 ### 3.1 Dataset
 
-New `crates/memlayer-eval/src/datasets/staleness.rs`. Input JSONL at
+New `crates/statefulmemory-eval/src/datasets/staleness.rs`. Input JSONL at
 `data/staleness/transitions.jsonl`, one clean atomic transition per line:
 
 ```json
@@ -342,7 +342,7 @@ statements must differ only in the value, with no recency markers in the text,
 or the answering model can cheat.
 
 Ship a small committed fixture (10–20 transitions) at
-`crates/memlayer-eval/fixtures/staleness-sample.jsonl` so the benchmark runs
+`crates/statefulmemory-eval/fixtures/staleness-sample.jsonl` so the benchmark runs
 with no download. Keep `data/` gitignored for anything larger.
 
 ### 3.2 New metrics
@@ -387,8 +387,8 @@ Add to `RunConfig`:
     pub no_supersede: bool,
 ```
 
-Wire it in `crates/memlayer-eval/src/ingest.rs` (skip the conflict/supersede
-step) and expose it as `memlayer eval --no-supersede`. Both arms must be
+Wire it in `crates/statefulmemory-eval/src/ingest.rs` (skip the conflict/supersede
+step) and expose it as `statefulmemory eval --no-supersede`. Both arms must be
 otherwise identical.
 
 ### 3.4 Makefile
@@ -396,9 +396,9 @@ otherwise identical.
 ```make
 eval-staleness: release
 	@mkdir -p "$(EVAL_OUT)"
-	MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark staleness \
+	STATEFULMEMORY_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark staleness \
 	  --save-scorecard "$(EVAL_OUT)/staleness.json"
-	MEMLAYER_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark staleness \
+	STATEFULMEMORY_EVAL_DATA="$(EVAL_DATA)" "$(BINARY)" eval --benchmark staleness \
 	  --no-supersede --save-scorecard "$(EVAL_OUT)/staleness-baseline.json"
 	@$(COMPARE_STALENESS) --scorecard "$(EVAL_OUT)/staleness.json" \
 	  --baseline "$(EVAL_OUT)/staleness-baseline.json"
@@ -407,7 +407,7 @@ eval-staleness: release
 Add `tools/compare_staleness.py` printing both arms side by side with the
 delta on `superseded_served_pct`, plus a `--self-check` fixture mode like
 `compare_locomo.py`. Register the new targets in `.PHONY` and `make help`, and
-document them in `crates/memlayer-eval/README.md` and
+document them in `crates/statefulmemory-eval/README.md` and
 `website/src/content/docs/docs/locomo.md` (rename that page to cover both
 benchmarks, or add a sibling page and link it from `index.mdx`).
 
@@ -481,7 +481,7 @@ States: `unanchored` (no anchors — the default, and not a failure),
 
 ### 4.2 Git helpers
 
-New `crates/memlayer-core/src/git.rs`, shelling out to `git` (no new
+New `crates/statefulmemory-core/src/git.rs`, shelling out to `git` (no new
 dependency). Every function returns `Result` and must tolerate "not a repo".
 
 ```rust
@@ -498,7 +498,7 @@ its shell-outs. Never let a git failure propagate as a save failure.
 
 ### 4.3 Anchor model
 
-New `crates/memlayer-storage/src/anchor.rs`:
+New `crates/statefulmemory-storage/src/anchor.rs`:
 
 ```rust
 pub struct Anchor {
@@ -533,7 +533,7 @@ fixture string.
 
 ### 4.4 Verification engine
 
-New `crates/memlayer-daemon/src/verify.rs`. Pure function, no I/O beyond git,
+New `crates/statefulmemory-daemon/src/verify.rs`. Pure function, no I/O beyond git,
 so it is unit-testable:
 
 ```rust
@@ -571,22 +571,22 @@ An observation with several anchors takes the worst state, ordered
 
 ### 4.5 Worker + RPC + CLI
 
-- `crates/memlayer-daemon/src/verify_worker.rs`, copying `resolve_worker.rs`:
+- `crates/statefulmemory-daemon/src/verify_worker.rs`, copying `resolve_worker.rs`:
   bounded channel (256), `try_queue` drops on full, applies verdicts through
   `WriteRequest::Custom` in one batch.
 - Proto: `VerifyAnchors(VerifyAnchorsRequest) returns (VerifyAnchorsResponse)`
   with `project_name`, optional `observation_id`, and a response carrying
   counts per state plus the changed observations. Add
   `optional string verify_state = 23;` to `Observation`.
-- CLI `memlayer verify [--project P] [--json]` in a new
-  `crates/memlayer-cli/src/cmd_verify.rs`; register `Verify(VerifyArgs)` in
+- CLI `statefulmemory verify [--project P] [--json]` in a new
+  `crates/statefulmemory-cli/src/cmd_verify.rs`; register `Verify(VerifyArgs)` in
   `cli.rs`'s `Command` enum and dispatch in `main.rs` using the existing
   `open_client` pattern. Print a per-state summary and list stale/invalidated
   titles with their anchors.
-- `memlayer obs save --anchor` already exists; extend it to accept repeated
+- `statefulmemory obs save --anchor` already exists; extend it to accept repeated
   `--anchor` flags, stamp `anchor_commit` from `head_sha`, and compute
   `content_digest` at save time. Resolve the repo from
-  `ProjectConfig.repo_path` (`crates/memlayer-storage/src/registry.rs:49`),
+  `ProjectConfig.repo_path` (`crates/statefulmemory-storage/src/registry.rs:49`),
   falling back to the detected cwd. If the directory is not a git repo, save
   normally with `verify_state = 'unanchored'` and emit a warning through the
   existing save-warnings channel — never fail the save.
@@ -596,7 +596,7 @@ An observation with several anchors takes the worst state, ordered
 This is what turns verification into a product feature.
 
 - Add config `[verify] serve_stale = false` (code default `false`, TOML key,
-  `MEMLAYER_VERIFY_SERVE_STALE` override) in `crates/memlayer-core/src/config.rs`.
+  `STATEFULMEMORY_VERIFY_SERVE_STALE` override) in `crates/statefulmemory-core/src/config.rs`.
 - When `serve_stale` is false, `context` (the auto-injected briefing) excludes
   `stale`, `invalidated`, and `unprovable` observations. A withdrawn claim must
   not reach the model.
@@ -612,7 +612,7 @@ Add a daemon unit test asserting an `invalidated` observation is absent from
 
 - Fresh DB migrates cleanly to V10; re-running migrations is a no-op.
 - In a scratch git repo: save an anchored observation, modify the anchored
-  lines, commit, run `memlayer verify` → the observation becomes `stale` and
+  lines, commit, run `statefulmemory verify` → the observation becomes `stale` and
   disappears from `context` while remaining in `search`.
 - Touch an unrelated file and commit → the observation stays `verified` and
   `git diff` is called once, not once per anchor.
@@ -621,7 +621,7 @@ Add a daemon unit test asserting an `invalidated` observation is absent from
 **Commits (split these):**
 1. `feat(storage): anchor table, verify state, and anchor parsing`
 2. `feat(daemon): anchor verification engine and worker`
-3. `feat: memlayer verify command and stale withdrawal from context`
+3. `feat: statefulmemory verify command and stale withdrawal from context`
 
 ---
 
@@ -629,7 +629,7 @@ Add a daemon unit test asserting an `invalidated` observation is absent from
 
 Makes verification automatic instead of a chore.
 
-- Extend `memlayer install` (`crates/memlayer-cli/src/cmd_skill.rs`) with a
+- Extend `statefulmemory install` (`crates/statefulmemory-cli/src/cmd_skill.rs`) with a
   `--git-hooks` flag, and include it in the default install when the cwd is a
   git repo.
 - Write `.git/hooks/post-commit`, `post-merge`, and `post-checkout`. If a hook
@@ -639,16 +639,16 @@ Makes verification automatic instead of a chore.
 - Hook body must be non-blocking and must never fail the git operation:
 
 ```sh
-# >>> memlayer >>>
-command -v memlayer >/dev/null 2>&1 && \
-  (memlayer verify --quiet >/dev/null 2>&1 &)
+# >>> statefulmemory >>>
+command -v statefulmemory >/dev/null 2>&1 && \
+  (statefulmemory verify --quiet >/dev/null 2>&1 &)
 exit 0
-# <<< memlayer <<<
+# <<< statefulmemory <<<
 ```
 
-- Add `--quiet` to `memlayer verify`. Ensure `chmod 755` on any hook file you
+- Add `--quiet` to `statefulmemory verify`. Ensure `chmod 755` on any hook file you
   create.
-- `memlayer uninstall` must remove the marker block and leave any surrounding
+- `statefulmemory uninstall` must remove the marker block and leave any surrounding
   user content intact.
 
 ### Acceptance criteria
@@ -665,7 +665,7 @@ exit 0
 ## 7. Workstream 6 — Promote eval-only retrieval into the daemon
 
 **Problem.** Time decay, evidence-window expansion, entity boost, and the 2-hop
-entity walk exist only in `crates/memlayer-eval` (`scoring.rs`,
+entity walk exist only in `crates/statefulmemory-eval` (`scoring.rs`,
 `retrieve.rs:179`, `retrieve_facts.rs`, `entity_walk.rs`). The production
 daemon has none of them. We benchmark a system we do not ship.
 
@@ -674,7 +674,7 @@ existing behaviour shifts silently.
 
 ### 6.1 Time decay
 
-`crates/memlayer-retrieval/src/rrf.rs` currently returns ordered ids. Add a
+`crates/statefulmemory-retrieval/src/rrf.rs` currently returns ordered ids. Add a
 scored variant:
 
 ```rust
@@ -685,14 +685,14 @@ Keep `rrf_fuse` as a thin wrapper over it so existing callers and tests are
 untouched. In `service.rs::hybrid_search`, when
 `search.decay_lambda > 0.0`, multiply each score by
 `exp(-lambda * age_days)` using `created_at`, then re-sort. Reuse the constant
-and formula from `crates/memlayer-eval/src/scoring.rs:32` so the two agree.
+and formula from `crates/statefulmemory-eval/src/scoring.rs:32` so the two agree.
 
-Config: `[search] decay_lambda = 0.0` (off), `MEMLAYER_SEARCH_DECAY_LAMBDA`.
+Config: `[search] decay_lambda = 0.0` (off), `STATEFULMEMORY_SEARCH_DECAY_LAMBDA`.
 
 ### 6.2 Evidence window
 
-Port `expand_evidence` (`crates/memlayer-eval/src/retrieve.rs:179`) into
-`crates/memlayer-storage/src/read.rs` as `neighbors_in_session(conn, obs_id, window)`
+Port `expand_evidence` (`crates/statefulmemory-eval/src/retrieve.rs:179`) into
+`crates/statefulmemory-storage/src/read.rs` as `neighbors_in_session(conn, obs_id, window)`
 and call it from `context` when `[search] evidence_window > 0` (default `0`).
 Deduplicate against hits already present and never let expansion push the
 result past the caller's `limit`.
@@ -707,7 +707,7 @@ Do not leave a config key that does nothing.
 
 Production has no entity tables. If you take this on: add
 `migrations/V11__entities.sql` mirroring
-`crates/memlayer-eval/migrations_eval/V2__entities.sql`, and populate it with a
+`crates/statefulmemory-eval/migrations_eval/V2__entities.sql`, and populate it with a
 **zero-LLM** extractor (capitalized tokens, quoted strings, and code-shaped
 identifiers) so the default read path stays local and free. Do not make entity
 extraction depend on `extract.enabled`. Skip this section entirely rather than
@@ -729,7 +729,7 @@ introducing an LLM call into save.
 Competing systems sell token savings. We do not measure tokens in the daemon at
 all — only in the eval harness.
 
-- Add a cheap deterministic estimator in `crates/memlayer-core`:
+- Add a cheap deterministic estimator in `crates/statefulmemory-core`:
   `pub fn estimate_tokens(s: &str) -> usize`. Do **not** pull `tiktoken_rs`
   into the daemon; document that this is an estimate with a stated margin and
   that the eval harness uses the real tokenizer.
@@ -756,7 +756,7 @@ all — only in the eval harness.
 
 ## 9. Documentation pass (fold into the last commit)
 
-- `docs/PRD.md` still claims memlayer has no MCP server and no vectors. Both
+- `docs/PRD.md` still claims statefulmemory has no MCP server and no vectors. Both
   shipped. Fix or delete those lines.
 - `docs/ROADMAP.md` says `obs history` is unimplemented; it is implemented
   (`read.rs:591`). Mark Spec 3 as partial (the `code_anchor` column shipped in
@@ -766,12 +766,12 @@ all — only in the eval harness.
   `cli.rs:486` call `obs reextract` a stub, and
   `docs/RETRIEVAL_ROADMAP.md:39` says quantize is stubbed. All three are
   implemented.
-- `crates/memlayer-mcp/src/tools/mod.rs:20` says the search default is bm25;
+- `crates/statefulmemory-mcp/src/tools/mod.rs:20` says the search default is bm25;
   the runtime default resolves to hybrid from config.
 - Update `CLAUDE.md`: new migration head, the `[verify]` and new `[search]`
-  config keys with their env overrides, `memlayer verify` in the RPC list, and
+  config keys with their env overrides, `statefulmemory verify` in the RPC list, and
   the new make targets.
-- Update `website/src/content/docs/docs/` for `memlayer verify`, stale
+- Update `website/src/content/docs/docs/` for `statefulmemory verify`, stale
   withdrawal, `--max-tokens`, and the staleness benchmark. Add any new page to
   the guide list in `index.mdx`.
 

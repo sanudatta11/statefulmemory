@@ -3,9 +3,9 @@ title: Observations
 description: Save, list, and manage persistent notes — decisions, facts, patterns, and fixes in local SQLite.
 ---
 
-Observations are the unit of memory in memlayer: a typed note with a title,
+Observations are the unit of memory in statefulmemory: a typed note with a title,
 content, optional session, and optional code anchors. They live in per-project
-SQLite under `~/.memlayer/` and are searchable with BM25 and dense vectors.
+SQLite under `~/.statefulmemory/` and are searchable with BM25 and dense vectors.
 
 <video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/save-search-context-v2.mp4" title="Save, search, and context demo">
   Your browser does not support video.
@@ -20,7 +20,7 @@ SQLite under `~/.memlayer/` and are searchable with BM25 and dense vectors.
 ## Save
 
 ```bash
-memlayer obs save \
+statefulmemory obs save \
   --type decision \
   --title "use pgx not GORM" \
   --content "Team prefers raw SQL via pgx for this service" \
@@ -32,7 +32,7 @@ memlayer obs save \
 | `--type` | `decision`, `fact`, `pattern`, `fix`, `note`, … |
 | `--title` | Short label (shown in lists and search) |
 | `--content` | Body; pass `-` to read from stdin |
-| `--session` | Session id (create one with `memlayer session start` or `uuidgen`) |
+| `--session` | Session id (create one with `statefulmemory session start` or `uuidgen`) |
 | `--topic` | Topic key for supersession / grouping |
 | `--anchor` | Repeatable `path::symbol` (see [Anchors & verify](/docs/anchors-verify/)) |
 | `--scope` | Usually `project` |
@@ -40,17 +40,17 @@ memlayer obs save \
 ## Browse
 
 ```bash
-memlayer obs recent --limit 10
-memlayer obs get <id-or-sync-id>
-memlayer obs history <id>       # supersession chain
-memlayer obs relations <id>     # graph edges (conflicts, supersedes, …)
+statefulmemory obs recent --limit 10
+statefulmemory obs get <id-or-sync-id>
+statefulmemory obs history <id>       # supersession chain
+statefulmemory obs relations <id>     # graph edges (conflicts, supersedes, …)
 ```
 
 ## Background maintenance
 
 ```bash
-memlayer obs reextract [--since <rfc3339>]   # re-queue fact extraction (needs LLM CLI)
-memlayer obs reindex [--force]               # re-embed / quantize vectors
+statefulmemory obs reextract [--since <rfc3339>]   # re-queue fact extraction (needs LLM CLI)
+statefulmemory obs reindex [--force]               # re-embed / quantize vectors
 ```
 
 ## How it fits
@@ -64,6 +64,6 @@ are checked by [verify](/docs/anchors-verify/). Bulk backup uses
 
 | Symptom | Fix |
 | --- | --- |
-| Exit 5: no project | Run inside a git repo or set `MEMLAYER_PROJECT` |
-| Save succeeds but search empty | Wait for embed worker, or `memlayer obs reindex` |
+| Exit 5: no project | Run inside a git repo or set `STATEFULMEMORY_PROJECT` |
+| Save succeeds but search empty | Wait for embed worker, or `statefulmemory obs reindex` |
 | Duplicate titles keep stacking | Enable `conflict.enabled` or use a shared `--topic` |

@@ -1,0 +1,43 @@
+[package]
+name = "statefulmemory-eval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "eval"
+path = "src/bin/eval.rs"
+
+[dependencies]
+statefulmemory-core      = { path = "../statefulmemory-core" }
+statefulmemory-storage   = { path = "../statefulmemory-storage" }
+statefulmemory-embed     = { path = "../statefulmemory-embed" }
+statefulmemory-extract   = { path = "../statefulmemory-extract" }
+statefulmemory-retrieval = { path = "../statefulmemory-retrieval" }
+
+rusqlite    = { workspace = true }
+refinery    = { workspace = true }
+sqlite-vec  = { workspace = true }
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap        = { workspace = true }
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+sha2        = { workspace = true }
+
+# Token counting (tiktoken-compatible BPE, used for prompt-size metrics)
+tiktoken-rs = "0.6"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+# Gate online integration tests that require the BGE-small embedding model.
+# Default `cargo test` MUST NOT trigger any network or model downloads.
+online-tests = []

@@ -3,9 +3,9 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import sitemap from '@astrojs/sitemap';
 
-const site = 'https://memlayer.org';
+const site = 'https://statefulmemory.dev';
 const description =
-	'Persistent memory for coding agents — self-host or Memlayer Cloud SaaS. CLI + MCP, daemon, per-project SQLite.';
+	'Persistent memory for coding agents — self-host or StatefulMemory Cloud SaaS. CLI + MCP, daemon, per-project SQLite.';
 
 // https://astro.build/config
 export default defineConfig({
@@ -17,7 +17,7 @@ export default defineConfig({
 	},
 	integrations: [
 		starlight({
-			title: 'memlayer',
+			title: 'statefulmemory',
 			description,
 			favicon: '/favicon.svg',
 			customCss: ['./src/styles/custom.css'],
@@ -30,11 +30,11 @@ export default defineConfig({
 				{
 					icon: 'github',
 					label: 'GitHub',
-					href: 'https://github.com/sanudatta11/memlayer',
+					href: 'https://github.com/sanudatta11/statefulmemory',
 				},
 			],
 			editLink: {
-				baseUrl: 'https://github.com/sanudatta11/memlayer/edit/main/website/',
+				baseUrl: 'https://github.com/sanudatta11/statefulmemory/edit/main/website/',
 			},
 			lastUpdated: true,
 			pagination: true,
@@ -43,7 +43,7 @@ export default defineConfig({
 					label: 'Start here',
 					items: [
 						{ label: 'Overview', slug: '' },
-						{ label: 'Why memlayer', slug: 'docs/why-memlayer' },
+						{ label: 'Why statefulmemory', slug: 'docs/why-statefulmemory' },
 						{ label: 'Architecture', slug: 'docs/architecture' },
 						{ label: 'Install', slug: 'docs/install' },
 						{ label: 'Getting started', slug: 'docs/getting-started' },
@@ -124,7 +124,7 @@ export default defineConfig({
 					tag: 'meta',
 					attrs: {
 						property: 'og:site_name',
-						content: 'memlayer',
+						content: 'statefulmemory',
 					},
 				},
 				{
@@ -138,7 +138,7 @@ export default defineConfig({
 					tag: 'meta',
 					attrs: {
 						property: 'og:image:alt',
-						content: 'memlayer: persistent memory for AI coding agents',
+						content: 'statefulmemory: persistent memory for AI coding agents',
 					},
 				},
 				{
@@ -173,7 +173,7 @@ export default defineConfig({
 					tag: 'meta',
 					attrs: {
 						name: 'twitter:title',
-						content: 'memlayer',
+						content: 'statefulmemory',
 					},
 				},
 				{
@@ -193,17 +193,17 @@ export default defineConfig({
 						'@graph': [
 							{
 								'@type': 'WebSite',
-								name: 'memlayer',
+								name: 'statefulmemory',
 								url: site,
 								description,
 								inLanguage: 'en',
 								sameAs: [
-									'https://github.com/sanudatta11/memlayer',
+									'https://github.com/sanudatta11/statefulmemory',
 								],
 							},
 							{
 								'@type': 'SoftwareApplication',
-								name: 'memlayer',
+								name: 'statefulmemory',
 								description,
 								url: site,
 								applicationCategory: 'DeveloperApplication',
@@ -214,15 +214,15 @@ export default defineConfig({
 									priceCurrency: 'USD',
 								},
 								sameAs: [
-									'https://github.com/sanudatta11/memlayer',
+									'https://github.com/sanudatta11/statefulmemory',
 								],
 							},
 							{
 								'@type': 'SoftwareSourceCode',
-								name: 'memlayer',
+								name: 'statefulmemory',
 								description,
 								url: site,
-								codeRepository: 'https://github.com/sanudatta11/memlayer',
+								codeRepository: 'https://github.com/sanudatta11/statefulmemory',
 								programmingLanguage: 'Rust',
 								license: [
 									'https://opensource.org/licenses/MIT',
@@ -236,26 +236,26 @@ export default defineConfig({
 								mainEntity: [
 									{
 										'@type': 'Question',
-										name: 'What is memlayer?',
+										name: 'What is statefulmemory?',
 										acceptedAnswer: {
 											'@type': 'Answer',
-											text: 'memlayer is persistent memory for AI coding agents: CLI + MCP, gRPC daemon, and per-project SQLite. Self-host on your machine or team, or use Memlayer Cloud managed SaaS.',
+											text: 'statefulmemory is persistent memory for AI coding agents: CLI + MCP, gRPC daemon, and per-project SQLite. Self-host on your machine or team, or use StatefulMemory Cloud managed SaaS.',
 										},
 									},
 									{
 										'@type': 'Question',
-										name: 'Which AI coding agents work with memlayer?',
+										name: 'Which AI coding agents work with statefulmemory?',
 										acceptedAnswer: {
 											'@type': 'Answer',
-											text: 'Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code / Copilot, Codex, Gemini CLI, Amazon Q, and any agent that can speak MCP or shell out to the memlayer CLI.',
+											text: 'Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code / Copilot, Codex, Gemini CLI, Amazon Q, and any agent that can speak MCP or shell out to the statefulmemory CLI.',
 										},
 									},
 									{
 										'@type': 'Question',
-										name: 'Does memlayer work with local or open-source LLMs?',
+										name: 'Does statefulmemory work with local or open-source LLMs?',
 										acceptedAnswer: {
 											'@type': 'Answer',
-											text: 'Yes. Hybrid BM25 + dense search runs locally. Optional LLM steps (extract, conflict judge, Decide) use whichever agent CLI is on PATH. Pin with MEMLAYER_LLM_BIN, MEMLAYER_LLM_PROVIDER, and MEMLAYER_LLM_MODEL (for example OpenCode + qwen).',
+											text: 'Yes. Hybrid BM25 + dense search runs locally. Optional LLM steps (extract, conflict judge, Decide) use whichever agent CLI is on PATH. Pin with STATEFULMEMORY_LLM_BIN, STATEFULMEMORY_LLM_PROVIDER, and STATEFULMEMORY_LLM_MODEL (for example OpenCode + qwen).',
 										},
 									},
 								],

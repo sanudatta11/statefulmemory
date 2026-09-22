@@ -8,7 +8,7 @@ needs `data/locomo/locomo10.json`, a BGE model directory, and an agent CLI for
 answer + judge.
 
 **Hold on product claims:** do not treat smoke, prefix-LIMIT cards, or unmatched
-peer leaderboard numbers as memlayer product truth. Public “wins” wait on
+peer leaderboard numbers as statefulmemory product truth. Public “wins” wait on
 disclosed stratified scorecards (same judge, k, and category filter).
 
 ```bash
@@ -25,10 +25,10 @@ make eval-staleness             # supersession vs --no-supersede baseline
 Scorecards are written to `eval/` (not committed). Equivalent CLI:
 
 ```bash
-memlayer eval --smoke --benchmark locomo --save-scorecard eval/locomo-smoke.json
-MEMLAYER_EVAL_DATA="$PWD/data" memlayer eval --benchmark locomo --save-scorecard eval/locomo-full.json
-memlayer eval --smoke --benchmark staleness --save-scorecard eval/staleness.json
-memlayer eval --smoke --benchmark staleness --no-supersede --save-scorecard eval/staleness-baseline.json
+statefulmemory eval --smoke --benchmark locomo --save-scorecard eval/locomo-smoke.json
+STATEFULMEMORY_EVAL_DATA="$PWD/data" statefulmemory eval --benchmark locomo --save-scorecard eval/locomo-full.json
+statefulmemory eval --smoke --benchmark staleness --save-scorecard eval/staleness.json
+statefulmemory eval --smoke --benchmark staleness --no-supersede --save-scorecard eval/staleness-baseline.json
 ```
 
 ## What the numbers mean
@@ -42,7 +42,7 @@ memlayer eval --smoke --benchmark staleness --no-supersede --save-scorecard eval
 | Staleness `superseded_served_pct` | Superseded value served without gold | Lower is better; compare default vs `--no-supersede` |
 
 Published LLM-judge peers (**unmatched harness** — cite only as context, not as
-a memlayer claim): Mem0 ~66.9%, engram-lite ~68.3%, ENGRAM paper ~77.6%,
+a statefulmemory claim): Mem0 ~66.9%, engram-lite ~68.3%, ENGRAM paper ~77.6%,
 Engram marketing ~80%. Those bands are not comparable until our stratified
 scorecard is disclosed with the same judge and filters.
 
@@ -57,7 +57,7 @@ or old unfair cards against a leaderboard.
 
 ## Public claims (hold)
 
-memlayer does **not** publish a LoCoMo leaderboard win on this site until a
+statefulmemory does **not** publish a LoCoMo leaderboard win on this site until a
 disclosed, stratified scorecard (model, k, categories 1–4, facts on/off) is
 ready. Peer percentages above are **published elsewhere / unmatched harness**.
 Do not treat smoke, 10-query flash cards, or unfair prefix-`LIMIT` slices as

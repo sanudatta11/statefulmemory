@@ -1,8 +1,8 @@
--- V1__init.sql — initial schema for a per-project memlayer database.
+-- V1__init.sql — initial schema for a per-project statefulmemory database.
 --
 -- Source: PRD §5.3 (verbatim). Spec 1 references §12 of core-storage-daemon spec.
 --
--- Run on first connect to a fresh `~/.memlayer/projects/<normalized>.db`. After
+-- Run on first connect to a fresh `~/.statefulmemory/projects/<normalized>.db`. After
 -- this migration, `schema_meta.version` = 1 and the FTS5 virtual tables are
 -- ready to receive triggers' insert/delete fan-out.
 

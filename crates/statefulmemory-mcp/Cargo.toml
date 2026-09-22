@@ -1,0 +1,24 @@
+[package]
+name = "statefulmemory-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "statefulmemory local stdio MCP server: exposes daemon memory operations as MCP tools."
+
+[dependencies]
+statefulmemory-client = { path = "../statefulmemory-client" }
+statefulmemory-proto = { path = "../statefulmemory-proto" }
+statefulmemory-core = { path = "../statefulmemory-core" }
+
+tokio.workspace = true
+tonic.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+tracing.workspace = true
+thiserror.workspace = true
+rmcp.workspace = true

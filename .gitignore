@@ -49,7 +49,7 @@ htmlcov/
 **/*.rs.bk
 Cargo.lock.bak
 
-# Memlayer runtime data (developer machines only)
+# StatefulMemory runtime data (developer machines only)
 *.db
 *.db-journal
 *.db-wal
@@ -73,6 +73,9 @@ skills-lock.json
 .impeccable/mocks/
 .impeccable/build/
 
+
+# Agent session logs
+session-*.md
 
 # HyperFrames demo caches
 .hyperframes/

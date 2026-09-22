@@ -36,10 +36,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run memlayer eval smoke benchmark
+      - name: Run statefulmemory eval smoke benchmark
         run: |
           mkdir -p ./eval
-          cargo run -p memlayer-cli -- eval --smoke --benchmark locomo --save-scorecard ./eval/scorecard.json --output json > ./eval/scorecard_output.json
+          cargo run -p statefulmemory-cli -- eval --smoke --benchmark locomo --save-scorecard ./eval/scorecard.json --output json > ./eval/scorecard_output.json
 
       - name: Upload Scorecard Artifact
         uses: actions/upload-artifact@v5
@@ -60,9 +60,9 @@ jobs:
           script: |
             const fs = require('fs');
             const card = JSON.parse(fs.readFileSync('./eval/scorecard.json', 'utf8'));
-            const marker = '<!-- memlayer-retrieval-scorecard -->';
+            const marker = '<!-- statefulmemory-retrieval-scorecard -->';
             const body = `${marker}
-            ### memlayer Retrieval Benchmark Scorecard
+            ### statefulmemory Retrieval Benchmark Scorecard
             - **Benchmark**: ${card.benchmark}
             - **Commit**: \`${card.commit_hash}\`
             - **Accuracy**: **${card.accuracy_pct.toFixed(2)}%**

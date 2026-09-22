@@ -1,21 +1,21 @@
 ---
 title: Architecture
-description: How memlayer’s CLI, MCP, gRPC daemon, and per-project SQLite fit together.
+description: How statefulmemory’s CLI, MCP, gRPC daemon, and per-project SQLite fit together.
 ---
 
-Memlayer is persistent memory for coding agents. Agents talk to a
+StatefulMemory is persistent memory for coding agents. Agents talk to a
 thin CLI or MCP stdio server; both reach a gRPC daemon that owns
 per-project SQLite. Deploy **self-hosted** (local UDS or team TCP) or on
-**Memlayer Cloud** (managed SaaS).
+**StatefulMemory Cloud** (managed SaaS).
 
 ## Process diagram
 
 ```mermaid
 flowchart LR
   Agents[Coding agents MCP or CLI]
-  CLI[memlayer CLI]
-  MCP[memlayer mcp]
-  D[memlayer-daemon gRPC]
+  CLI[statefulmemory CLI]
+  MCP[statefulmemory mcp]
+  D[statefulmemory-daemon gRPC]
   WT[Write thread]
   DB[(project SQLite FTS5 plus optional vec)]
   G[(global.sqlite)]
@@ -35,10 +35,10 @@ flowchart LR
 
 | Piece | Role |
 |---|---|
-| **CLI** (`memlayer`) | Thin client; auto-spawns the daemon on first use |
-| **MCP** (`memlayer mcp`) | Stdio MCP server exposing `memory_*` tools |
+| **CLI** (`statefulmemory`) | Thin client; auto-spawns the daemon on first use |
+| **MCP** (`statefulmemory mcp`) | Stdio MCP server exposing `memory_*` tools |
 | **Daemon** | gRPC service; one write thread per project |
-| **Project DB** | SQLite + FTS5 under `~/.memlayer/`; optional sqlite-vec for hybrid |
+| **Project DB** | SQLite + FTS5 under `~/.statefulmemory/`; optional sqlite-vec for hybrid |
 | **global.sqlite** | Cross-project BM25 mirror |
 | **Workers** | Background pools: embed (BGE-small), extract, resolve, verify |
 
@@ -55,10 +55,10 @@ on `PATH`.
 |---|---|---|
 | **Local UDS** | Your laptop | Shipped (default) |
 | **Team TCP+TLS** | Your infra | Shipped (self-host) |
-| **Memlayer Cloud** | Us (managed SaaS) | Product offering |
+| **StatefulMemory Cloud** | Us (managed SaaS) | Product offering |
 
-Self-host data lives under `~/.memlayer/` (inspect, backup, delete). Cloud
+Self-host data lives under `~/.statefulmemory/` (inspect, backup, delete). Cloud
 uses the same client surfaces (CLI / MCP) with hosted storage and ops.
 
-See also: [Self-hosting and Cloud](/docs/self-hosting/), [Why memlayer](/docs/why-memlayer/),
+See also: [Self-hosting and Cloud](/docs/self-hosting/), [Why statefulmemory](/docs/why-statefulmemory/),
 [Config](/docs/config/).

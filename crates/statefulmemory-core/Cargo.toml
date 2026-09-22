@@ -1,0 +1,22 @@
+[package]
+name = "statefulmemory-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Shared types, errors, config, and project-name normalization for statefulmemory."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+once_cell.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

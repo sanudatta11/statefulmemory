@@ -1,35 +1,35 @@
-# Self-hosting memlayer-daemon
+# Self-hosting statefulmemory-daemon
 
-Runbook for running `memlayer-daemon` on infrastructure you control. This
+Runbook for running `statefulmemory-daemon` on infrastructure you control. This
 covers deployment (Docker Compose, systemd, Kubernetes), backup/restore, and
 multi-engineer ACL over TCP.
 
-> See [cloud.md](cloud.md) for the difference between self-host and Memlayer
+> See [cloud.md](cloud.md) for the difference between self-host and StatefulMemory
 > Cloud, and [compliance.md](compliance.md) for what the daemon stores.
 
 ## Two transport modes
 
 | Mode | When | Auth surface |
 |---|---|---|
-| **UDS** (`~/.memlayer/daemon.sock`) | Single user, one machine | Socket mode `0600`; the filesystem is the trust boundary. No bearer tokens. Admin RPCs are implicitly allowed for the owner. |
-| **TCP + TLS** | Multi-engineer / team | `MEMLAYER_LISTEN=tcp://HOST:PORT`; TLS required (rustls); bearer tokens in `tokens.db`; optional per-project grants. |
+| **UDS** (`~/.statefulmemory/daemon.sock`) | Single user, one machine | Socket mode `0600`; the filesystem is the trust boundary. No bearer tokens. Admin RPCs are implicitly allowed for the owner. |
+| **TCP + TLS** | Multi-engineer / team | `STATEFULMEMORY_LISTEN=tcp://HOST:PORT`; TLS required (rustls); bearer tokens in `tokens.db`; optional per-project grants. |
 
 TCP mode is **mandatory TLS**: the daemon refuses to start TCP mode without
-`MEMLAYER_TLS_CERT` and `MEMLAYER_TLS_KEY` pointing at a server cert + key.
+`STATEFULMEMORY_TLS_CERT` and `STATEFULMEMORY_TLS_KEY` pointing at a server cert + key.
 
 ## Building the daemon
 
-**memlayer has no official registry image yet.** There is no published
+**statefulmemory has no official registry image yet.** There is no published
 OCI/Docker image and no `Dockerfile` in this repository. Plan to build the
 binary from the workspace:
 
 ```bash
-cargo build --release -p memlayer-cli
-# → target/release/memlayer  (the CLI binary also embeds the daemon)
+cargo build --release -p statefulmemory-cli
+# → target/release/statefulmemory  (the CLI binary also embeds the daemon)
 ```
 
-The binary is self-contained: `memlayer daemon start` runs the daemon in the
-same process. `cargo install --path crates/memlayer-cli` also works if you
+The binary is self-contained: `statefulmemory daemon start` runs the daemon in the
+same process. `cargo install --path crates/statefulmemory-cli` also works if you
 prefer an on-path install.
 
 ## Docker Compose
@@ -41,27 +41,27 @@ from the workspace checkout.
 
 ```yaml
 services:
-  memlayer:
+  statefulmemory:
     build:
       context: ../..              # repo root, where Cargo.toml lives
-      dockerfile: infrastructure/Dockerfile.memlayer
-    container_name: memlayer-daemon
-    command: ["memlayer", "daemon", "start", "--foreground"]
+      dockerfile: infrastructure/Dockerfile.statefulmemory
+    container_name: statefulmemory-daemon
+    command: ["statefulmemory", "daemon", "start", "--foreground"]
     restart: unless-stopped
     environment:
       # Everything lives under this dir; volume-mount it for durability.
-      MEMLAYER_DATA_DIR: /data
+      STATEFULMEMORY_DATA_DIR: /data
       # Team TCP + TLS (single-host multi-shell is usually fine over UDS —
       # omit these for pure UDS mode):
-      # MEMLAYER_LISTEN: tcp://0.0.0.0:4432
-      # MEMLAYER_TLS_CERT: /certs/server.pem
-      # MEMLAYER_TLS_KEY: /certs/server-key.pem
+      # STATEFULMEMORY_LISTEN: tcp://0.0.0.0:4432
+      # STATEFULMEMORY_TLS_CERT: /certs/server.pem
+      # STATEFULMEMORY_TLS_KEY: /certs/server-key.pem
     volumes:
-      - memlayer-data:/data
-      # Only needed in TCP+TLS mode. Generated with `memlayer team init-ca`.
+      - statefulmemory-data:/data
+      # Only needed in TCP+TLS mode. Generated with `statefulmemory team init-ca`.
       # - ./certs:/certs:ro
     healthcheck:
-      test: ["CMD", "memlayer", "daemon", "status"]
+      test: ["CMD", "statefulmemory", "daemon", "status"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -70,10 +70,10 @@ services:
       - /tmp   # embedder / BGE model cache
 
 volumes:
-  memlayer-data:
+  statefulmemory-data:
 ```
 
-An operator-provided Dockerfile at `infrastructure/Dockerfile.memlayer`
+An operator-provided Dockerfile at `infrastructure/Dockerfile.statefulmemory`
 (relative to the repo). Minimal variant, using the generic Rust toolchain
 image:
 
@@ -83,41 +83,41 @@ WORKDIR /ws
 COPY crates ./crates
 COPY Cargo.toml Cargo.lock ./
 COPY proto ./proto
-RUN cargo build --release -p memlayer-cli
+RUN cargo build --release -p statefulmemory-cli
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=build /ws/target/release/memlayer /usr/local/bin/memlayer
-ENTRYPOINT ["memlayer"]
+COPY --from=build /ws/target/release/statefulmemory /usr/local/bin/statefulmemory
+ENTRYPOINT ["statefulmemory"]
 ```
 
 `read_only: true` is safe on the container filesystem: all writes go to
-`MEMLAYER_DATA_DIR` and `/tmp`. The BGE embedder may cache model weights; the
+`STATEFULMEMORY_DATA_DIR` and `/tmp`. The BGE embedder may cache model weights; the
 `tmpfs` on `/tmp` covers it. If you need a persistent model cache, mount a
 second volume at the model directory instead.
 
 ## systemd unit
 
-`/etc/systemd/system/memlayer.service`:
+`/etc/systemd/system/statefulmemory.service`:
 
 ```ini
 [Unit]
-Description=memlayer daemon (persistent agent memory)
+Description=statefulmemory daemon (persistent agent memory)
 After=network.target
 
 [Service]
 Type=simple
 User=appuser
 Group=appgroup
-WorkingDirectory=/srv/memlayer
-ExecStart=/usr/local/bin/memlayer daemon start --foreground
+WorkingDirectory=/srv/statefulmemory
+ExecStart=/usr/local/bin/statefulmemory daemon start --foreground
 Restart=on-failure
 RestartSec=5
-Environment=MEMLAYER_DATA_DIR=/srv/memlayer/data
+Environment=STATEFULMEMORY_DATA_DIR=/srv/statefulmemory/data
 # TCP + TLS team mode:
-# Environment=MEMLAYER_LISTEN=tcp://0.0.0.0:4432
-# Environment=MEMLAYER_TLS_CERT=/etc/memlayer/server.pem
-# Environment=MEMLAYER_TLS_KEY=/etc/memlayer/server-key.pem
+# Environment=STATEFULMEMORY_LISTEN=tcp://0.0.0.0:4432
+# Environment=STATEFULMEMORY_TLS_CERT=/etc/statefulmemory/server.pem
+# Environment=STATEFULMEMORY_TLS_KEY=/etc/statefulmemory/server-key.pem
 # Restrict sandbox (optional hardening):
 NoNewPrivileges=true
 PrivateTmp=true
@@ -129,7 +129,7 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now memlayer
+sudo systemctl enable --now statefulmemory
 ```
 
 `--foreground` keeps the process attached so systemd owns lifecycle and
@@ -138,52 +138,52 @@ stray second instance fails fast instead of double-opening the SQLite files.
 
 ## Kubernetes (Deployment + Service)
 
-Stateful-friendly Deployment with a PVC for `MEMLAYER_DATA_DIR`. In TCP+TLS
+Stateful-friendly Deployment with a PVC for `STATEFULMEMORY_DATA_DIR`. In TCP+TLS
 mode the Service is the TLS endpoint; add your CA-signed or `team init-ca`
 cert as a Secret.
 
 ```yaml
-# memlayer-namespace.yaml
+# statefulmemory-namespace.yaml
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: memlayer
+  name: statefulmemory
 ```
 
 ```yaml
-# memlayer-stateful.yaml
+# statefulmemory-stateful.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: memlayer-daemon
-  namespace: memlayer
+  name: statefulmemory-daemon
+  namespace: statefulmemory
 spec:
   replicas: 1          # single-writer: exactly one daemon owns the SQLite files
   selector:
     matchLabels:
-      app: memlayer-daemon
+      app: statefulmemory-daemon
   template:
     metadata:
       labels:
-        app: memlayer-daemon
+        app: statefulmemory-daemon
     spec:
       containers:
         - name: daemon
-          image: registry.example.internal/memlayer:release  # you build this
-          command: ["memlayer", "daemon", "start", "--foreground"]
+          image: registry.example.internal/statefulmemory:release  # you build this
+          command: ["statefulmemory", "daemon", "start", "--foreground"]
           env:
-            - name: MEMLAYER_DATA_DIR
+            - name: STATEFULMEMORY_DATA_DIR
               value: /data
             # Team TCP + TLS mode — serve the private key from a Secret,
             # never baked into the image:
-            # - name: MEMLAYER_LISTEN
+            # - name: STATEFULMEMORY_LISTEN
             #   value: tcp://0.0.0.0:4432
-            # - name: MEMLAYER_TLS_CERT
+            # - name: STATEFULMEMORY_TLS_CERT
             #   value: /tls/server.pem
-            # - name: MEMLAYER_TLS_KEY
+            # - name: STATEFULMEMORY_TLS_KEY
             #   valueFrom:
             #     secretKeyRef:
-            #       name: memlayer-tls
+            #       name: statefulmemory-tls
             #       key: server-key.pem
           ports:
             - name: grpc
@@ -204,12 +204,12 @@ spec:
               drop: ["ALL"]
           livenessProbe:
             exec:
-              command: ["memlayer", "daemon", "status"]
+              command: ["statefulmemory", "daemon", "status"]
             initialDelaySeconds: 15
             periodSeconds: 30
           readinessProbe:
             exec:
-              command: ["memlayer", "daemon", "status"]
+              command: ["statefulmemory", "daemon", "status"]
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
@@ -223,7 +223,7 @@ spec:
           emptyDir: {}
         - name: tls
           secret:
-            secretName: memlayer-tls
+            secretName: statefulmemory-tls
             optional: true
   volumeClaimTemplates:
     - metadata:
@@ -236,15 +236,15 @@ spec:
 ```
 
 ```yaml
-# memlayer-service.yaml
+# statefulmemory-service.yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: memlayer
-  namespace: memlayer
+  name: statefulmemory
+  namespace: statefulmemory
 spec:
   selector:
-    app: memlayer-daemon
+    app: statefulmemory-daemon
   ports:
     - port: 4432
       targetPort: grpc
@@ -257,12 +257,12 @@ Notes:
   writer; run one daemon pod. Horizontal fan-out of clients (shells) is
   fine — they all speak to the one daemon.
 - `readOnlyRootFilesystem: true` is supported: the daemon writes only under
-  `MEMLAYER_DATA_DIR`, `/tmp`, and stdout logs. If the BGE model cache must
+  `STATEFULMEMORY_DATA_DIR`, `/tmp`, and stdout logs. If the BGE model cache must
   persist across restarts, mount the `emptyDir` at the model dir and point
-  `MEMLAYER_BGE_MODEL_DIR` at it.
+  `STATEFULMEMORY_BGE_MODEL_DIR` at it.
 - PVC via `volumeClaimTemplates` gives each pod its own volume; with one
   replica it round-trips to the same claim.
-- `livenessProbe`/`readinessProbe` shell out to `memlayer daemon status`,
+- `livenessProbe`/`readinessProbe` shell out to `statefulmemory daemon status`,
   which fails fast (non-zero) when the socket is missing.
 
 ## Backup and restore
@@ -275,33 +275,33 @@ Daily cron (one archive per project — add one line per project):
 
 ```cron
 # crontab -e — export each project at 02:00
-0 2 * * *  memlayer mem export --out /var/backups/memlayer/myapp-$(date +\%F).mem --project myapp
-0 3 * * *  memlayer mem export --out /var/backups/memlayer/tooling-$(date +\%F).mem --project tooling
+0 2 * * *  statefulmemory mem export --out /var/backups/statefulmemory/myapp-$(date +\%F).mem --project myapp
+0 3 * * *  statefulmemory mem export --out /var/backups/statefulmemory/tooling-$(date +\%F).mem --project tooling
 ```
 
-For many projects, drive the loop off `memlayer project list --output json`
+For many projects, drive the loop off `statefulmemory project list --output json`
 (export is an RPC; run the loop on the same host as the daemon):
 
 ```bash
-memlayer project list --output json | jq -rc '.[].name' | while IFS= read -r p; do
-  memlayer mem export --out "/var/backups/memlayer/$p-$(date +%F).mem" --project "$p"
+statefulmemory project list --output json | jq -rc '.[].name' | while IFS= read -r p; do
+  statefulmemory mem export --out "/var/backups/statefulmemory/$p-$(date +%F).mem" --project "$p"
 done
 ```
 
 Encrypt the archive (BYOK — same phrase or seed file unlocks on import):
 
 ```bash
-memlayer mem export --out backup.mem --seed-file ./phrase.txt
+statefulmemory mem export --out backup.mem --seed-file ./phrase.txt
 ```
 
 Restore:
 
 ```bash
 # merge (default): upsert by sync_id — safe incremental restore
-memlayer mem import backup.mem --mode merge
+statefulmemory mem import backup.mem --mode merge
 
 # replace: wipe project first, then insert
-memlayer mem import backup.mem --mode replace
+statefulmemory mem import backup.mem --mode replace
 ```
 
 `--mode replace` is destructive for the target project. `merge` is idempotent
@@ -314,7 +314,7 @@ Operational guidance:
   archive is the consistent, migration-safe artifact. A raw file copy of
   `projects/*.db` + WAL is a crash-dangerous second option, not a substitute.
 - The seed phrase (`--seed-phrase` / `--seed-file`) is **not** stored in the
-  archive or on disk by memlayer. Lose it → archive is unrecoverable. Prefer
+  archive or on disk by statefulmemory. Lose it → archive is unrecoverable. Prefer
   `--seed-file` over `--seed-phrase` because argv is visible to `ps`;
   but assume both leak unless you lock down /proc.
 
@@ -328,22 +328,22 @@ admin RPCs. Over **UDS the admin guard is implicit** (socket `0600`); over
    daemon; local only, no daemon RPC):
 
 ```bash
-memlayer team init-ca ./certs          # -> ca.pem, server.pem, server-key.pem
+statefulmemory team init-ca ./certs          # -> ca.pem, server.pem, server-key.pem
 ```
 
 2. Start the daemon in TCP mode with the certs:
 
 ```bash
-MEMLAYER_LISTEN=tcp://0.0.0.0:4432 \
-MEMLAYER_TLS_CERT=./certs/server.pem  \
-MEMLAYER_TLS_KEY=./certs/server-key.pem \
-memlayer daemon start --foreground
+STATEFULMEMORY_LISTEN=tcp://0.0.0.0:4432 \
+STATEFULMEMORY_TLS_CERT=./certs/server.pem  \
+STATEFULMEMORY_TLS_KEY=./certs/server-key.pem \
+statefulmemory daemon start --foreground
 ```
 
 3. Mint a bootstrap admin token (over UDS, admin is implicit):
 
 ```bash
-memlayer team token-create --name ops --admin
+statefulmemory team token-create --name ops --admin
 # prints the 64-hex token exactly once — record it now
 ```
 
@@ -351,23 +351,23 @@ Then, as that admin:
 
 ```bash
 # per-engineer tokens
-memlayer team token-create --name alice
-memlayer team token-create --name bob --admin        # reserved for ops
+statefulmemory team token-create --name alice
+statefulmemory team token-create --name bob --admin        # reserved for ops
 
 # inspect / revoke
-memlayer team token-list
-memlayer team token-revoke alice
+statefulmemory team token-list
+statefulmemory team token-revoke alice
 
 # per-project grants (read | write)
-memlayer team grant --project webapp --principal alice --role read
-memlayer team grant --project webapp --principal alice --role write
-memlayer team grant-list
-memlayer team grant-revoke --project webapp --principal alice
+statefulmemory team grant --project webapp --principal alice --role read
+statefulmemory team grant --project webapp --principal alice --role write
+statefulmemory team grant-list
+statefulmemory team grant-revoke --project webapp --principal alice
 ```
 
 > Honest scope note: `token-*` / `grant-*` are daemon RPCs. The CLI shell
 > examples above work wherever the daemon is reachable; the client
-> library (`memlayer-client`) is what speaks TLS + bearer tokens over TCP,
+> library (`statefulmemory-client`) is what speaks TLS + bearer tokens over TCP,
 > and today the CLI's own connection path is UDS (`connect_uds`). The
 > gRPC ACL surface (admin guard, token store, grants) is implemented and
 > integration-tested; a first-class `--host/--token` TCP client flag on the

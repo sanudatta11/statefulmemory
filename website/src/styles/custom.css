@@ -65,7 +65,7 @@
 	--sl-color-hairline-shade: hsl(145, 12%, 94%);
 }
 
-/* Overview brand mark: keep “memlayer” dominant above the CTA cluster */
+/* Overview brand mark: keep “statefulmemory” dominant above the CTA cluster */
 .sl-markdown-content > h1:first-of-type {
 	font-size: clamp(2.15rem, 4.5vw, 2.85rem);
 	font-weight: 700;

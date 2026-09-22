@@ -9,9 +9,9 @@ Prefer the feature guides for explanations. This page is a dense index only.
 
 ```bash
 make prereqs && make install
-memlayer install
-memlayer install --agent cursor
-memlayer install --no-git-hooks
+statefulmemory install
+statefulmemory install --agent cursor
+statefulmemory install --no-git-hooks
 ```
 
 → [Install](/docs/install/) · [Wire into your agent](/docs/agents/)
@@ -19,13 +19,13 @@ memlayer install --no-git-hooks
 ## Observations
 
 ```bash
-memlayer obs save --type decision --title "…" --content "…" --session "$SID"
-memlayer obs save --anchor src/auth.rs::login --title "…" --content "…"
-memlayer obs recent --limit 10
-memlayer obs history <id>
-memlayer obs relations <id>
-memlayer obs reextract [--since <rfc3339>]
-memlayer obs reindex [--force]
+statefulmemory obs save --type decision --title "…" --content "…" --session "$SID"
+statefulmemory obs save --anchor src/auth.rs::login --title "…" --content "…"
+statefulmemory obs recent --limit 10
+statefulmemory obs history <id>
+statefulmemory obs relations <id>
+statefulmemory obs reextract [--since <rfc3339>]
+statefulmemory obs reindex [--force]
 ```
 
 → [Observations](/docs/observations/)
@@ -33,12 +33,12 @@ memlayer obs reindex [--force]
 ## Search and context
 
 ```bash
-memlayer obs search "auth"
-memlayer obs search "auth" --mode bm25
-memlayer obs search "auth" --max-tokens 800
-memlayer obs context --query "deploy" --limit 20
-memlayer obs context --max-tokens 500
-memlayer obs context --include-stale
+statefulmemory obs search "auth"
+statefulmemory obs search "auth" --mode bm25
+statefulmemory obs search "auth" --max-tokens 800
+statefulmemory obs context --query "deploy" --limit 20
+statefulmemory obs context --max-tokens 500
+statefulmemory obs context --include-stale
 ```
 
 → [Search and context](/docs/search-context/)
@@ -46,8 +46,8 @@ memlayer obs context --include-stale
 ## Anchors and verify
 
 ```bash
-memlayer verify
-memlayer verify --quiet
+statefulmemory verify
+statefulmemory verify --quiet
 ```
 
 → [Anchors and verify](/docs/anchors-verify/)
@@ -55,10 +55,10 @@ memlayer verify --quiet
 ## Decide and mem
 
 ```bash
-memlayer decide "Should we keep SQLite?"
-memlayer mem export --out backup.mem
-memlayer mem export --out secret.mem --seed-file ./phrase.txt
-memlayer mem import backup.mem
+statefulmemory decide "Should we keep SQLite?"
+statefulmemory mem export --out backup.mem
+statefulmemory mem export --out secret.mem --seed-file ./phrase.txt
+statefulmemory mem import backup.mem
 ```
 
 → [Decide](/docs/decide/) · [Mem archives](/docs/mem/)
@@ -66,12 +66,12 @@ memlayer mem import backup.mem
 ## Ops
 
 ```bash
-memlayer config show
-memlayer daemon status
-memlayer doctor [--repair]
-memlayer tui
-memlayer logs --lines 50
-memlayer eval --smoke --save-scorecard card.json
+statefulmemory config show
+statefulmemory daemon status
+statefulmemory doctor [--repair]
+statefulmemory tui
+statefulmemory logs --lines 50
+statefulmemory eval --smoke --save-scorecard card.json
 ```
 
 → [Config](/docs/config/) · [LoCoMo eval](/docs/locomo/) · [Troubleshooting](/docs/troubleshooting/)

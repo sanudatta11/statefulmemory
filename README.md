@@ -1,23 +1,23 @@
-# memlayer
+# statefulmemory
 
 <p align="center">
-  <img src="website/public/banner.jpg" alt="memlayer" width="100%" />
+  <img src="website/public/banner.jpg" alt="statefulmemory" width="100%" />
 </p>
 
 **Persistent memory infrastructure for AI coding agents.**
 
 Thin CLI + MCP → gRPC daemon → per-project SQLite (FTS5 + optional hybrid
-BM25/dense). Run **self-hosted** on your machine or team, or use **Memlayer
+BM25/dense). Run **self-hosted** on your machine or team, or use **StatefulMemory
 Cloud** (managed SaaS) when you want hosting done for you.
 
-**Docs:** [https://memlayer.org](https://memlayer.org)
+**Docs:** [https://statefulmemory.dev](https://statefulmemory.dev)
 
-[![CI](https://github.com/sanudatta11/memlayer/actions/workflows/ci.yml/badge.svg)](https://github.com/sanudatta11/memlayer/actions/workflows/ci.yml)
+[![CI](https://github.com/sanudatta11/statefulmemory/actions/workflows/ci.yml/badge.svg)](https://github.com/sanudatta11/statefulmemory/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-## What is Memlayer?
+## What is StatefulMemory?
 
-memlayer stores decisions, patterns, fixes, and notes under `~/.memlayer/` as
+statefulmemory stores decisions, patterns, fixes, and notes under `~/.statefulmemory/` as
 inspectable SQLite. Agents reach it through the CLI or MCP. The daemon
 auto-starts on first use.
 
@@ -33,7 +33,7 @@ Memory as **infrastructure for coding agents** — with a real self-host path
 (inspectable SQLite, MCP install targets, code anchors) **and** a Cloud SaaS
 path for teams that want managed hosting. Not a bare vector index.
 
-Engineering comparison: [Why Memlayer?](https://memlayer.org/docs/why-memlayer/)
+Engineering comparison: [Why StatefulMemory?](https://statefulmemory.dev/docs/why-statefulmemory/)
 
 ## Install
 
@@ -41,28 +41,28 @@ Engineering comparison: [Why Memlayer?](https://memlayer.org/docs/why-memlayer/)
 (WSL OK). Windows is out of scope for v1.
 
 ```bash
-git clone https://github.com/sanudatta11/memlayer && cd memlayer
-make prereqs && make install    # → ~/.local/bin/memlayer
+git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
+make prereqs && make install    # → ~/.local/bin/statefulmemory
 export PATH="$HOME/.local/bin:$PATH"
-memlayer --version
+statefulmemory --version
 ```
 
-Full guide: [Install](https://memlayer.org/docs/install/).
+Full guide: [Install](https://statefulmemory.dev/docs/install/).
 
 ## 30-second example
 
 ```bash
-memlayer install --agent cursor   # or: memlayer install
+statefulmemory install --agent cursor   # or: statefulmemory install
 SID=$(uuidgen)
-memlayer obs save --type decision \
+statefulmemory obs save --type decision \
   --title "use pgx not GORM" \
   --content "Team prefers raw SQL via pgx" \
   --session "$SID"
-memlayer obs context --query "database access layer" --limit 10
-memlayer decide "Should we keep pgx?"
+statefulmemory obs context --query "database access layer" --limit 10
+statefulmemory decide "Should we keep pgx?"
 ```
 
-Agents use MCP (`memlayer mcp`) or shell-out. **Python/TypeScript SDKs are not
+Agents use MCP (`statefulmemory mcp`) or shell-out. **Python/TypeScript SDKs are not
 shipped.** Preference-evolution walkthrough:
 [`demos/preference-evolution.sh`](demos/preference-evolution.sh).
 
@@ -71,9 +71,9 @@ shipped.** Preference-evolution walkthrough:
 ```mermaid
 flowchart LR
   Agents[Coding agents MCP or CLI]
-  CLI[memlayer CLI]
-  MCP[memlayer mcp]
-  D[memlayer-daemon gRPC]
+  CLI[statefulmemory CLI]
+  MCP[statefulmemory mcp]
+  D[statefulmemory-daemon gRPC]
   WT[Write thread]
   DB[(project SQLite FTS5 plus optional vec)]
   G[(global.sqlite)]
@@ -89,12 +89,12 @@ flowchart LR
   Workers --> DB
 ```
 
-Details: [Architecture](https://memlayer.org/docs/architecture/).
+Details: [Architecture](https://statefulmemory.dev/docs/architecture/).
 
 ## Benchmarks
 
 Local LoCoMo / staleness analysis lives in the eval harness. Public claims wait
-for disclosed, stratified scorecards — see [LoCoMo eval](https://memlayer.org/docs/locomo/).
+for disclosed, stratified scorecards — see [LoCoMo eval](https://statefulmemory.dev/docs/locomo/).
 Do not quote smoke or tiny slices against published leaderboards.
 
 <!-- scorecard-start -->
@@ -118,35 +118,35 @@ Do not quote smoke or tiny slices against published leaderboards.
 
 | Surface | Status |
 |---|---|
-| MCP: `memory_search`, `memory_recent`, `memory_context`, `memory_add`, `memory_facts`, `memory_health`, `memory_decide` | Shipped (`memlayer mcp`) |
-| `memlayer install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
+| MCP: `memory_search`, `memory_recent`, `memory_context`, `memory_add`, `memory_facts`, `memory_health`, `memory_decide` | Shipped (`statefulmemory mcp`) |
+| `statefulmemory install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
 | LangGraph, OpenAI Agents SDK, CrewAI, AutoGen, LlamaIndex, Vercel AI SDK | **Not yet** |
 
 ```bash
-memlayer install                 # auto-detect
-memlayer install --agent cursor
-memlayer install --all
+statefulmemory install                 # auto-detect
+statefulmemory install --agent cursor
+statefulmemory install --all
 ```
 
-Full matrix: [Integrations](https://memlayer.org/docs/integrations/).
+Full matrix: [Integrations](https://statefulmemory.dev/docs/integrations/).
 
 ## Self-hosting
 
 **Shipped today:** per-user daemon on a Unix domain socket (auto-spawned), or
-team mode over TCP+TLS + bearer tokens (`memlayer team init-ca`,
-`MEMLAYER_LISTEN=tcp://…`) on infrastructure you run.
+team mode over TCP+TLS + bearer tokens (`statefulmemory team init-ca`,
+`STATEFULMEMORY_LISTEN=tcp://…`) on infrastructure you run.
 
-Guide: [Self-hosting](https://memlayer.org/docs/self-hosting/).
+Guide: [Self-hosting](https://statefulmemory.dev/docs/self-hosting/).
 
 ## Cloud SaaS
 
-**Memlayer Cloud** is the managed SaaS offering for teams that want persistent
+**StatefulMemory Cloud** is the managed SaaS offering for teams that want persistent
 agent memory without operating the daemon themselves. Same product thesis
 (coding-agent memory, MCP/CLI clients); hosting and ops on us.
 
 Self-host remains first-class and open source. Cloud details and signup will
-land on [memlayer.org](https://memlayer.org) as the service rolls out — see
-[Self-hosting](https://memlayer.org/docs/self-hosting/#cloud-saas) for how the
+land on [statefulmemory.dev](https://statefulmemory.dev) as the service rolls out — see
+[Self-hosting](https://statefulmemory.dev/docs/self-hosting/#cloud-saas) for how the
 modes relate.
 
 ## Roadmap
@@ -158,22 +158,22 @@ Public directions (graphify bridge, multi-relation judge, eval CI):
 ## Demo
 
 <p align="center">
-  <a href="https://memlayer.org/videos/overview-v2.mp4">
-    <img src="website/public/videos/overview-v2-poster.jpg" alt="memlayer overview demo" width="100%" />
+  <a href="https://statefulmemory.dev/videos/overview-v2.mp4">
+    <img src="website/public/videos/overview-v2-poster.jpg" alt="statefulmemory overview demo" width="100%" />
   </a>
   <br />
-  <em>Overview (click to play) — more clips on <a href="https://memlayer.org/">memlayer.org</a></em>
+  <em>Overview (click to play) — more clips on <a href="https://statefulmemory.dev/">statefulmemory.dev</a></em>
 </p>
 
 ## Docs
 
-- [Why Memlayer?](https://memlayer.org/docs/why-memlayer/)
-- [Architecture](https://memlayer.org/docs/architecture/)
-- [Getting started](https://memlayer.org/docs/getting-started/)
-- [Install](https://memlayer.org/docs/install/) · [Integrations](https://memlayer.org/docs/integrations/) · [Self-hosting and Cloud](https://memlayer.org/docs/self-hosting/)
-- [Observations](https://memlayer.org/docs/observations/) · [Search and context](https://memlayer.org/docs/search-context/)
-- [Anchors and verify](https://memlayer.org/docs/anchors-verify/) · [Decide](https://memlayer.org/docs/decide/) · [Mem archives](https://memlayer.org/docs/mem/)
-- [Config](https://memlayer.org/docs/config/) · [LoCoMo eval](https://memlayer.org/docs/locomo/) · [Commands](https://memlayer.org/docs/commands/)
+- [Why StatefulMemory?](https://statefulmemory.dev/docs/why-statefulmemory/)
+- [Architecture](https://statefulmemory.dev/docs/architecture/)
+- [Getting started](https://statefulmemory.dev/docs/getting-started/)
+- [Install](https://statefulmemory.dev/docs/install/) · [Integrations](https://statefulmemory.dev/docs/integrations/) · [Self-hosting and Cloud](https://statefulmemory.dev/docs/self-hosting/)
+- [Observations](https://statefulmemory.dev/docs/observations/) · [Search and context](https://statefulmemory.dev/docs/search-context/)
+- [Anchors and verify](https://statefulmemory.dev/docs/anchors-verify/) · [Decide](https://statefulmemory.dev/docs/decide/) · [Mem archives](https://statefulmemory.dev/docs/mem/)
+- [Config](https://statefulmemory.dev/docs/config/) · [LoCoMo eval](https://statefulmemory.dev/docs/locomo/) · [Commands](https://statefulmemory.dev/docs/commands/)
 
 ## Contributing
 
@@ -196,5 +196,5 @@ Licensed under either of
 at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in memlayer by you shall be dual-licensed as above, without any
+for inclusion in statefulmemory by you shall be dual-licensed as above, without any
 additional terms or conditions.

@@ -1,27 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/memlayer-core",
-    "crates/memlayer-proto",
-    "crates/memlayer-storage",
-    "crates/memlayer-daemon",
-    "crates/memlayer-client",
-    "crates/memlayer-cli",
-    "crates/memlayer-tests",
-    "crates/memlayer-sync",
-    "crates/memlayer-embed",
-    "crates/memlayer-extract",
-    "crates/memlayer-eval",
-    "crates/memlayer-retrieval",
-    "crates/memlayer-mcp",
+    "crates/statefulmemory-core",
+    "crates/statefulmemory-proto",
+    "crates/statefulmemory-storage",
+    "crates/statefulmemory-daemon",
+    "crates/statefulmemory-client",
+    "crates/statefulmemory-cli",
+    "crates/statefulmemory-tests",
+    "crates/statefulmemory-sync",
+    "crates/statefulmemory-embed",
+    "crates/statefulmemory-extract",
+    "crates/statefulmemory-eval",
+    "crates/statefulmemory-retrieval",
+    "crates/statefulmemory-mcp",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["memlayer contributors"]
+authors = ["statefulmemory contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sanudatta11/memlayer"
+repository = "https://github.com/sanudatta11/statefulmemory"
 rust-version = "1.75"
 
 [workspace.dependencies]
@@ -96,7 +96,7 @@ rustls = "0.23"
 rustls-pemfile = "2"
 rcgen = "0.13"
 
-# HTTP server for `memlayer ui`
+# HTTP server for `statefulmemory ui`
 tiny_http = "0.12"
 
 # Misc

@@ -4,8 +4,8 @@ description: Tie memories to path::symbol, stamp digests at save, and withdraw s
 ---
 
 A **code anchor** binds an observation to a symbol in the repo
-(`src/auth.rs::login`). On save, memlayer stamps the current git commit and a
-content digest. **`memlayer verify`** (and install git hooks) re-check anchors
+(`src/auth.rs::login`). On save, statefulmemory stamps the current git commit and a
+content digest. **`statefulmemory verify`** (and install git hooks) re-check anchors
 against HEAD and mark claims `fresh`, `stale`, `invalidated`, or `unprovable`.
 
 <video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/anchors-verify-v2.mp4" title="Anchors and verify demo">
@@ -21,7 +21,7 @@ against HEAD and mark claims `fresh`, `stale`, `invalidated`, or `unprovable`.
 ## Save with anchors
 
 ```bash
-memlayer obs save \
+statefulmemory obs save \
   --type decision \
   --title "login uses JWT" \
   --content "Accept only HS256 in production" \
@@ -29,7 +29,7 @@ memlayer obs save \
   --session "$(uuidgen)"
 
 # Multiple anchors on one observation:
-memlayer obs save \
+statefulmemory obs save \
   --title "auth boundary" \
   --content "…" \
   --anchor src/a.rs::foo \
@@ -40,8 +40,8 @@ memlayer obs save \
 ## Verify
 
 ```bash
-memlayer verify
-memlayer verify --quiet    # for git hooks / CI
+statefulmemory verify
+statefulmemory verify --quiet    # for git hooks / CI
 ```
 
 | State | Meaning |
@@ -54,9 +54,9 @@ memlayer verify --quiet    # for git hooks / CI
 
 ## Git hooks
 
-`memlayer install` inside a repo installs `post-commit`, `post-merge`, and
-`post-checkout` hooks that run `memlayer verify --quiet`. Skip with
-`--no-git-hooks`. Uninstall removes the memlayer blocks.
+`statefulmemory install` inside a repo installs `post-commit`, `post-merge`, and
+`post-checkout` hooks that run `statefulmemory verify --quiet`. Skip with
+`--no-git-hooks`. Uninstall removes the statefulmemory blocks.
 
 ## Context withdrawal
 
@@ -64,8 +64,8 @@ Default: `verify.serve_stale = false` — context drops stale / invalidated /
 unprovable. Search still returns them flagged.
 
 ```bash
-memlayer obs context --query "auth" --include-stale
-memlayer config set verify.serve_stale true
+statefulmemory obs context --query "auth" --include-stale
+statefulmemory config set verify.serve_stale true
 ```
 
 ## How it fits
@@ -79,5 +79,5 @@ anchored decisions for code-tied claims (see MCP / shell guidance on
 | Symptom | Fix |
 | --- | --- |
 | Always `unprovable` | Run save/verify from a git checkout |
-| Hooks missing | `memlayer install` without `--no-git-hooks` |
+| Hooks missing | `statefulmemory install` without `--no-git-hooks` |
 | Good notes missing from context | Expected after drift; fix code, re-save, or `--include-stale` |

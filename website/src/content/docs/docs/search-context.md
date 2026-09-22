@@ -22,11 +22,11 @@ key.
 ## Search
 
 ```bash
-memlayer obs search "auth"                  # hybrid (default)
-memlayer obs search "auth" --mode bm25      # lexical only
-memlayer obs search "auth" --mode hybrid --rerank
-memlayer obs search "auth" --max-tokens 800
-memlayer obs search "auth" --all-projects   # include global BM25 mirror
+statefulmemory obs search "auth"                  # hybrid (default)
+statefulmemory obs search "auth" --mode bm25      # lexical only
+statefulmemory obs search "auth" --mode hybrid --rerank
+statefulmemory obs search "auth" --max-tokens 800
+statefulmemory obs search "auth" --all-projects   # include global BM25 mirror
 ```
 
 | Flag | Purpose |
@@ -40,9 +40,9 @@ memlayer obs search "auth" --all-projects   # include global BM25 mirror
 ## Context
 
 ```bash
-memlayer obs context --query "deploy" --limit 20
-memlayer obs context --query "deploy" --max-tokens 500
-memlayer obs context --query "deploy" --include-stale
+statefulmemory obs context --query "deploy" --limit 20
+statefulmemory obs context --query "deploy" --max-tokens 500
+statefulmemory obs context --query "deploy" --include-stale
 ```
 
 By default, context **withdraws** observations whose verify state is `stale`,
@@ -63,6 +63,6 @@ heuristic (`tokens_used` in JSON / stderr), not tiktoken.
 
 | Symptom | Fix |
 | --- | --- |
-| Hybrid empty, BM25 works | Embeddings missing → `memlayer obs reindex` |
+| Hybrid empty, BM25 works | Embeddings missing → `statefulmemory obs reindex` |
 | Context thinner than expected | Anchors went stale → `--include-stale` or re-verify after fixing code |
-| Rerank slow / fails | Unset `--rerank` or fix `MEMLAYER_LLM_*` |
+| Rerank slow / fails | Unset `--rerank` or fix `STATEFULMEMORY_LLM_*` |

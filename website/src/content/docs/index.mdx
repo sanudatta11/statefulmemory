@@ -1,37 +1,37 @@
 ---
 title: Overview
-description: "Persistent memory for coding agents — self-host or Memlayer Cloud SaaS. CLI + MCP → daemon → SQLite."
+description: "Persistent memory for coding agents — self-host or StatefulMemory Cloud SaaS. CLI + MCP → daemon → SQLite."
 head:
   - tag: meta
     attrs:
       name: keywords
-      content: memlayer, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, cloud SaaS, self-host, llms.txt
+      content: statefulmemory, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, cloud SaaS, self-host, llms.txt
 ---
 
 import { LinkButton } from '@astrojs/starlight/components';
 
-# memlayer
+# statefulmemory
 
 Persistent memory infrastructure for coding agents: **CLI + MCP → gRPC daemon →
 per-project SQLite**. **Self-host** on your machine or team, or use
-**Memlayer Cloud** (managed SaaS).
+**StatefulMemory Cloud** (managed SaaS).
 
-<div class="ml-cta" role="group" aria-label="Get started with memlayer">
+<div class="ml-cta" role="group" aria-label="Get started with statefulmemory">
   <div class="ml-cta-row">
     <LinkButton href="/docs/install/" variant="primary" icon="right-arrow">
       Install
     </LinkButton>
-    <LinkButton href="/docs/why-memlayer/" variant="secondary" icon="open-book">
-      Why memlayer
+    <LinkButton href="/docs/why-statefulmemory/" variant="secondary" icon="open-book">
+      Why statefulmemory
     </LinkButton>
-    <LinkButton href="https://github.com/sanudatta11/memlayer" variant="minimal" icon="github">
+    <LinkButton href="https://github.com/sanudatta11/statefulmemory" variant="minimal" icon="github">
       GitHub
     </LinkButton>
   </div>
   <p class="ml-cta-hint">
     <code>make install</code>
     <span aria-hidden="true">·</span>
-    wire with <code>memlayer install</code>
+    wire with <code>statefulmemory install</code>
     <span aria-hidden="true">·</span>
     source on GitHub
   </p>
@@ -41,24 +41,24 @@ per-project SQLite**. **Self-host** on your machine or team, or use
   Your browser does not support video.
 </video>
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/overview-v2.mp4" title="memlayer overview">
+<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/overview-v2.mp4" title="statefulmemory overview">
   Your browser does not support video.
 </video>
 
 ## Install in one minute
 
 ```bash
-git clone https://github.com/sanudatta11/memlayer && cd memlayer
+git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
 make prereqs && make install
 export PATH="$HOME/.local/bin:$PATH"
-memlayer --version
+statefulmemory --version
 ```
 
 ## Use it
 
-1. **Wire your agent** — `memlayer install` (or `memlayer install --agent cursor`)
-2. **Save something useful** — `memlayer obs save --type decision --title "…" --content "…"` (add `--anchor path::symbol` for code-tied claims)
-3. **Pull context later** — `memlayer obs context --query "…" --limit 20`
+1. **Wire your agent** — `statefulmemory install` (or `statefulmemory install --agent cursor`)
+2. **Save something useful** — `statefulmemory obs save --type decision --title "…" --content "…"` (add `--anchor path::symbol` for code-tied claims)
+3. **Pull context later** — `statefulmemory obs context --query "…" --limit 20`
 
 Full walkthrough: [Getting started](/docs/getting-started/) · Agent setup:
 [Wire into your agent](/docs/agents/) · Shipped vs wishlist:
@@ -73,16 +73,16 @@ CLI. Deployment: [Self-hosting and Cloud](/docs/self-hosting/).
 
 Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
 [llms-full.txt](/llms-full.txt). Coding agents cloning the repo should read
-[AGENTS.md](https://github.com/sanudatta11/memlayer/blob/main/AGENTS.md)
+[AGENTS.md](https://github.com/sanudatta11/statefulmemory/blob/main/AGENTS.md)
 (OpenCode / Codex / local) or
-[CLAUDE.md](https://github.com/sanudatta11/memlayer/blob/main/CLAUDE.md).
+[CLAUDE.md](https://github.com/sanudatta11/statefulmemory/blob/main/CLAUDE.md).
 
 ## Guides
 
 <ul class="ml-guide-list">
   <li>
-    <a href="/docs/why-memlayer/">
-      <strong>Why memlayer</strong>
+    <a href="/docs/why-statefulmemory/">
+      <strong>Why statefulmemory</strong>
       <span>Self-host + Cloud SaaS vs vector DBs alone.</span>
     </a>
   </li>
@@ -119,7 +119,7 @@ Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
   <li>
     <a href="/docs/self-hosting/">
       <strong>Self-hosting and Cloud</strong>
-      <span>UDS / team TCP self-host, or Memlayer Cloud SaaS.</span>
+      <span>UDS / team TCP self-host, or StatefulMemory Cloud SaaS.</span>
     </a>
   </li>
   <li>

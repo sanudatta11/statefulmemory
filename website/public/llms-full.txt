@@ -1,25 +1,25 @@
-# memlayer — LLM-oriented product summary
+# statefulmemory — LLM-oriented product summary
 
-Canonical site: https://memlayer.org
-Repository: https://github.com/sanudatta11/memlayer
+Canonical site: https://statefulmemory.dev
+Repository: https://github.com/sanudatta11/statefulmemory
 License: MIT OR Apache-2.0 (self-host / OSS stack)
 
 ## Definition
 
-memlayer is persistent memory for AI coding agents. It stores decisions, fixes,
+statefulmemory is persistent memory for AI coding agents. It stores decisions, fixes,
 and notes in per-project SQLite. A thin CLI talks to a gRPC daemon. Agents reach
 memory through MCP tools (memory_search, memory_add, memory_context,
 memory_recent, memory_facts, memory_health, memory_decide) or by shelling out to
-the memlayer CLI.
+the statefulmemory CLI.
 
 **Deployment modes (both intentional product paths):**
 
-1. **Self-host** — daemon on your laptop (Unix domain socket under ~/.memlayer/)
+1. **Self-host** — daemon on your laptop (Unix domain socket under ~/.statefulmemory/)
    or team TCP+TLS on infrastructure you run. Hybrid BM25 + BGE-small dense
    search needs no third-party search API key on this path.
-2. **Memlayer Cloud** — managed SaaS: same coding-agent memory product with
+2. **StatefulMemory Cloud** — managed SaaS: same coding-agent memory product with
    hosting and ops handled for you. Signup/regional details publish on
-   memlayer.org as the service rolls out.
+   statefulmemory.dev as the service rolls out.
 
 Optional LLM steps (fact extract, conflict/supersession judge, rerank, Decide)
 shell out to whichever agent CLI is on PATH (OpenCode, Cursor Agent, Claude
@@ -30,24 +30,24 @@ There is no Python/TypeScript Memory SDK today — use MCP or the CLI.
 ## Install (self-host, short)
 
 ```
-git clone https://github.com/sanudatta11/memlayer && cd memlayer
+git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
 make prereqs && make install
 export PATH="$HOME/.local/bin:$PATH"
-memlayer --version
-memlayer install                 # auto-detect agents; registers MCP + skills
+statefulmemory --version
+statefulmemory install                 # auto-detect agents; registers MCP + skills
                                  # (+ git verify hooks when cwd is a repo)
 ```
 
 ## Everyday usage
 
 ```
-memlayer obs save --type decision --title "..." --content "..." --session "$SID"
-memlayer obs save --anchor src/auth.rs::login --title "..." --content "..."
-memlayer obs search "auth" --mode hybrid
-memlayer obs context --query "deploy" --limit 20 --max-tokens 500
-memlayer verify                  # re-check code anchors against git HEAD
-memlayer decide "Should we keep SQLite?"
-memlayer mem export --out backup.mem
+statefulmemory obs save --type decision --title "..." --content "..." --session "$SID"
+statefulmemory obs save --anchor src/auth.rs::login --title "..." --content "..."
+statefulmemory obs search "auth" --mode hybrid
+statefulmemory obs context --query "deploy" --limit 20 --max-tokens 500
+statefulmemory verify                  # re-check code anchors against git HEAD
+statefulmemory decide "Should we keep SQLite?"
+statefulmemory mem export --out backup.mem
 ```
 
 Context withdraws stale / invalidated / unprovable anchored claims by default
@@ -58,22 +58,22 @@ observations are never hidden.
 
 Pin or discover the agent CLI used for extract / judge / rerank / Decide:
 
-- MEMLAYER_LLM_BIN=/path/to/opencode
-- MEMLAYER_LLM_PROVIDER=opencode
-- MEMLAYER_LLM_MODEL=qwen   or   opencode/glm-5.3
+- STATEFULMEMORY_LLM_BIN=/path/to/opencode
+- STATEFULMEMORY_LLM_PROVIDER=opencode
+- STATEFULMEMORY_LLM_MODEL=qwen   or   opencode/glm-5.3
 - Host hints: OPENCODE_MODEL, CURSOR_MODEL, GEMINI_MODEL, ANTHROPIC_MODEL
 
 Disable LLM features while keeping hybrid search on self-host:
 
 ```
-memlayer config set extract.enabled false
-memlayer config set conflict.enabled false
+statefulmemory config set extract.enabled false
+statefulmemory config set conflict.enabled false
 ```
 
 ## Config locations (self-host)
 
-- Global: ~/.memlayer/config.toml
-- Per-project: ~/.memlayer/projects/<name>.config.toml
+- Global: ~/.statefulmemory/config.toml
+- Per-project: ~/.statefulmemory/projects/<name>.config.toml
 - Precedence: env > project overlay > global > code defaults
 
 Notable keys: search.mode (hybrid|bm25), verify.serve_stale, search.max_per_type,
@@ -92,21 +92,21 @@ LangGraph, CrewAI, AutoGen, LlamaIndex, Vercel AI SDK: not shipped.
 
 ## Documentation index
 
-https://memlayer.org/
-https://memlayer.org/docs/why-memlayer/
-https://memlayer.org/docs/architecture/
-https://memlayer.org/docs/install/
-https://memlayer.org/docs/getting-started/
-https://memlayer.org/docs/integrations/
-https://memlayer.org/docs/agents/
-https://memlayer.org/docs/self-hosting/
-https://memlayer.org/docs/observations/
-https://memlayer.org/docs/search-context/
-https://memlayer.org/docs/anchors-verify/
-https://memlayer.org/docs/decide/
-https://memlayer.org/docs/mem/
-https://memlayer.org/docs/commands/
-https://memlayer.org/docs/config/
-https://memlayer.org/docs/locomo/
-https://memlayer.org/docs/troubleshooting/
-https://memlayer.org/llms.txt
+https://statefulmemory.dev/
+https://statefulmemory.dev/docs/why-statefulmemory/
+https://statefulmemory.dev/docs/architecture/
+https://statefulmemory.dev/docs/install/
+https://statefulmemory.dev/docs/getting-started/
+https://statefulmemory.dev/docs/integrations/
+https://statefulmemory.dev/docs/agents/
+https://statefulmemory.dev/docs/self-hosting/
+https://statefulmemory.dev/docs/observations/
+https://statefulmemory.dev/docs/search-context/
+https://statefulmemory.dev/docs/anchors-verify/
+https://statefulmemory.dev/docs/decide/
+https://statefulmemory.dev/docs/mem/
+https://statefulmemory.dev/docs/commands/
+https://statefulmemory.dev/docs/config/
+https://statefulmemory.dev/docs/locomo/
+https://statefulmemory.dev/docs/troubleshooting/
+https://statefulmemory.dev/llms.txt

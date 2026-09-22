@@ -1,0 +1,435 @@
+//! `statefulmemory ui` — loopback web dashboard for browsable memory.
+//!
+//! Serves a single embedded HTML/JS app on 127.0.0.1 (`--port`, default 4687).
+//! Every API call talks to the daemon through the same UDS gRPC channel the
+//! CLI uses (auto-spawns). The server binds the loopback interface only and
+//! prints its URL; no auth token because the listener never leaves the
+//! machine. This is the "statefulmemory UI" surface from the v2 plan — the graph
+//! view, search, and observation browsing stay inside the single page.
+
+use std::io::{Read, Write};
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use tiny_http::{Header, Method, Request as HReq, Response, Server, StatusCode};
+
+use statefulmemory_client::{channel, StatefulMemoryClient};
+
+use crate::cmd_daemon::default_autospawn_config;
+use crate::exit;
+use crate::Cli;
+
+#[derive(clap::Args, Debug)]
+pub struct UiArgs {
+    /// HTTP port to listen on (loopback only).
+    #[arg(long, default_value_t = 4687)]
+    pub port: u16,
+    /// Bind host. Default 127.0.0.1 (loopback). Hosting on 0.0.0.0 requires
+    /// an explicit opt-in and is intended for a trusted LAN behind TLS.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+}
+
+type Client = StatefulMemoryClient<tonic::transport::Channel>;
+
+pub async fn dispatch(cli: &Cli, args: &UiArgs) -> ExitCode {
+    if args.host != "127.0.0.1" && args.host != "::1" && args.host != "localhost" {
+        eprintln!(
+            "statefulmemory: refusing to bind {}. statefulmemory UI is loopback-only; use a reverse proxy (e.g. Caddy) for LAN exposure.",
+            args.host,
+        );
+        return ExitCode::from(exit::USAGE);
+    }
+    let socket = statefulmemory_core::paths::socket_path();
+    if !socket.exists() {
+        let cfg = default_autospawn_config();
+        if let Err(e) = crate::autospawn::ensure_running(cfg).await {
+            eprintln!("statefulmemory: {e}");
+            return ExitCode::from(e.exit_code());
+        }
+    }
+    let channel = match channel::connect_uds(&socket) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("statefulmemory: {e}");
+            return ExitCode::from(exit::DAEMON_UNREACHABLE);
+        }
+    };
+    let client = Arc::new(Client::new(channel));
+    // Dedicated runtime so the sync tiny-http loop can block_on RPCs without
+    // competing with the CLI's own async context.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("statefulmemory: ui runtime: {e}");
+            return ExitCode::from(exit::GENERAL);
+        }
+    };
+    let addr = format!("{}:{}", args.host, args.port);
+    let server = match Server::http(&addr) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("statefulmemory: ui bind {addr}: {e}");
+            return ExitCode::from(exit::GENERAL);
+        }
+    };
+    println!("statefulmemory UI → http://{addr}     hit Ctrl-C to stop");
+    serve(&rt, client, server);
+    let _ = cli;
+    ExitCode::SUCCESS
+}
+
+fn serve(rt: &tokio::runtime::Runtime, client: Arc<Client>, server: Server) {
+    let project = crate::project_detect::detect_project_silent(None)
+        .map(|d| d.normalized)
+        .unwrap_or_else(|| "default".to_string());
+    loop {
+        let request = match server.recv() {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        let method = request.method().clone();
+        let url = request.url().to_string();
+
+        match (method, url.as_str()) {
+            (Method::Get, "/") => respond_html(request, UI_HTML),
+            (Method::Get, "/favicon.ico") => {
+                let _ = request.respond(
+                    Response::from_string("")
+                        .with_status_code(StatusCode(204)),
+                );
+            }
+            (Method::Post, "/api/search") => {
+                let q = read_json_field(&mut request, "query").unwrap_or_default();
+                let body = rt.block_on(search(Arc::clone(&client), &project, &q));
+                respond_json(request, &body);
+            }
+            (Method::Post, "/api/graph") => {
+                let entity = read_json_field(&mut request, "entity").unwrap_or_default();
+                let hops = read_json_field(&mut request, "hops")
+                    .and_then(|s| s.parse::<u8>().ok())
+                    .unwrap_or(1)
+                    .min(2);
+                let body = rt.block_on(graph(Arc::clone(&client), &project, &entity, hops));
+                respond_json(request, &body);
+            }
+            (Method::Post, "/api/stats") => {
+                let body = rt.block_on(stats(Arc::clone(&client), &project));
+                respond_json(request, &body);
+            }
+            (Method::Post, "/api/decide") => {
+                let question = read_json_field(&mut request, "question").unwrap_or_default();
+                let body = rt.block_on(decide(Arc::clone(&client), &project, &question));
+                respond_json(request, &body);
+            }
+            _ => {
+                let _ = request.respond(
+                    Response::from_string("not found").with_status_code(StatusCode(404)),
+                );
+            }
+        }
+    }
+}
+
+fn read_body(request: &mut HReq) -> String {
+    let mut s = String::new();
+    request
+        .as_reader()
+        .read_to_string(&mut s)
+        .unwrap_or_default();
+    s
+}
+
+fn read_json_field(request: &mut HReq, field: &str) -> Option<String> {
+    let body = read_body(request);
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v.get(field)
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+fn respond_html(request: HReq, html: &str) {
+    let resp = Response::from_string(html)
+        .with_header(
+            Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+        )
+        .with_status_code(StatusCode(200));
+    let _ = request.respond(resp);
+}
+
+fn respond_json(request: HReq, json: &str) {
+    let resp = Response::from_string(json)
+        .with_header(
+            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+        )
+        .with_status_code(StatusCode(200));
+    let _ = request.respond(resp);
+}
+
+async fn search(client: Arc<Client>, project: &str, query: &str) -> String {
+    if query.trim().is_empty() {
+        return r#"{"hits":[],"error":"query required"}"#.into();
+    }
+    match client
+        .search_observations(statefulmemory_proto::SearchObservationsRequest {
+            project_name: project.into(),
+            query: query.into(),
+            r#type: None,
+            scope: None,
+            all_projects: false,
+            limit: 15,
+            mode: Some("hybrid".into()),
+            rerank: None,
+        })
+        .await
+    {
+        Ok(resp) => {
+            let obs = resp.into_inner().observations;
+            let hits: Vec<serde_json::Value> = obs
+                .iter()
+                .map(|o| serde_json::json!({
+                    "id": o.id,
+                    "type": o.r#type,
+                    "title": o.title,
+                    "content": o.content.chars().take(160).collect::<String>(),
+                    "created_at": o.created_at,
+                    "verify_state": o.verify_state.as_deref().unwrap_or(""),
+                    "code_anchor": o.code_anchor.as_deref().unwrap_or(""),
+                }))
+                .collect();
+            serde_json::json!({ "hits": hits }).to_string()
+        }
+        Err(e) => serde_json::json!({ "hits": [], "error": e.message() }).to_string(),
+    }
+}
+
+async fn graph(client: Arc<Client>, project: &str, entity: &str, hops: u8) -> String {
+    if entity.trim().is_empty() {
+        return r#"{"entities":[],"edges":[],"error":"entity required"}"#.into();
+    }
+    // Resolve entity name → id via ListEntities prefix, exact first.
+    let list = match client
+        .list_entities(statefulmemory_proto::ListEntitiesRequest {
+            project_name: project.into(),
+            norm_prefix: entity.to_lowercase(),
+            kind_filter: String::new(),
+            limit: 20,
+        })
+        .await
+    {
+        Ok(r) => r.into_inner().entities,
+        Err(e) => return serde_json::json!({"error": e.message()}).to_string(),
+    };
+    let ent = list
+        .iter()
+        .find(|e| e.norm_name == entity.to_lowercase())
+        .or_else(|| list.first());
+    let Some(ent) = ent else {
+        return serde_json::json!({"entities":[],"edges":[],"error":"entity not found"}).to_string();
+    };
+    let id = ent.id;
+    match client
+        .graph_query(statefulmemory_proto::GraphQueryRequest {
+            project_name: project.into(),
+            entity_id: id,
+            hops: hops as u32,
+            edge_types: vec![],
+            limit: 64,
+            relation_filter: String::new(),
+        })
+        .await
+    {
+        Ok(resp) => {
+            let r = resp.into_inner();
+            let entities: Vec<serde_json::Value> = r
+                .entities
+                .iter()
+                .map(|e| serde_json::json!({"id": e.id, "kind": e.kind, "name": e.name}))
+                .collect();
+            let edges: Vec<serde_json::Value> = r
+                .edges
+                .iter()
+                .map(|e| serde_json::json!({
+                    "source": e.from_id, "target": e.to_id,
+                    "relation": e.relation, "weight": e.weight,
+                }))
+                .collect();
+            serde_json::json!({ "seed": ent.name, "entities": entities, "edges": edges }).to_string()
+        }
+        Err(e) => serde_json::json!({ "error": e.message() }).to_string(),
+    }
+}
+
+async fn stats(client: Arc<Client>, project: &str) -> String {
+    match client
+        .dream_scan(statefulmemory_proto::DreamScanRequest {
+            project_name: project.into(),
+        })
+        .await
+    {
+        Ok(r) => {
+            let r = r.into_inner();
+            serde_json::json!({
+                "observations_scanned": r.observations_scanned,
+                "consolidation_proposals": r.proposals.len(),
+            })
+            .to_string()
+        }
+        Err(e) => serde_json::json!({ "error": e.message() }).to_string(),
+    }
+}
+
+async fn decide(client: Arc<Client>, project: &str, question: &str) -> String {
+    if question.trim().is_empty() {
+        return r#"{"answer":"question required"}"#.into();
+    }
+    match client
+        .decide(statefulmemory_proto::DecideRequest {
+            project_name: project.into(),
+            question: Some(question.into()),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(r) => {
+            let r = r.into_inner();
+            serde_json::json!({
+                "answer": r.answer,
+                "reasoning": r.reasoning,
+                "hits": r.hits.len(),
+            })
+            .to_string()
+        }
+        Err(e) => serde_json::json!({ "error": e.message() }).to_string(),
+    }
+}
+
+const UI_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>statefulmemory UI</title>
+<style>
+  :root { color-scheme: dark; --bg:#0f1115; --panel:#15181f; --line:#262b36; --acc:#ff6b35; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:#d7dce4; font:14px/1.5 ui-monospace,Menlo,monospace; }
+  header { display:flex; gap:16px; align-items:center; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:16px; margin:0; color:#fff; }
+  .acc {color:var(--acc)}
+  main { max-width:1080px; margin:24px auto; padding:0 20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:18px; }
+  .card h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#9aa4b2; }
+  input[type=text] { width:100%; padding:10px 12px; background:#0b0d11; color:#e6ebf1; border:1px solid var(--line); border-radius:8px; }
+  input[type=text]::placeholder{color:#5c6672}
+  button { background:var(--acc); color:#0b0d11; font-weight:600; border:0; border-radius:8px; padding:10px 18px; cursor:pointer; }
+  .row{display:flex;gap:10px}
+  .hit{border-top:1px solid var(--line);padding:10px 0}
+  .hit b{color:#fff}
+  .muted{color:#7c8590;font-size:13px}
+ ../../ METADATA graph svg {
+</style>
+</head>
+<body>
+<header><h1><span class="acc">statefulmemory</span> UI</h1><span class="muted">loopback dashboard</span></header>
+<main>
+  <div class="card"><h2>Search</h2>
+   <div class="row"
+     <input type="text" id="q" placeholder="e.g. why did we pick pgx?" />
+     <button id="btn">Search</button>
+   </div>
+   <div id="results" style="margin-top:12px"></div>
+  </div>
+  <div class="card"><h2>Graph</h2>
+    <div class="row">
+      <input type="text" id="ge" placeholder="entity, e.g. validate" value="validate" />
+      <button id="gbtn">Query graph</button>
+    </div>
+    <svg class="graph-svg" id="svg" width="100%" height="340"></svg>
+  </div>
+  <div class="card"><h2>Stats</h2><div id="stats" class="muted">loading…</div></div>
+  <div class="card"><h2>Decide</h2>
+    <div class="row">
+      <input type="text" id="dq" placeholder="Should we …?" />
+      <button id="dbtn">Ask</button>
+    </div>
+    <div id="answer" class="muted""></div>
+  </div>
+</main>
+<script>
+  const $=sel=>document.querySelector(sel);
+  async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});return r.json();}
+  const esc=s=>String(s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  const fmt=t=>t?(t.slice(0,10)+' '+t.slice(11,19)):'';
+
+  document.addEventListener('DOMContentLoaded',async()=>{
+    const st=npst/await post('/api/stats',{});;
+    $('#stats').textContent=`observations scanned: ${st.observations_scanned ?? '-'}, consolidation candidates: ${st.consolidation_proposals ?? '-'}`;
+  });
+
+  $('#btn').addEventListener('click' ,asac=async ()=>{
+    const q=$('#q').value.trim(); if(!q)return;
+    $('#results').innerHTML='<p class="muted">searching…</p>';
+    const d= await post('/api/search',{query:q});
+    if(d.error){$('#results').innerHTML='<p class="muted">'+esc(d.error)+'</p>';return;}
+    const hits=d.hits||[];
+    $('#results').innerHTML=hits.length?'':'<p class="muted">no results</p>'+
+      hits.slice(0,20).map(h=>`<div class="hit"><b>${esc(h.title)}</b>
+        <span class="badge ${h.verify_state==='verified'?'good':h.verify_state?'warn':''}">${esc(h.verify_state||'')}</span>
+        <div class="muted">#${h.id} · ${esc(h.type)} · ${fmt(h.created_at)} ${h.code_anchor?'· '+esc(h.code_anchor):''}</div>
+        ${esc(h.content)}</div>`).join('');
+  });
+
+  $('#gbtn').add  addEventListener('click',async ()=>{
+    const e=$('#ge').value.trim(); if(!e)return;
+    const d=await post('/api/graph',{entity:e,hops:1});
+    if(d.error){alert(d.error);return;}
+    drawGraph(d);
+  });
+
+  function drawGraph(d ){
+    const svg=$('#svg'); svg.innerHTML='';
+    const W=svg.clientWidth||900,H=340;
+    const nodes={}; d.entities?.forEach(en=>{nodes[en.id]=Object.assign({},en);});
+    const edges=d.edges||[];
+    // Simple radial layout around seed.
+    const center=nodes[d.seed]?Object.keys(nodes).find(id=>nodes[id].name===d.seed):null;
+    const ring=Object.keys(nodes).filter(id=>id!==center);
+    const N=ring.length||1;
+    const r=Math.min(W,H)/2-40;
+    const cx=W/2,cy=H/2;
+    const pos={};
+    if(center!=null){pos[center]={x:cx,y:cy};}
+    ring.forEach((id,i)=>{const a=2*Math.PI*i/N - Math.PI/2;pos[id]={x:cx+r*Math.cos(a),y:cy+r*Math.sin(a)};});
+    edges.forEach(ed=>{const s=pos[ed.source],t=pos[ed.target];if(!s||!t)return;
+      const line=document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1',s.x);line.setAttribute('y1',s.y);line.setAttribute('x2',t.x);line.setAttribute('y2',t.y);
+      line.setAttribute('stroke','#3a4356');line.setAttribute('stroke-width',Math.min(1+ed.weight,4));
+      svg.appendChild(line);});
+    Object.keys(pos).forEach(id=>{const p=pos[id];const n=nodes[id];
+      const g=document.createElementNS('http://www.w3.org/2000/svg','g');
+      const c=document.createElementNS('http://www.w3.org/2000/svg','circle');
+      c.setAttribute('cx',p.x);c.setAttribute('cy',p.y);c.setAttribute('r',id===center?14:9);
+      c.setAttribute('fill',id===center?'#ff6b35':'#2a3344');c.setAttribute('stroke','#0b0d11');
+      const t=document.createElementNS('http://www.w3.org/2000/svg','text');
+      t.setAttribute('x',p.x+id===center?16:10);t.setAttribute('y',p.y+4);t.setAttribute('fill','#c9d2de');t.setAttribute('font-size','12');
+      t.textContent=n.name.slice(0,22);
+      g.appendChild(c);g.appendChild(t);svg.appendChild(g);});
+  }
+
+  $('#dbtn').add  addEventListener('click',async ()=>{
+    const q=$('#dq').value.trim(); if(!q)return;
+    $('#answer').textContent='thinking…';
+    const d=await post('/api/decide',{question:q});
+    $('#answer').innerHTML=d.error?'<em class="muted">'+esc(d.error)+'</em>':esc(d.answer||'');
+  });
+</script>;
+</body>
+</html>"#;
+
+#[allow(dead_code)]
+fn unused_cli_guard(_cli: &Cli) {}
+EOF

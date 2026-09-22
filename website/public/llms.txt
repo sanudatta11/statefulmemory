@@ -1,39 +1,39 @@
-# memlayer
+# statefulmemory
 
 > Persistent memory for AI coding agents. Self-host (local or team) or
-> Memlayer Cloud (managed SaaS). CLI + gRPC daemon, MCP tools, SQLite,
+> StatefulMemory Cloud (managed SaaS). CLI + gRPC daemon, MCP tools, SQLite,
 > hybrid BM25 + dense search.
 
-memlayer is open source (MIT OR Apache-2.0) for the self-host stack.
-Source: https://github.com/sanudatta11/memlayer
+statefulmemory is open source (MIT OR Apache-2.0) for the self-host stack.
+Source: https://github.com/sanudatta11/statefulmemory
 
 ## Docs
 
-- [Overview](https://memlayer.org/): Product overview and demo video
-- [Why Memlayer?](https://memlayer.org/docs/why-memlayer/): Self-host + Cloud vs vector DBs
-- [Architecture](https://memlayer.org/docs/architecture/): CLI, MCP, daemon, SQLite
-- [Install](https://memlayer.org/docs/install/): Build from source (Rust), PATH, doctor
-- [Getting started](https://memlayer.org/docs/getting-started/): End-to-end tour
-- [Integrations](https://memlayer.org/docs/integrations/): 14 install targets + MCP
-- [Wire into your agent](https://memlayer.org/docs/agents/): MCP, git verify hooks, MEMLAYER_LLM_*
-- [Self-hosting and Cloud](https://memlayer.org/docs/self-hosting/): UDS, team TCP, Memlayer Cloud SaaS
-- [Observations](https://memlayer.org/docs/observations/): Save, recent, history, reextract
-- [Search and context](https://memlayer.org/docs/search-context/): Hybrid retrieval, token budgets
-- [Anchors and verify](https://memlayer.org/docs/anchors-verify/): path::symbol digests, stale withdrawal
-- [Decide](https://memlayer.org/docs/decide/): Conflict recommendation via agent CLI
-- [Mem archives](https://memlayer.org/docs/mem/): Portable .mem export/import
-- [Config](https://memlayer.org/docs/config/): TOML overlays and env overrides
-- [LoCoMo eval](https://memlayer.org/docs/locomo/): Smoke, full, staleness
-- [Troubleshooting](https://memlayer.org/docs/troubleshooting/): Doctor and common failures
-- [Command cheat sheet](https://memlayer.org/docs/commands/): Dense command index
+- [Overview](https://statefulmemory.dev/): Product overview and demo video
+- [Why StatefulMemory?](https://statefulmemory.dev/docs/why-statefulmemory/): Self-host + Cloud vs vector DBs
+- [Architecture](https://statefulmemory.dev/docs/architecture/): CLI, MCP, daemon, SQLite
+- [Install](https://statefulmemory.dev/docs/install/): Build from source (Rust), PATH, doctor
+- [Getting started](https://statefulmemory.dev/docs/getting-started/): End-to-end tour
+- [Integrations](https://statefulmemory.dev/docs/integrations/): 14 install targets + MCP
+- [Wire into your agent](https://statefulmemory.dev/docs/agents/): MCP, git verify hooks, STATEFULMEMORY_LLM_*
+- [Self-hosting and Cloud](https://statefulmemory.dev/docs/self-hosting/): UDS, team TCP, StatefulMemory Cloud SaaS
+- [Observations](https://statefulmemory.dev/docs/observations/): Save, recent, history, reextract
+- [Search and context](https://statefulmemory.dev/docs/search-context/): Hybrid retrieval, token budgets
+- [Anchors and verify](https://statefulmemory.dev/docs/anchors-verify/): path::symbol digests, stale withdrawal
+- [Decide](https://statefulmemory.dev/docs/decide/): Conflict recommendation via agent CLI
+- [Mem archives](https://statefulmemory.dev/docs/mem/): Portable .mem export/import
+- [Config](https://statefulmemory.dev/docs/config/): TOML overlays and env overrides
+- [LoCoMo eval](https://statefulmemory.dev/docs/locomo/): Smoke, full, staleness
+- [Troubleshooting](https://statefulmemory.dev/docs/troubleshooting/): Doctor and common failures
+- [Command cheat sheet](https://statefulmemory.dev/docs/commands/): Dense command index
 
 ## For coding agents (repo)
 
-- [AGENTS.md](https://github.com/sanudatta11/memlayer/blob/main/AGENTS.md): OpenCode / Codex / local LLM contributor instructions
-- [CLAUDE.md](https://github.com/sanudatta11/memlayer/blob/main/CLAUDE.md): Claude Code / Cursor contributor notes
-- [llms-full.txt](https://memlayer.org/llms-full.txt): Longer plain-text summary for LLM ingestion
+- [AGENTS.md](https://github.com/sanudatta11/statefulmemory/blob/main/AGENTS.md): OpenCode / Codex / local LLM contributor instructions
+- [CLAUDE.md](https://github.com/sanudatta11/statefulmemory/blob/main/CLAUDE.md): Claude Code / Cursor contributor notes
+- [llms-full.txt](https://statefulmemory.dev/llms-full.txt): Longer plain-text summary for LLM ingestion
 
 ## Optional
 
-- [Sitemap](https://memlayer.org/sitemap-index.xml)
-- [robots.txt](https://memlayer.org/robots.txt)
+- [Sitemap](https://statefulmemory.dev/sitemap-index.xml)
+- [robots.txt](https://statefulmemory.dev/robots.txt)

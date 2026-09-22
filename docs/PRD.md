@@ -1,4 +1,4 @@
-# Memlayer — Product Requirements Document
+# StatefulMemory — Product Requirements Document
 
 A persistent-memory service for AI coding agents. Greenfield Rust implementation.
 
@@ -8,10 +8,10 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 
 ## 0. Project Identity
 
-- **Name**: `memlayer`
-- **Binary name**: `memlayer`
-- **Data dir**: `~/.memlayer/`
-- **Env var prefix**: `MEMLAYER_*`
+- **Name**: `statefulmemory`
+- **Binary name**: `statefulmemory`
+- **Data dir**: `~/.statefulmemory/`
+- **Env var prefix**: `STATEFULMEMORY_*`
 - **Implementation language**: Rust (Go optional for a future subsystem only if a Rust solution is unfit)
 - **Target platforms**: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`. Windows out of scope for v1.
 - **License**: MIT AND Apache-2.0 (dual-license; users choose either).
@@ -20,10 +20,10 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 - Per-project memory store with FTS5 full-text search.
 - Topic-key upserts for evolving knowledge.
 - Sessions, observations, prompts as the core entities.
-- Git-based sync via per-repo `.memlayer/` directory.
+- Git-based sync via per-repo `.statefulmemory/` directory.
 - Minimum-friction agent integration through prompt-level skills/rules.
-- **CLI + MCP.** Agents talk to the daemon over UDS gRPC (`memlayer` CLI) or
-  stdio MCP (`memlayer mcp` / `memory_*` tools). No HTTP REST.
+- **CLI + MCP.** Agents talk to the daemon over UDS gRPC (`statefulmemory` CLI) or
+  stdio MCP (`statefulmemory mcp` / `memory_*` tools). No HTTP REST.
 - **Daemon-backed.** A single user-local daemon owns SQLite; CLI talks to it over gRPC on a Unix socket.
 - **Per-project DB files** (one SQLite file per project), not a single global DB.
 - Hybrid retrieval (BM25 + optional dense embeddings via BGE-small / sqlite-vec).
@@ -37,7 +37,7 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 1. **Throughput under write-heavy load.** 1000 simultaneous agents writing memories with no errors.
 2. **Low latency.** `obs save` p95 < 10ms warm; `obs search` p95 < 100ms over 1M rows.
 3. **Single static binary.** No runtime, no system SQLite dep, no C++ deps.
-4. **Ease of use.** Zero-config first run. Auto-spawned daemon. Agents discover memlayer through a single prompt-level skill file.
+4. **Ease of use.** Zero-config first run. Auto-spawned daemon. Agents discover statefulmemory through a single prompt-level skill file.
 5. **Round-trippable export.** Markdown export and import are symmetric.
 6. **Team-hostable.** A daemon can be exposed over TCP for an entire team.
 
@@ -56,7 +56,7 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 ┌────────────────────────── User host (or team server) ──────────────────────────┐
 │                                                                                │
 │  agent ─┐                                                                      │
-│         ├──▶ memlayer (CLI)  ──gRPC over UDS──▶  memlayer daemon                │
+│         ├──▶ statefulmemory (CLI)  ──gRPC over UDS──▶  statefulmemory daemon                │
 │  agent ─┘                                            │                          │
 │                                                      ├── tokio runtime          │
 │                                                      ├── tonic gRPC server      │
@@ -65,14 +65,14 @@ This PRD is a working spec for a Rust implementation. All defaults, names, and s
 │                                                      ├── tracing JSON logs      │
 │                                                      └── git-sync engine        │
 │                                                                                │
-│  ~/.memlayer/                                                                  │
+│  ~/.statefulmemory/                                                                  │
 │    daemon.sock         ← Unix domain socket, mode 0600                          │
 │    daemon.lock         ← spawn lock                                             │
 │    daemon.pid                                                                   │
 │    daemon.log          ← tracing JSON, rotated 10MB×5                           │
 │    projects/<name>.db  ← per-project SQLite + FTS5 (one file per project)       │
 │                                                                                │
-│  <repo>/.memlayer/                                                             │
+│  <repo>/.statefulmemory/                                                             │
 │    manifest.json                                                               │
 │    chunks/<id>.jsonl.zst                                                       │
 │    config.json (optional, sets project name)                                   │
@@ -113,7 +113,7 @@ No CGO, no external system libs. Verified single-binary distribution.
 Noun-first, kubectl-style. Top-level groups, each with verbs.
 
 ```
-memlayer <group> <verb> [args] [flags]
+statefulmemory <group> <verb> [args] [flags]
 ```
 
 **Groups**: `obs`, `session`, `prompt`, `project`, `sync`, `daemon`, `service`, `setup`, `tui`, `doctor`, `logs`, `team`, `version`, `completions`.
@@ -155,10 +155,10 @@ memlayer <group> <verb> [args] [flags]
 | `project delete` | `<name> [--hard]` | Cascade delete. |
 | `project consolidate` | `[--all] [--dry-run]` | Interactive merge of similar names. |
 | `project prune` | `[--dry-run]` | Remove projects with 0 observations. |
-| `sync export` | `[--all] [--project P]` | Write a chunk to `<repo>/.memlayer/chunks/`. |
-| `sync import` | — | Apply unimported chunks from `<repo>/.memlayer/`. |
+| `sync export` | `[--all] [--project P]` | Write a chunk to `<repo>/.statefulmemory/chunks/`. |
+| `sync import` | — | Apply unimported chunks from `<repo>/.statefulmemory/`. |
 | `sync status` | `[--project P]` | Lifecycle, last-error, deferred counts. |
-| `sync export-json` | `[file]` | Single JSON dump (default `memlayer-export.json`). |
+| `sync export-json` | `[file]` | Single JSON dump (default `statefulmemory-export.json`). |
 | `sync import-json` | `<file>` | Idempotent import on `sync_id`. |
 | `sync export-md` | `<dir> [--project P] [--since DATE]` | Round-trip markdown export. |
 | `sync import-md` | `<dir>` | Symmetric markdown import. |
@@ -177,7 +177,7 @@ memlayer <group> <verb> [args] [flags]
 | `team token-list` | — | List active tokens (names + admin flag, no secret value). |
 | `team token-revoke` | `<name>` | Revoke a token by name. |
 | `completions` | `{bash,zsh,fish}` | Emit shell completion script to stdout. |
-| `version` | — | Print `memlayer X.Y.Z`. |
+| `version` | — | Print `statefulmemory X.Y.Z`. |
 
 ### 3.4 Exit codes
 - `0` success.
@@ -188,7 +188,7 @@ memlayer <group> <verb> [args] [flags]
 - `5` ambiguous project (recoverable: pass `--project`).
 
 ### 3.5 Tab-completion
-`memlayer completions {bash,zsh,fish}` emits a completion script via `clap_complete`. Listed in §3.3 as a top-level command (no sub-verb needed).
+`statefulmemory completions {bash,zsh,fish}` emits a completion script via `clap_complete`. Listed in §3.3 as a top-level command (no sub-verb needed).
 
 ---
 
@@ -197,24 +197,24 @@ memlayer <group> <verb> [args] [flags]
 ### 4.1 Lifecycle
 
 **Auto-spawn (default).** First CLI invocation:
-1. Try to connect to `~/.memlayer/daemon.sock`.
-2. On connect refused / file missing → acquire `flock` on `~/.memlayer/daemon.lock`.
+1. Try to connect to `~/.statefulmemory/daemon.sock`.
+2. On connect refused / file missing → acquire `flock` on `~/.statefulmemory/daemon.lock`.
 3. Re-check the socket (another CLI may have raced and spawned).
 4. If still missing, `Command::new(self_path()).arg("daemon").arg("start").spawn()` and detach.
 5. Poll for socket readiness with 5s timeout, exponential backoff (10ms, 20ms, …).
 6. On readiness, release lock, connect, proceed.
 7. On timeout, exit code 4 with diagnostic pointing to `daemon.log`.
 
-**Foreground**: `memlayer daemon start --foreground` runs in the terminal, logs to stderr.
+**Foreground**: `statefulmemory daemon start --foreground` runs in the terminal, logs to stderr.
 
-**Service-managed**: `memlayer service install` writes:
-- macOS: `~/Library/LaunchAgents/dev.memlayer.daemon.plist` with `RunAtLoad=true`, `KeepAlive.SuccessfulExit=false`.
-- Linux: `~/.config/systemd/user/memlayer.service` with `Type=simple`, `Restart=on-failure`, `WantedBy=default.target`.
+**Service-managed**: `statefulmemory service install` writes:
+- macOS: `~/Library/LaunchAgents/dev.statefulmemory.daemon.plist` with `RunAtLoad=true`, `KeepAlive.SuccessfulExit=false`.
+- Linux: `~/.config/systemd/user/statefulmemory.service` with `Type=simple`, `Restart=on-failure`, `WantedBy=default.target`.
 
 **Idle shutdown**: none. Daemon stays alive until reboot, OOM, or `daemon stop`.
 
 ### 4.2 Socket
-- Path: `~/.memlayer/daemon.sock`.
+- Path: `~/.statefulmemory/daemon.sock`.
 - Mode: `0600`. Owner-only. Set explicitly with `chmod` after bind.
 - On startup, daemon unlinks any stale socket, then binds.
 - On graceful shutdown (SIGTERM / SIGINT), daemon unlinks the socket and pid file.
@@ -223,9 +223,9 @@ memlayer <group> <verb> [args] [flags]
 
 **Local (UDS):** No protocol-level auth. Filesystem permissions on the socket (`0600`) are the entire trust boundary.
 
-**Hosted-team mode (TCP):** When `MEMLAYER_LISTEN=tcp://host:port`, daemon binds TCP instead of UDS. TCP mode:
-- Requires mandatory TLS via `MEMLAYER_TLS_CERT` / `MEMLAYER_TLS_KEY`. Refuses to start if either is missing.
-- Accepts per-user bearer tokens. Each token is a cryptographically random 32-byte hex string stored in `~/.memlayer/tokens.db` alongside its name and `is_admin` flag. Token passed as gRPC `authorization: Bearer <token>` metadata.
+**Hosted-team mode (TCP):** When `STATEFULMEMORY_LISTEN=tcp://host:port`, daemon binds TCP instead of UDS. TCP mode:
+- Requires mandatory TLS via `STATEFULMEMORY_TLS_CERT` / `STATEFULMEMORY_TLS_KEY`. Refuses to start if either is missing.
+- Accepts per-user bearer tokens. Each token is a cryptographically random 32-byte hex string stored in `~/.statefulmemory/tokens.db` alongside its name and `is_admin` flag. Token passed as gRPC `authorization: Bearer <token>` metadata.
 - Token comparison is constant-time.
 - Admin-only commands (gated by `is_admin=true`):
   - `team token-create`, `team token-revoke`, `team token-list`
@@ -234,10 +234,10 @@ memlayer <group> <verb> [args] [flags]
   - `daemon restart`
 - All other commands require any valid token.
 
-**TLS certificate setup:** `memlayer team init-ca <output-dir>` generates:
+**TLS certificate setup:** `statefulmemory team init-ca <output-dir>` generates:
 - A self-signed CA (`ca.pem`).
 - A leaf cert signed by the CA (`server.pem` + `server-key.pem`).
-- Clients trust the CA at connection time via `MEMLAYER_TLS_CA`.
+- Clients trust the CA at connection time via `STATEFULMEMORY_TLS_CA`.
 
 **Compression (TCP only):** gzip compression enabled on TCP mode. Not enabled on UDS (already in-process).
 
@@ -259,19 +259,19 @@ memlayer <group> <verb> [args] [flags]
 |---|---|
 | `SIGTERM`, `SIGINT` | Drain in-flight requests (5s timeout), flush write thread, close all DBs, unlink socket + pid + lock, exit 0 |
 | `SIGHUP` | Reopen `daemon.log` (for log rotation handoff) |
-| `SIGUSR1` | Dump diagnostics snapshot to `~/.memlayer/diagnostics-<ts>.json` |
+| `SIGUSR1` | Dump diagnostics snapshot to `~/.statefulmemory/diagnostics-<ts>.json` |
 
 ### 4.7 Logging
 - Crate: `tracing` + `tracing-subscriber` JSON formatter + `tracing-appender` size-rolling file appender.
-- File: `~/.memlayer/daemon.log`.
+- File: `~/.statefulmemory/daemon.log`.
 - Rotation: 10 MB per file, 5 files retained (50 MB cap).
-- Log level: `info` default, override via `MEMLAYER_LOG=debug,tonic=warn` (standard `tracing-subscriber` env-filter syntax).
+- Log level: `info` default, override via `STATEFULMEMORY_LOG=debug,tonic=warn` (standard `tracing-subscriber` env-filter syntax).
 - Per-RPC span includes: rpc name, project, latency, result, client connection id.
 
 ### 4.8 Disk-full read-only mode
-- Daemon polls free space on `~/.memlayer/` every 30 seconds.
+- Daemon polls free space on `~/.statefulmemory/` every 30 seconds.
 - On free space < 50 MB: daemon enters **read-only mode**.
-  - All write RPCs (`SaveObservation`, `UpdateObservation`, `SavePrompt`, `StartSession`, `EndSession`, etc.) return `RESOURCE_EXHAUSTED` with message `"disk full — memlayer is in read-only mode"`.
+  - All write RPCs (`SaveObservation`, `UpdateObservation`, `SavePrompt`, `StartSession`, `EndSession`, etc.) return `RESOURCE_EXHAUSTED` with message `"disk full — statefulmemory is in read-only mode"`.
   - Read RPCs (`SearchObservations`, `ListObservations`, `GetObservation`, etc.) continue to serve.
 - On free space recovery (≥ 50 MB): daemon automatically exits read-only mode on next poll cycle.
 - Read-only mode is surfaced in `daemon status` and `doctor` output.
@@ -283,7 +283,7 @@ memlayer <group> <verb> [args] [flags]
 ### 5.1 Layout
 
 ```
-~/.memlayer/
+~/.statefulmemory/
   daemon.sock | daemon.lock | daemon.pid | daemon.log[.1..5]
   config.json                  ← daemon-level config (optional)
   tokens.db                    ← team token store (TCP mode only)
@@ -427,7 +427,7 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
 - `shared/sessions.db` (deferred to v2) would hold a `(session_id, project)` index for cross-project session lookups. Not built in v1 — sessions are project-scoped.
 
 ### 5.6 Per-project config
-`~/.memlayer/projects/<normalized>/config.json`:
+`~/.statefulmemory/projects/<normalized>/config.json`:
 ```json
 {
   "project_display_name": "My Actual Repo Name",
@@ -445,7 +445,7 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
 - On any single-write error, the entire batch rolls back and each caller gets the original error (gRPC `Internal` with detail).
 
 ### 5.8 Dedupe
-- Window: 15 minutes (`MEMLAYER_DEDUPE_WINDOW`, default `15m`, `0` to disable).
+- Window: 15 minutes (`STATEFULMEMORY_DEDUPE_WINDOW`, default `15m`, `0` to disable).
 - On `obs save`:
   1. Compute `normalized_hash = sha256(lowercase(collapse_whitespace(content)))`.
   2. If `topic_key` set: upsert by `(scope, topic_key)`. Matches → update content + `revision_count += 1`. Bump `updated_at`.
@@ -474,9 +474,9 @@ Surfaced via `obs list --due-for-review`.
 ### 6.1 Single flat service
 ```protobuf
 syntax = "proto3";
-package memlayer.v1;
+package statefulmemory.v1;
 
-service Memlayer {
+service StatefulMemory {
   // Observations
   rpc SaveObservation        (SaveObservationRequest)        returns (SaveObservationResponse);
   rpc UpdateObservation      (UpdateObservationRequest)      returns (Observation);
@@ -549,11 +549,11 @@ Standard gRPC status codes + structured JSON detail:
 - `UNAUTHENTICATED` — TCP mode, missing or invalid token.
 - `INTERNAL` — anything unexpected (logged with full context).
 
-Error detail is a JSON object in the gRPC `status.details` field, encoded as `google.protobuf.Any` wrapping `google.rpc.ErrorInfo`. For now: proto projection from a hand-curated struct. Breaking changes to the error shape will move to `memlayer.v2` (see §6.3).
+Error detail is a JSON object in the gRPC `status.details` field, encoded as `google.protobuf.Any` wrapping `google.rpc.ErrorInfo`. For now: proto projection from a hand-curated struct. Breaking changes to the error shape will move to `statefulmemory.v2` (see §6.3).
 
 ### 6.3 Versioning
-- Package is `memlayer.v1`.
-- Backwards-incompatible changes go to `memlayer.v2`. Daemon hosts both during transition.
+- Package is `statefulmemory.v1`.
+- Backwards-incompatible changes go to `statefulmemory.v2`. Daemon hosts both during transition.
 
 ### 6.4 Pagination
 - List RPCs use cursor-based pagination.
@@ -567,7 +567,7 @@ Error detail is a JSON object in the gRPC `status.details` field, encoded as `go
 
 ### 7.1 Layout
 ```
-<repo>/.memlayer/
+<repo>/.statefulmemory/
   manifest.json
   chunks/
     <chunk_id>.jsonl.zst
@@ -614,7 +614,7 @@ Append-only; mergeable via standard git 3-way merge.
 1. Resolve project (`--all` or detected).
 2. Select rows where `sync_id NOT IN (chunked rows from sync_chunks)`. Track via a side table or by querying manifest content if needed.
 3. Build JSONL, zstd-compress, hash → `<chunk_id>`.
-4. Write `<repo>/.memlayer/chunks/<chunk_id>.jsonl.zst`.
+4. Write `<repo>/.statefulmemory/chunks/<chunk_id>.jsonl.zst`.
 5. Append manifest entry.
 6. Insert `(chunk_id)` into `sync_chunks` (per-project DB).
 
@@ -650,7 +650,7 @@ Append-only; mergeable via standard git 3-way merge.
 {
   "version": 1,
   "exported_at": "<RFC3339>",
-  "project": "memlayer",
+  "project": "statefulmemory",
   "counts": { "observations": 100, "prompts": 20, "sessions": 5 }
 }
 ```
@@ -690,22 +690,22 @@ Three cases only. No "scan for child repos." No "dir basename fallback."
 
 ### 9.1 Algorithm
 Given `cwd`:
-1. **Case 0 — config file.** Walk up from `cwd` to enclosing git root. If `.memlayer/config.json` exists, return `project_name`. Source = `config`.
+1. **Case 0 — config file.** Walk up from `cwd` to enclosing git root. If `.statefulmemory/config.json` exists, return `project_name`. Source = `config`.
 2. **Case 1 — git remote.** If `cwd` is inside a git repo with `origin` remote, parse the remote URL (last path segment, strip `.git`). Source = `git_remote`. Supported URL forms: `git@host:org/repo.git`, `https://host/org/repo[.git]`, `ssh://host/org/repo.git`.
 3. **Case 2 — git root.** Git repo without `origin`: use repo root basename. Source = `git_root`.
 4. **Else**: error. Exit code 5. Message:
    ```
-   memlayer: cannot determine project — current directory is not a git repo
-   and contains no .memlayer/config.json. Either run from inside a git repo,
-   create .memlayer/config.json with {"project_name":"<name>"}, or pass
+   statefulmemory: cannot determine project — current directory is not a git repo
+   and contains no .statefulmemory/config.json. Either run from inside a git repo,
+   create .statefulmemory/config.json with {"project_name":"<name>"}, or pass
    --project <name>.
    ```
 
 ### 9.2 Normalization
 - Trim, lowercase, replace spaces/underscores with `-`, drop characters outside `[A-Za-z0-9._-]`.
 - Reject normalized names that begin with `.` or contain `..` (path safety).
-- File on disk: `~/.memlayer/projects/<normalized>.db`.
-- On first project creation, `project_display_name` (the pre-normalization original) is stored in `~/.memlayer/projects/<normalized>/config.json`. If a subsequent project would normalize to the same key from a different original display name, daemon returns `ALREADY_EXISTS` and requires disambiguation via `--project`.
+- File on disk: `~/.statefulmemory/projects/<normalized>.db`.
+- On first project creation, `project_display_name` (the pre-normalization original) is stored in `~/.statefulmemory/projects/<normalized>/config.json`. If a subsequent project would normalize to the same key from a different original display name, daemon returns `ALREADY_EXISTS` and requires disambiguation via `--project`.
 
 ### 9.3 Similar matching
 `project consolidate` finds candidates by Levenshtein distance ≥ 80% similarity. No "shared directory" heuristic (sessions are now per-project; cross-project directory join is not meaningful).
@@ -715,10 +715,10 @@ Given `cwd`:
 ## 10. Setup (Agent Prompt-Level Integrations)
 
 ### 10.1 Behavior
-- `memlayer setup` (no args): scan for installed agents (look for marker files), present a multi-select picker, ask "global or project?" per selection, write integration files.
-- `memlayer setup <agent>`: skip detection, prompt scope only.
-- `memlayer setup <agent> --scope global|project`: fully non-interactive.
-- `memlayer setup --print <agent>`: emit the prompt content to stdout for paste-in.
+- `statefulmemory setup` (no args): scan for installed agents (look for marker files), present a multi-select picker, ask "global or project?" per selection, write integration files.
+- `statefulmemory setup <agent>`: skip detection, prompt scope only.
+- `statefulmemory setup <agent> --scope global|project`: fully non-interactive.
+- `statefulmemory setup --print <agent>`: emit the prompt content to stdout for paste-in.
 
 ### 10.2 Detection markers
 | Agent | Marker (presence indicates installed) |
@@ -732,18 +732,18 @@ Given `cwd`:
 ### 10.3 Output paths
 | Agent | Global | Project |
 |---|---|---|
-| claude-code | `~/.claude/skills/memlayer/SKILL.md` | `<repo>/.claude/skills/memlayer/SKILL.md` |
-| cursor | `~/.cursor/rules/memlayer.md` | `<repo>/.cursor/rules/memlayer.md` |
-| opencode | `~/.config/opencode/system-prompt.d/memlayer.md` | `<repo>/.opencode/system-prompt.d/memlayer.md` |
-| codex | `~/.codex/instructions.d/memlayer.md` | `<repo>/.codex/instructions.d/memlayer.md` |
-| gemini-cli | `~/.gemini/instructions.d/memlayer.md` | `<repo>/.gemini/instructions.d/memlayer.md` |
+| claude-code | `~/.claude/skills/statefulmemory/SKILL.md` | `<repo>/.claude/skills/statefulmemory/SKILL.md` |
+| cursor | `~/.cursor/rules/statefulmemory.md` | `<repo>/.cursor/rules/statefulmemory.md` |
+| opencode | `~/.config/opencode/system-prompt.d/statefulmemory.md` | `<repo>/.opencode/system-prompt.d/statefulmemory.md` |
+| codex | `~/.codex/instructions.d/statefulmemory.md` | `<repo>/.codex/instructions.d/statefulmemory.md` |
+| gemini-cli | `~/.gemini/instructions.d/statefulmemory.md` | `<repo>/.gemini/instructions.d/statefulmemory.md` |
 
 ### 10.4 Skill content — Detailed template (memory protocol)
 The skill template enforces a strict agent protocol. It contains:
 
 **Session lifecycle:**
-- At the start of every session, run `memlayer session start <session-id> --directory <cwd>`. The response includes an inline context summary (recent observations, decisions, active topic keys). Prepend this context to the agent's working context before beginning work.
-- At the end of every session, run `memlayer session end <session-id> --summary "<one-sentence summary>"`.
+- At the start of every session, run `statefulmemory session start <session-id> --directory <cwd>`. The response includes an inline context summary (recent observations, decisions, active topic keys). Prepend this context to the agent's working context before beginning work.
+- At the end of every session, run `statefulmemory session end <session-id> --summary "<one-sentence summary>"`.
 
 **When to save an observation:**
 - After fixing a bug: `--type bugfix`
@@ -754,7 +754,7 @@ The skill template enforces a strict agent protocol. It contains:
 
 **Save format:**
 ```
-memlayer obs save \
+statefulmemory obs save \
   --title "<short imperative title>" \
   --type <type> \
   --scope <project|personal|team> \
@@ -767,11 +767,11 @@ memlayer obs save \
 - Use topic keys for evolving facts (e.g., `architecture/auth-strategy`). Each save with the same key updates the record in-place.
 
 **Search-first protocol:**
-- Before starting significant work, run `memlayer obs search "<task keywords>"` to surface relevant prior observations.
+- Before starting significant work, run `statefulmemory obs search "<task keywords>"` to surface relevant prior observations.
 - Agents must not duplicate observations that already exist — search first, save if new.
 
 **Output format note:**
-- When piped (i.e., called from an agent script), `memlayer` outputs JSON automatically. No `--output json` flag needed in most cases.
+- When piped (i.e., called from an agent script), `statefulmemory` outputs JSON automatically. No `--output json` flag needed in most cases.
 
 ### 10.5 Idempotency
 - Re-running `setup` checks for existing file. If identical → no-op. If different → diff and prompt (unless `--force`).
@@ -787,7 +787,7 @@ Single-screen interactive browser with inline edit support. ~500 LOC ceiling.
 ### 11.2 Layout
 ```
 ┌────────────────────────────────────────────────┐
-│ Search: [_______________]              memlayer│
+│ Search: [_______________]              statefulmemory│
 ├────────────────────────────────────────────────┤
 │ > [42] bugfix : Fixed FTS5 syntax error        │
 │   [41] decision : Use Tantivy if SQLite slow   │
@@ -826,14 +826,14 @@ Built on `ratatui` + `crossterm`. Uses async `tokio` for incremental search (deb
 
 ## 12. Doctor & Logs
 
-### 12.1 `memlayer doctor`
+### 12.1 `statefulmemory doctor`
 Default: read-only diagnostics. `--auto-repair` enables repair.
 
 **Read-only checks** (always run):
 - `PRAGMA integrity_check` per project DB.
 - FTS5 row count vs. observations row count (drift detection).
 - Recent error tail from `daemon.log` (last 10 lines at ERROR level).
-- Disk-free space on `~/.memlayer/` mount.
+- Disk-free space on `~/.statefulmemory/` mount.
 - Daemon read-only mode status.
 
 **Auto-repair** (`--auto-repair`):
@@ -855,9 +855,9 @@ Output (text or JSON) per project:
   },
   "projects": [
     {
-      "name": "memlayer",
-      "display_name": "memlayer",
-      "db_path": "~/.memlayer/projects/memlayer.db",
+      "name": "statefulmemory",
+      "display_name": "statefulmemory",
+      "db_path": "~/.statefulmemory/projects/statefulmemory.db",
       "size_bytes": 5242880,
       "integrity_check": "ok",
       "counts": { "observations": 142, "sessions": 12, "prompts": 24, "soft_deleted": 3 },
@@ -868,10 +868,10 @@ Output (text or JSON) per project:
 }
 ```
 
-### 12.2 `memlayer logs`
-- `memlayer logs` — print last 100 lines.
-- `memlayer logs -f` — tail follow.
-- `memlayer logs --lines 1000` — print last N.
+### 12.2 `statefulmemory logs`
+- `statefulmemory logs` — print last 100 lines.
+- `statefulmemory logs -f` — tail follow.
+- `statefulmemory logs --lines 1000` — print last N.
 - Output format follows `--output` (JSON lines pass through; text mode pretty-prints).
 
 ---
@@ -882,36 +882,36 @@ Output (text or JSON) per project:
 
 | Var | Purpose | Default |
 |---|---|---|
-| `MEMLAYER_DATA_DIR` | Override data dir | `~/.memlayer` |
-| `MEMLAYER_PROJECT` | Override project detection | (none) |
-| `MEMLAYER_LOG` | `tracing-subscriber` env-filter | `info` |
-| `MEMLAYER_DEDUPE_WINDOW` | Dedupe window | `15m` |
-| `MEMLAYER_LISTEN` | Daemon listen address (`unix:///path` or `tcp://host:port`) | `unix://~/.memlayer/daemon.sock` |
-| `MEMLAYER_TOKEN` | Bearer token for TCP mode clients | (none; required if TCP) |
-| `MEMLAYER_TLS_CERT` / `_KEY` | TLS for TCP mode server | (none; required if TCP) |
-| `MEMLAYER_TLS_CA` | CA cert for TCP mode clients | (none; required if TCP) |
+| `STATEFULMEMORY_DATA_DIR` | Override data dir | `~/.statefulmemory` |
+| `STATEFULMEMORY_PROJECT` | Override project detection | (none) |
+| `STATEFULMEMORY_LOG` | `tracing-subscriber` env-filter | `info` |
+| `STATEFULMEMORY_DEDUPE_WINDOW` | Dedupe window | `15m` |
+| `STATEFULMEMORY_LISTEN` | Daemon listen address (`unix:///path` or `tcp://host:port`) | `unix://~/.statefulmemory/daemon.sock` |
+| `STATEFULMEMORY_TOKEN` | Bearer token for TCP mode clients | (none; required if TCP) |
+| `STATEFULMEMORY_TLS_CERT` / `_KEY` | TLS for TCP mode server | (none; required if TCP) |
+| `STATEFULMEMORY_TLS_CA` | CA cert for TCP mode clients | (none; required if TCP) |
 | `NO_COLOR` / `CLICOLOR_FORCE` | Color output control | (standard semantics) |
 
 ### 13.2 Files
 
 | Path | Purpose |
 |---|---|
-| `~/.memlayer/daemon.sock` | UDS for CLI ↔ daemon |
-| `~/.memlayer/daemon.lock` | flock for spawn race |
-| `~/.memlayer/daemon.pid` | Daemon PID |
-| `~/.memlayer/daemon.log[.1..5]` | Rotating JSON logs |
-| `~/.memlayer/config.json` | Optional daemon config |
-| `~/.memlayer/tokens.db` | Team token store (TCP mode only) |
-| `~/.memlayer/projects/<name>.db` | Per-project SQLite + FTS5 |
-| `~/.memlayer/projects/<name>/config.json` | Per-project display name + metadata |
-| `<repo>/.memlayer/manifest.json` | Sync manifest |
-| `<repo>/.memlayer/chunks/*.jsonl.zst` | Sync chunks |
-| `<repo>/.memlayer/config.json` | Optional project name lock |
+| `~/.statefulmemory/daemon.sock` | UDS for CLI ↔ daemon |
+| `~/.statefulmemory/daemon.lock` | flock for spawn race |
+| `~/.statefulmemory/daemon.pid` | Daemon PID |
+| `~/.statefulmemory/daemon.log[.1..5]` | Rotating JSON logs |
+| `~/.statefulmemory/config.json` | Optional daemon config |
+| `~/.statefulmemory/tokens.db` | Team token store (TCP mode only) |
+| `~/.statefulmemory/projects/<name>.db` | Per-project SQLite + FTS5 |
+| `~/.statefulmemory/projects/<name>/config.json` | Per-project display name + metadata |
+| `<repo>/.statefulmemory/manifest.json` | Sync manifest |
+| `<repo>/.statefulmemory/chunks/*.jsonl.zst` | Sync chunks |
+| `<repo>/.statefulmemory/config.json` | Optional project name lock |
 
 ### 13.3 Defaults
 
 ```
-DataDir              = ~/.memlayer
+DataDir              = ~/.statefulmemory
 DedupeWindow         = 15 minutes
 MaxObservationLength = 50_000 chars
 MaxSearchLimit       = 50
@@ -950,8 +950,8 @@ IdleConnTimeout      = 10 minutes (TCP mode)
 ### 14.4 Distribution channels
 - GitHub Releases: `tar.gz` per target containing the binary + `LICENSE-MIT` + `LICENSE-APACHE` + a `README.md`.
 - Homebrew tap (formula points at GitHub Releases).
-- One-line installer: `curl -sSf https://memlayer.dev/install.sh | sh` (writes to `/usr/local/bin/memlayer` or `~/.local/bin/memlayer`).
-- `cargo install memlayer` deferred to post-v1. crates.io publishing is not part of the v1 release.
+- One-line installer: `curl -sSf https://statefulmemory.dev/install.sh | sh` (writes to `/usr/local/bin/statefulmemory` or `~/.local/bin/statefulmemory`).
+- `cargo install statefulmemory` deferred to post-v1. crates.io publishing is not part of the v1 release.
 
 ### 14.5 Binary size
 - Target: < 25 MB stripped per binary.
@@ -959,7 +959,7 @@ IdleConnTimeout      = 10 minutes (TCP mode)
 
 ### 14.6 Versioning
 - SemVer.
-- `memlayer version` prints `memlayer X.Y.Z (commit <sha>, built <date>)`.
+- `statefulmemory version` prints `statefulmemory X.Y.Z (commit <sha>, built <date>)`.
 - Set via `build.rs` with `vergen` crate.
 
 ---
@@ -978,7 +978,7 @@ Designed for the **1000-concurrent-agent** target.
 
 **Chaos tests** — `SIGKILL` daemon mid-burst, restart, verify recovery. Fill disk, verify graceful failure + read-only mode.
 
-**Concurrency / load tests** — separate binary `memlayer-loadtest` simulates N agents.
+**Concurrency / load tests** — separate binary `statefulmemory-loadtest` simulates N agents.
 
 **Soak tests** — tiered: 1h smoke, 24h nightly, 7d weekly.
 
@@ -1037,7 +1037,7 @@ When aggregate write rate approaches the 5K saves/sec ceiling:
 - Stale socket file (daemon crashed) → next CLI auto-spawn unlinks and rebinds.
 
 ### 15.7 Tooling deliverables
-- `memlayer-loadtest` separate binary: configurable agent count, RPC rate, project distribution, duration. Outputs latency histogram + error counts in JSON.
+- `statefulmemory-loadtest` separate binary: configurable agent count, RPC rate, project distribution, duration. Outputs latency histogram + error counts in JSON.
 - GitHub Actions: perf + concurrency (1h smoke) on every PR; merge blocked on >10% regression vs `main`.
 - Nightly soak workflow: 24h run, posts results to a tracking issue.
 - Weekly soak workflow: 7d run, results archived.
@@ -1048,10 +1048,10 @@ All of the following hold:
 1. Every CLI command in §3.3 has both a passing positive integration test and at least one negative test.
 2. Every gRPC RPC in §6.1 has a passing happy-path test.
 3. Every performance budget in §15.2 met on the CI runner (linux-amd64).
-4. Every concurrency budget in §15.3 met by `memlayer-loadtest` on a 8-core 16GB CI runner.
+4. Every concurrency budget in §15.3 met by `statefulmemory-loadtest` on a 8-core 16GB CI runner.
 5. 1h smoke soak completes with no leaks; 24h nightly passes before v1.0.0 tag.
 6. Single binary < 25MB on all four targets.
-7. `setup` writes byte-identical files for re-run on the same machine; preserves user content outside the memlayer block.
+7. `setup` writes byte-identical files for re-run on the same machine; preserves user content outside the statefulmemory block.
 8. Round-trip tests pass for json, markdown, and sync chunks.
 9. `doctor --auto-repair` recovers a synthetically corrupted DB in the chaos test suite.
 
@@ -1073,7 +1073,7 @@ All of the following hold:
 4. **`getrlimit`/`setrlimit` on macOS caps soft limit at 256 by default.** `service install` writes the hard limit; auto-spawned daemon best-effort raises to 8192 and warns if it can't.
 5. **Cross-project search via `ATTACH` has a 10-database SQLite default cap** (`SQLITE_MAX_ATTACHED`). `bundled-full` raises this to 125. Capping fan-out at 32 is well within.
 6. **Tonic stream limits.** `max_concurrent_streams = 256` per connection; with 1000 connections that's 256K total streams. Tokio handles this on modern kernels with `ulimit -n 8192`.
-7. **Project display-name collision.** Two repos that normalize to the same slug will get `ALREADY_EXISTS`. Users must either rename one or set explicit `project_name` in `.memlayer/config.json`.
+7. **Project display-name collision.** Two repos that normalize to the same slug will get `ALREADY_EXISTS`. Users must either rename one or set explicit `project_name` in `.statefulmemory/config.json`.
 8. **rcgen TLS cert rotation.** Self-signed certs have a fixed expiry. `team init-ca` will need a re-cert workflow in a future version; v1 certs are valid 10 years by default.
 
 ---
