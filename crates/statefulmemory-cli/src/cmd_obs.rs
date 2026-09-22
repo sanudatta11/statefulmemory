@@ -786,9 +786,16 @@ mod tests {
     #[test]
     fn default_scope_is_project() {
         // FR4: `obs save` defaults --scope to "project".
-        let cli =
-            Cli::try_parse_from(["statefulmemory", "obs", "save", "--title", "t", "--content", "c"])
-                .expect("parse");
+        let cli = Cli::try_parse_from([
+            "statefulmemory",
+            "obs",
+            "save",
+            "--title",
+            "t",
+            "--content",
+            "c",
+        ])
+        .expect("parse");
         match cli.command {
             Command::Obs(args) => match args.verb {
                 ObsVerb::Save(s) => {

@@ -5,10 +5,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use statefulmemory_client::StatefulMemoryClient;
-use statefulmemory_proto::{
-    DeleteObservationRequest, ListObservationsRequest, Observation, SearchObservationsRequest,
-};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -16,6 +12,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
+};
+use statefulmemory_client::StatefulMemoryClient;
+use statefulmemory_proto::{
+    DeleteObservationRequest, ListObservationsRequest, Observation, SearchObservationsRequest,
 };
 use std::io;
 use tonic::transport::Channel;

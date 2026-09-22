@@ -196,10 +196,18 @@ skill-install: install
 # ── Test ──────────────────────────────────────────────────────────────────────
 
 test:
-	cargo test --workspace
+	@if command -v timeout >/dev/null 2>&1; then \
+		timeout 1800 $(CARGO) test --workspace; \
+	else \
+		$(CARGO) test --workspace; \
+	fi
 
 test-eval:
-	cargo test -p statefulmemory-eval --release
+	@if command -v timeout >/dev/null 2>&1; then \
+		timeout 3600 $(CARGO) test -p statefulmemory-eval --release; \
+	else \
+		$(CARGO) test -p statefulmemory-eval --release; \
+	fi
 
 # ── Daemon ────────────────────────────────────────────────────────────────────
 

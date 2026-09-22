@@ -166,7 +166,7 @@ fn install_patches_pretool_grep_read_idempotent() {
     // detected under HOME/PATH, which is empty in CI tempdirs.
     let out1 = env
         .cmd()
-        .args(["install", "--agent", "claude-code"])
+        .args(["install", "--agent", "claude-code", "--no-laya"])
         .output()
         .expect("install 1");
     assert!(
@@ -232,7 +232,7 @@ fn install_patches_pretool_grep_read_idempotent() {
     // Re-install. Idempotency: counts unchanged.
     let _ = env
         .cmd()
-        .args(["install", "--agent", "claude-code"])
+        .args(["install", "--agent", "claude-code", "--no-laya"])
         .output()
         .expect("install 2");
     let settings2: serde_json::Value =

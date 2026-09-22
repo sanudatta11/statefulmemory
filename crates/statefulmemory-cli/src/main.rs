@@ -207,7 +207,10 @@ async fn main() -> ExitCode {
         Command::Doctor(args) => {
             let project =
                 detect_project_silent(cli.project.clone()).unwrap_or_else(|| "default".to_string());
-            let is_json = matches!(cli.output, Some(statefulmemory_cli::cli::OutputFormat::Json));
+            let is_json = matches!(
+                cli.output,
+                Some(statefulmemory_cli::cli::OutputFormat::Json)
+            );
             match open_client(cli.output, cli.project).await {
                 Ok((mut client, detection, _fmt)) => {
                     match cmd_doctor::run(Some(&mut client), &detection.normalized, args, is_json)

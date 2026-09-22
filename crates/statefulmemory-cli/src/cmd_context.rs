@@ -40,10 +40,7 @@ pub async fn dispatch(
         .max_tokens
         .or_else(|| a.window.as_deref().and_then(window_to_tokens))
         .unwrap_or(32_000);
-    let window_label = a
-        .window
-        .clone()
-        .unwrap_or_else(|| format!("{max_tokens}"));
+    let window_label = a.window.clone().unwrap_or_else(|| format!("{max_tokens}"));
 
     let req = p::ContextRequest {
         project_name: project_name.to_string(),
@@ -222,8 +219,7 @@ fn write_text_brief(
         writeln!(h)?;
         // Chain-of-evidence: link decision titles to supporting fact triples
         // (Wave 2 multi-hop briefing cue for the host model).
-        let decision_ids: std::collections::HashSet<i64> =
-            decisions.iter().map(|o| o.id).collect();
+        let decision_ids: std::collections::HashSet<i64> = decisions.iter().map(|o| o.id).collect();
         let mut chains: Vec<String> = Vec::new();
         for (oid, facts) in facts_block {
             if !decision_ids.contains(oid) {

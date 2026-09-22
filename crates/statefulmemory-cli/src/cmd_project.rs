@@ -170,7 +170,10 @@ async fn prune(
                 .await;
             match dr {
                 Ok(_) => eprintln!("removed: {normalized}"),
-                Err(e) => eprintln!("statefulmemory: failed to remove {normalized}: {}", e.message()),
+                Err(e) => eprintln!(
+                    "statefulmemory: failed to remove {normalized}: {}",
+                    e.message()
+                ),
             }
         }
     }
@@ -287,7 +290,8 @@ mod tests {
         // mutation paths (the post-print block) are gated by `!a.dry_run`.
         // Verify the ProjectConsolidateArgs/ProjectPruneArgs default + flag
         // semantics here.
-        let cli = Cli::try_parse_from(["statefulmemory", "project", "consolidate", "--dry-run"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["statefulmemory", "project", "consolidate", "--dry-run"]).unwrap();
         match cli.command {
             Command::Project(ProjectArgs {
                 verb: ProjectVerb::Consolidate(a),

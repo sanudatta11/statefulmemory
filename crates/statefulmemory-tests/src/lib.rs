@@ -9,11 +9,18 @@
 //!   `STATEFULMEMORY_DATA_DIR`, `STATEFULMEMORY_PROJECT`, and `STATEFULMEMORY_LOG` so the binary
 //!   under test is fully isolated from `~/.statefulmemory` and the developer's git
 //!   remote. Used by the spec2-t8 test suite (TS-1 .. TS-28).
+//!
+//! Every harness wait is hard-bounded: [`CliCommand::output`] kills the child
+//! after 30 s (override via [`CliCommand::with_timeout`]), socket polls use
+//! 5 s budgets, and a failed spawn kills the daemon child instead of leaking it.
 
+use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use statefulmemory_core::process;
 use statefulmemory_proto::stateful_memory_client::StatefulMemoryClient;
 use tonic::transport::{Channel, Endpoint, Uri};
 
@@ -30,15 +37,21 @@ impl Drop for DaemonHandle {
 }
 
 /// Spawn the daemon binary in foreground mode against an isolated data dir.
+///
+/// Stderr goes to a file (not a pipe) so a chatty/crashing daemon can never
+/// block on a full pipe buffer while the caller waits for the socket.
 pub fn spawn_daemon() -> DaemonHandle {
     let data_dir = tempfile::TempDir::new().expect("tempdir");
     let bin = locate_binary();
+    let stderr_log = std::fs::File::create(data_dir.path().join("daemon.stderr"))
+        .expect("create daemon.stderr");
     let child = Command::new(bin)
         .args(["daemon", "start", "--foreground"])
         .env("STATEFULMEMORY_DATA_DIR", data_dir.path())
         .env("STATEFULMEMORY_LOG", "warn")
+        .env("RUST_BACKTRACE", "1")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(stderr_log)
         .spawn()
         .expect("spawn daemon");
     DaemonHandle { data_dir, child }
@@ -264,6 +277,7 @@ impl CliEnv {
         // Phase 1: wait for the socket file to appear.
         while !sock.exists() {
             if Instant::now() > deadline {
+                self.kill_daemon();
                 panic!("daemon socket never appeared at {}", sock.display());
             }
             std::thread::sleep(delay);
@@ -282,13 +296,22 @@ impl CliEnv {
                     std::thread::sleep(delay);
                     delay = std::cmp::min(delay * 2, Duration::from_millis(160));
                 }
-                Err(e) => panic!(
-                    "daemon socket {} never accepted connections: {e}",
-                    sock.display()
-                ),
+                Err(e) => {
+                    self.kill_daemon();
+                    panic!("daemon socket {} never accepted connections: {e}", sock.display());
+                }
             }
         }
         self
+    }
+
+    /// Kill + reap a spawned daemon child. Used on failure paths so a hung
+    /// or socket-less daemon never outlives the failed test.
+    fn kill_daemon(&mut self) {
+        if let Some(mut child) = self.daemon.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     /// Read whatever the daemon has written to its captured stderr file.
@@ -298,10 +321,14 @@ impl CliEnv {
         std::fs::read_to_string(self.data_path().join("daemon.stderr")).ok()
     }
 
-    /// Build a fresh `Command` invoking the `statefulmemory` binary, with the env's
-    /// data dir + project name pre-wired and inherited env vars stripped so
-    /// the test environment doesn't leak a developer's `STATEFULMEMORY_*` overrides.
-    pub fn cmd(&self) -> Command {
+    /// Build a fresh [`CliCommand`] invoking the `statefulmemory` binary, with
+    /// the env's data dir + project name pre-wired and inherited env vars
+    /// stripped so the test environment doesn't leak a developer's
+    /// `STATEFULMEMORY_*` overrides.
+    ///
+    /// [`CliCommand::output`] / [`CliCommand::status`] are hard-bounded (30 s
+    /// default) and kill the child on expiry — a hung CLI cannot stall the suite.
+    pub fn cmd(&self) -> CliCommand {
         let mut c = Command::new(&self.binary);
         c.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -312,24 +339,121 @@ impl CliEnv {
             .env("STATEFULMEMORY_LOG", "warn")
             .current_dir(self.data_path());
         // Prefer a vendored BGE tree so auto-spawned daemons do not block on
-        // a Hub download inside the 5 s readiness budget (FR2.3).
+        // a Hub download inside the 5 s readiness budget (FR2.3). Also pass
+        // through the real HF_HOME: `env_clear` above would otherwise hide
+        // the developer's (or CI's) warm HuggingFace cache behind the test's
+        // throwaway HOME, forcing a full model re-download per test env.
         if let Ok(dir) = std::env::var("STATEFULMEMORY_BGE_MODEL_DIR") {
             c.env("STATEFULMEMORY_BGE_MODEL_DIR", dir);
-        } else {
-            let home_vendor = dirs_home_bge();
-            if home_vendor.is_dir() {
-                c.env("STATEFULMEMORY_BGE_MODEL_DIR", home_vendor);
-            }
+        } else if let Some(dir) = complete_bge_vendor_dir() {
+            c.env("STATEFULMEMORY_BGE_MODEL_DIR", dir);
         }
-        c
+        if let Some(hf) = real_hf_home() {
+            c.env("HF_HOME", hf);
+        }
+        CliCommand {
+            inner: c,
+            timeout: process::DEFAULT_TIMEOUT,
+        }
     }
 
     /// Same as [`cmd`] but does *not* set `STATEFULMEMORY_PROJECT`. Use for tests
     /// that exercise the project-detection algorithm itself.
-    pub fn cmd_no_project_env(&self) -> Command {
+    pub fn cmd_no_project_env(&self) -> CliCommand {
         let mut c = self.cmd();
         c.env_remove("STATEFULMEMORY_PROJECT");
         c
+    }
+}
+
+/// [`Command`] builder whose `output()` / `status()` waits are hard-bounded.
+///
+/// Mirrors the builder API used across the test suite (`args` / `env` /
+/// `current_dir` / …). On timeout the child is SIGKILLed and `output()`
+/// returns [`io::ErrorKind::TimedOut`] so `.expect(...)` panics with a clear
+/// message instead of hanging the harness.
+///
+/// `spawn()` is intentionally unbounded — callers that need a long-lived child
+/// (`logs -f`) must apply their own deadline + kill, which the existing tests
+/// already do.
+pub struct CliCommand {
+    inner: Command,
+    timeout: Duration,
+}
+
+impl CliCommand {
+    /// Override the default 30 s bound for this invocation.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.inner.args(args);
+        self
+    }
+
+    pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
+        self.inner.arg(arg);
+        self
+    }
+
+    pub fn env<K, V>(&mut self, key: K, val: V) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.inner.env(key, val);
+        self
+    }
+
+    pub fn env_remove<K: AsRef<OsStr>>(&mut self, key: K) -> &mut Self {
+        self.inner.env_remove(key);
+        self
+    }
+
+    pub fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self {
+        self.inner.current_dir(dir);
+        self
+    }
+
+    pub fn stdin<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
+        self.inner.stdin(cfg);
+        self
+    }
+
+    pub fn stdout<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
+        self.inner.stdout(cfg);
+        self
+    }
+
+    pub fn stderr<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
+        self.inner.stderr(cfg);
+        self
+    }
+
+    /// Run to completion with a hard deadline; kill the child on expiry.
+    pub fn output(&mut self) -> io::Result<Output> {
+        process::output_with_timeout(&mut self.inner, self.timeout)
+    }
+
+    /// Run with inherited stdio, hard deadline; kill the child on expiry.
+    pub fn status(&mut self) -> io::Result<ExitStatus> {
+        process::status_with_timeout(&mut self.inner, self.timeout)
+    }
+
+    /// Raw spawn — the caller owns bounding the wait (deadline + kill).
+    pub fn spawn(&mut self) -> io::Result<Child> {
+        self.inner.spawn()
+    }
+
+    /// Escape hatch for code that needs the underlying [`Command`].
+    pub fn command(&mut self) -> &mut Command {
+        &mut self.inner
     }
 }
 
@@ -338,6 +462,32 @@ fn dirs_home_bge() -> PathBuf {
     PathBuf::from(home)
         .join(".statefulmemory-models")
         .join("bge-small")
+}
+
+/// Vendor dir only when it actually contains all three model files — an
+/// empty/partial directory must not suppress the download fallback.
+fn complete_bge_vendor_dir() -> Option<PathBuf> {
+    let dir = dirs_home_bge();
+    let complete = dir.join("config.json").is_file()
+        && dir.join("tokenizer.json").is_file()
+        && dir.join("model.safetensors").is_file();
+    complete.then_some(dir)
+}
+
+/// The *real* user/CI HuggingFace cache (`HF_HOME` or `~/.cache/huggingface`),
+/// captured from the process env before tests swap `HOME` for isolation.
+/// Returns `None` when no cache exists — the daemon then either downloads
+/// (bounded) or degrades to BM25-only.
+fn real_hf_home() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("HF_HOME") {
+        let p = PathBuf::from(p);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    let p = PathBuf::from(home).join(".cache").join("huggingface");
+    p.is_dir().then_some(p)
 }
 
 impl Default for CliEnv {

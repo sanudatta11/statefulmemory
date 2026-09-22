@@ -12,8 +12,8 @@
 
 use std::io::{self, Write};
 
-use statefulmemory_proto as p;
 use serde_json::{json, Value};
+use statefulmemory_proto as p;
 
 use crate::formatter::Render;
 

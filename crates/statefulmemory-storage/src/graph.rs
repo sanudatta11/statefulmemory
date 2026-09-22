@@ -11,7 +11,7 @@ use tracing::debug;
 /// Prefix lookup on `norm_name`, ordered shortest-first (more general cues first).
 pub fn entity_lookup(conn: &Connection, norm_prefix: &str, limit: usize) -> Vec<Entity> {
     let mut out = Vec::new();
-    if norm_prefix.is_empty() || limit == 0 {
+    if limit == 0 {
         return out;
     }
     let sql = "SELECT id, kind, name, norm_name FROM entities
@@ -22,11 +22,16 @@ pub fn entity_lookup(conn: &Connection, norm_prefix: &str, limit: usize) -> Vec<
     };
     // LIKE pattern: prefix with `_` matching relaxed via escape; `%` and `_`
     // in the prefix itself are escaped so user text can't widen the match.
-    let escaped = norm_prefix
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let pattern = format!("{escaped}%");
+    // Empty prefix = match-all (ListEntities proto contract: empty = all).
+    let pattern = if norm_prefix.is_empty() {
+        "%".to_string()
+    } else {
+        let escaped = norm_prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("{escaped}%")
+    };
     let Ok(rows) = stmt.query_map(params![pattern, limit as i64], |row| {
         let kind_s: String = row.get(1)?;
         Ok(Entity {
@@ -121,7 +126,8 @@ pub fn insert_edge(
         Some((_w, first)) => {
             let new_first = first.map_or(first_seen, |f| f.min(first_seen));
             conn.execute(
-                "UPDATE entity_edges SET weight = weight + ?4, first_seen = ?5, last_seen = ?6
+                "UPDATE entity_edges SET weight = weight + ?4,
+                        first_seen = ?5, last_seen = MAX(last_seen, ?6)
                  WHERE from_entity = ?1 AND to_entity = ?2 AND relation = ?3",
                 params![
                     from_entity,
@@ -172,18 +178,29 @@ pub fn neighbors(
         .collect::<Vec<_>>()
         .join(",");
     let cap_idx = 3 + edge_types.len();
+    // Undirected walk: pairwise "mentions" edges are co-occurrence (orientation
+    // is just insertion order i<j), so traversal must follow either endpoint —
+    // otherwise a seed with only incoming edges sees no neighborhood. Both
+    // from_entity and to_entity are indexed (spec: graph-briefing).
     let sql = format!(
         "WITH RECURSIVE walk(entity_id, hop) AS (
             SELECT ?1, 0
             UNION
-            SELECT e.to_entity, walk.hop + 1
+            SELECT CASE WHEN e.from_entity = walk.entity_id
+                        THEN e.to_entity ELSE e.from_entity END, walk.hop + 1
             FROM walk
-            JOIN entity_edges e ON e.from_entity = walk.entity_id
+            JOIN entity_edges e
+              ON e.from_entity = walk.entity_id OR e.to_entity = walk.entity_id
             WHERE walk.hop < ?2
+              AND e.from_entity != e.to_entity
               AND e.relation IN ({placeholders})
-              AND (SELECT COUNT(*) FROM entity_mentions m WHERE m.entity_id = e.to_entity) <= ?{cap_idx}
+              AND (SELECT COUNT(*) FROM entity_mentions m
+                   WHERE m.entity_id = CASE WHEN e.from_entity = walk.entity_id
+                                            THEN e.to_entity ELSE e.from_entity END)
+                  <= ?{cap_idx}
          )
-         SELECT DISTINCT entity_id, hop FROM walk ORDER BY hop ASC, entity_id ASC"
+         SELECT entity_id, MIN(hop) AS hop FROM walk GROUP BY entity_id
+         ORDER BY hop ASC, entity_id ASC"
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -629,6 +646,12 @@ mod tests {
         // edge_types filter allows co_occurs: d reachable at hop 1
         let r = neighbors(&conn, a, 2, &["mentions", "co_occurs"], 256);
         assert_eq!(r, vec![(a, 0), (b, 1), (d, 1), (c, 2)]);
+        // Undirected: walking from an edge TARGET reaches the SOURCE (co-mention
+        // orientation is insertion-order only — both endpoints must traverse).
+        let r = neighbors(&conn, d, 1, &["mentions"], 256);
+        assert_eq!(r, vec![(d, 0), (c, 1)]);
+        let r = neighbors(&conn, b, 1, &["mentions"], 256);
+        assert_eq!(r, vec![(b, 0), (a, 1), (c, 1)], "both directions at hop 1");
         // degree cap: give c more mentions than cap → c unreachable, d also cut off
         seed_obs(&conn, 1);
         for obs in 1..=3 {
@@ -636,6 +659,9 @@ mod tests {
         }
         let r = neighbors(&conn, a, 3, &["mentions"], 2);
         assert_eq!(r, vec![(a, 0), (b, 1)]);
+        // Cap still holds reverse-direction: d → c blocked by c's mention count.
+        let r = neighbors(&conn, d, 3, &["mentions"], 2);
+        assert_eq!(r, vec![(d, 0)]);
     }
 
     #[test]
@@ -688,5 +714,190 @@ mod tests {
             .unwrap();
         assert_eq!(mention_count, 3);
         let _ = anchor;
+    }
+
+    #[test]
+    fn entity_lookup_prefix_limit_empty_and_escaping() {
+        let conn = mem_conn();
+        upsert_entity(&conn, "concept", "validate", 1).unwrap();
+        upsert_entity(&conn, "concept", "validate_mw", 1).unwrap();
+        upsert_entity(&conn, "concept", "other", 1).unwrap();
+
+        // Prefix match, shortest-first ordering.
+        let hits = entity_lookup(&conn, "validate", 10);
+        let names: Vec<&str> = hits.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["validate", "validate_mw"]);
+
+        // Limit truncates (shortest first).
+        let hits = entity_lookup(&conn, "validate", 1);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "validate");
+
+        // Zero limit and no match → empty.
+        assert!(entity_lookup(&conn, "validate", 0).is_empty());
+        assert!(entity_lookup(&conn, "nomatch", 10).is_empty());
+
+        // Empty prefix = all rows (ListEntities proto contract), still limited.
+        let all = entity_lookup(&conn, "", 10);
+        assert_eq!(all.len(), 3);
+        let capped = entity_lookup(&conn, "", 2);
+        assert_eq!(capped.len(), 2);
+
+        // `%` / `_` in the user prefix are literal (escaped), not wildcards.
+        upsert_entity(&conn, "concept", "a1b", 1).unwrap();
+        upsert_entity(&conn, "concept", "axb", 1).unwrap();
+        let lit = entity_lookup(&conn, "a1b", 10);
+        assert_eq!(lit.len(), 1, "`_` must not act as a single-char wildcard");
+        assert_eq!(lit[0].name, "a1b");
+        let lit_pct = entity_lookup(&conn, "100%", 10);
+        assert!(lit_pct.is_empty(), "`%` must not widen the match");
+    }
+
+    #[test]
+    fn edges_for_entities_filters_relations_limit_and_both_directions() {
+        let conn = mem_conn();
+        let a = upsert_entity(&conn, "concept", "a", 1).unwrap();
+        let b = upsert_entity(&conn, "concept", "b", 1).unwrap();
+        let c = upsert_entity(&conn, "concept", "c", 1).unwrap();
+        // a→b mentions, b→c fixes, a→c contradicts
+        insert_edge(&conn, a, b, "mentions", 1.0, 1, 1, None).unwrap();
+        insert_edge(&conn, b, c, "fixes", 1.0, 2, 2, None).unwrap();
+        insert_edge(&conn, a, c, "contradicts", 1.0, 3, 3, None).unwrap();
+
+        // Relation filter.
+        let only_fixes = edges_for_entities(&conn, &[a, b, c], &["fixes"], 10).unwrap();
+        assert_eq!(only_fixes.len(), 1);
+        assert_eq!(only_fixes[0].relation, "fixes");
+
+        // Induced-subgraph semantics: edge returned only when BOTH endpoints
+        // are in the id set (graph_query collects neighbors first, then asks
+        // for edges among the full returned set).
+        let in_set = edges_for_entities(&conn, &[a, b], &["mentions"], 10).unwrap();
+        assert_eq!(in_set.len(), 1, "a→b found when both endpoints seeded");
+        assert_eq!(in_set[0].to_id, b);
+        let target_only = edges_for_entities(&conn, &[b], &["mentions"], 10).unwrap();
+        assert!(
+            target_only.is_empty(),
+            "edge excluded when only its target is in the set (induced, not star)"
+        );
+
+        // Limit truncates (newest first by last_seen DESC).
+        let capped = edges_for_entities(&conn, &[a, b, c], &["mentions", "fixes", "contradicts"], 2).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].relation, "contradicts", "last_seen DESC ordering");
+
+        // Empty inputs short-circuit to empty.
+        assert!(edges_for_entities(&conn, &[], &["mentions"], 10).unwrap().is_empty());
+        assert!(edges_for_entities(&conn, &[a], &[], 10).unwrap().is_empty());
+        assert!(edges_for_entities(&conn, &[a], &["mentions"], 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn entity_id_lookups_handle_missing_and_empty() {
+        let conn = mem_conn();
+        let a = upsert_entity(&conn, "concept", "keep", 1).unwrap();
+
+        // get_entity_by_id: hit + miss.
+        let got = get_entity_by_id(&conn, a).unwrap();
+        assert_eq!(got.id, a);
+        assert!(get_entity_by_id(&conn, 999_999).is_err());
+
+        // entities_by_ids: missing ids dropped, empty input → empty.
+        let list = entities_by_ids(&conn, &[a, 999_999]).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, a);
+        assert!(entities_by_ids(&conn, &[]).unwrap().is_empty());
+        assert!(entities_by_ids(&conn, &[999_999]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stats_aggregates_kinds_mentions_and_relations() {
+        let conn = mem_conn();
+        let a = upsert_entity(&conn, "concept", "x", 1).unwrap();
+        let b = upsert_entity(&conn, "file", "src/lib.rs", 1).unwrap();
+        seed_obs(&conn, 1);
+        insert_mention(&conn, a, 1, None, "backtick").unwrap();
+        insert_mention(&conn, a, 1, None, "anchor").unwrap();
+        insert_mention(&conn, b, 1, None, "anchor").unwrap();
+        insert_edge(&conn, a, b, "mentions", 1.0, 1, 1, Some(1)).unwrap();
+        insert_edge(&conn, b, a, "fixes", 1.0, 1, 1, Some(1)).unwrap();
+
+        let s = stats(&conn).unwrap();
+        assert_eq!(s.total_entities, 2);
+        assert_eq!(s.total_mentions, 3);
+        assert_eq!(s.total_edges, 2);
+        assert_eq!(
+            s.entities_by_kind,
+            vec![("concept".to_string(), 1), ("file".to_string(), 1)]
+        );
+        assert_eq!(
+            s.edges_by_relation,
+            vec![("fixes".to_string(), 1), ("mentions".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn mention_keeps_distinct_sources_same_obs() {
+        let conn = mem_conn();
+        seed_obs(&conn, 1);
+        let e = upsert_entity(&conn, "concept", "validate", 1).unwrap();
+        insert_mention(&conn, e, 1, Some("[0,8]"), "backtick").unwrap();
+        insert_mention(&conn, e, 1, None, "anchor").unwrap();
+        // Exact (entity, obs, source) dup is dropped.
+        insert_mention(&conn, e, 1, Some("[99,107]"), "backtick").unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entity_mentions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "distinct sources kept; same source deduped");
+    }
+
+    #[test]
+    fn insert_edge_spans_time_with_min_max_and_accumulates_weight() {
+        let conn = mem_conn();
+        let a = upsert_entity(&conn, "concept", "a", 1).unwrap();
+        let b = upsert_entity(&conn, "concept", "b", 1).unwrap();
+
+        insert_edge(&conn, a, b, "mentions", 1.0, 100, 100, None).unwrap();
+        // Older event: first_seen widens down, last_seen must NOT regress.
+        insert_edge(&conn, a, b, "mentions", 1.0, 50, 40, None).unwrap();
+        // Newer event: last_seen grows.
+        insert_edge(&conn, a, b, "mentions", 2.0, 200, 300, None).unwrap();
+
+        let (w, first, last): (f64, i64, i64) = conn
+            .query_row(
+                "SELECT weight, first_seen, last_seen FROM entity_edges",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(first, 50, "first_seen = MIN");
+        assert_eq!(last, 300, "last_seen = MAX (no regress on older event)");
+        assert_eq!(w, 4.0, "weights accumulate 1+1+2");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entity_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "same (from,to,relation) never duplicates");
+    }
+
+    #[test]
+    fn sqlite_datetime_epoch_helpers() {
+        assert_eq!(epoch_from_sqlite_datetime("1970-01-01 00:00:00"), Some(0));
+        assert_eq!(
+            epoch_from_sqlite_datetime("2000-03-01 00:00:00"),
+            Some(11_017 * 86_400),
+            "leap-year civil date"
+        );
+        assert_eq!(
+            epoch_from_sqlite_datetime("1970-01-01 01:02:03"),
+            Some(3600 + 120 + 3)
+        );
+        // Malformed inputs fall back to None (backfill uses 0).
+        assert_eq!(epoch_from_sqlite_datetime("not-a-date"), None);
+        assert_eq!(epoch_from_sqlite_datetime("1970-01-01"), None);
+        assert_eq!(epoch_from_sqlite_datetime(""), None);
+        assert_eq!(epoch_from_sqlite_datetime("1970-13-99 99:99:xx"), None);
+
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
     }
 }

@@ -51,7 +51,9 @@ jobs:
         run: cargo build --workspace --tests
 
       - name: Unit tests
-        run: cargo test --workspace --lib --bins -- --test-threads=2
+        # `timeout` is a hard outer bound: a single hung test/binary cannot
+        # burn the full job budget (inner waits are already bounded per process).
+        run: timeout 900 cargo test --workspace --lib --bins -- --test-threads=2
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -61,7 +63,7 @@ jobs:
         continue-on-error: true
 
       - name: Integration tests
-        run: cargo test -p statefulmemory-tests -- --test-threads=1
+        run: timeout 1200 cargo test -p statefulmemory-tests -- --test-threads=1
 
   website-build:
     name: Website build

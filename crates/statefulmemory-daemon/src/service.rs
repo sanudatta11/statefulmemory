@@ -1238,7 +1238,11 @@ impl StatefulMemory for StatefulMemoryService {
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let hops = r.hops.clamp(1, 2) as u8;
-        let edge_types: Vec<&str> = if r.edge_types.is_empty() {
+        // relation_filter (CLI `--relation`) narrows to one relation; else an
+        // explicit edge_types list; else the default traversal set.
+        let edge_types: Vec<&str> = if !r.relation_filter.is_empty() {
+            vec![r.relation_filter.as_str()]
+        } else if r.edge_types.is_empty() {
             vec!["mentions", "fixes", "contradicts"]
         } else {
             r.edge_types.iter().map(|s| s.as_str()).collect()

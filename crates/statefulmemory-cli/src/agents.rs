@@ -257,11 +257,14 @@ fn path_on_path(bin: &str) -> bool {
     if cfg!(test) {
         return false;
     }
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let mut cmd = Command::new("which");
+    cmd.arg(bin);
+    statefulmemory_core::process::output_with_timeout(
+        &mut cmd,
+        statefulmemory_core::process::SHORT_TIMEOUT,
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
 }
 
 /// Whether `selected` includes this agent (or any of the listed ones).

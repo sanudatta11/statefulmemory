@@ -9,9 +9,16 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use statefulmemory_core::paths;
+use statefulmemory_core::process::{output_with_timeout, status_with_timeout, SHORT_TIMEOUT};
 
 const SERVER_PY: &str = include_str!("../../../tools/laya-sidecar/server.py");
 const REQUIREMENTS_TXT: &str = include_str!("../../../tools/laya-sidecar/requirements.txt");
+
+/// `python -m venv` is local and fast; 60 s bounds a wedged interpreter.
+const VENV_TIMEOUT: Duration = Duration::from_secs(60);
+/// `pip install` hits the network — first-run cold caches legitimately take a
+/// while, but never unbounded.
+const PIP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
 pub struct LayaInstallReport {
@@ -185,7 +192,9 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<bool> {
 
 fn find_system_python() -> Option<PathBuf> {
     for name in ["python3", "python"] {
-        if let Ok(out) = Command::new(name).arg("--version").output() {
+        let mut cmd = Command::new(name);
+        cmd.arg("--version");
+        if let Ok(out) = output_with_timeout(&mut cmd, SHORT_TIMEOUT) {
             if out.status.success() {
                 return Some(PathBuf::from(name));
             }
@@ -201,11 +210,10 @@ fn ensure_venv(system_python: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     std::fs::create_dir_all(paths::data_dir()).map_err(|e| e.to_string())?;
-    let status = Command::new(system_python)
-        .args(["-m", "venv"])
-        .arg(&venv)
-        .status()
-        .map_err(|e| format!("venv create: {e}"))?;
+    let mut cmd = Command::new(system_python);
+    cmd.args(["-m", "venv"]).arg(&venv);
+    let status =
+        status_with_timeout(&mut cmd, VENV_TIMEOUT).map_err(|e| format!("venv create: {e}"))?;
     if !status.success() {
         return Err(format!("python -m venv failed (status {status})"));
     }
@@ -218,16 +226,15 @@ fn ensure_venv(system_python: &Path) -> Result<bool, String> {
 fn pip_install_deps() -> Result<(), String> {
     let py = paths::laya_venv_python();
     let req = paths::laya_sidecar_dir().join("requirements.txt");
-    let _ = Command::new(&py)
+    let mut upgrade = Command::new(&py);
+    upgrade
         .args(["-m", "pip", "install", "--upgrade", "pip"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let out = Command::new(&py)
-        .args(["-m", "pip", "install", "-r"])
-        .arg(&req)
-        .output()
-        .map_err(|e| format!("pip: {e}"))?;
+        .stderr(Stdio::null());
+    let _ = status_with_timeout(&mut upgrade, PIP_TIMEOUT);
+    let mut install = Command::new(&py);
+    install.args(["-m", "pip", "install", "-r"]).arg(&req);
+    let out = output_with_timeout(&mut install, PIP_TIMEOUT).map_err(|e| format!("pip: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(stderr.chars().take(400).collect());

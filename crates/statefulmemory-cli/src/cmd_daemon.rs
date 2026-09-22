@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use statefulmemory_proto as p;
 use serde_json::{json, Value};
+use statefulmemory_proto as p;
 
 use crate::autospawn::{self, AutoSpawnConfig, AutoSpawnError};
 use crate::cli::DaemonVerb;

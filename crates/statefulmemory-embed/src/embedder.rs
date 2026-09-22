@@ -26,6 +26,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -41,6 +42,43 @@ const EMBED_DIM: usize = 384;
 /// Absolute resolve URLs (curl follows relative redirects correctly).
 const HF_RESOLVE_BASE: &str = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
 const MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "model.safetensors"];
+
+/// Hard wall-clock budget for the whole network-resolution phase (hf-hub and
+/// the curl fallback). Without this a stalled connection keeps the daemon's
+/// blocking pool busy indefinitely, which delays `tokio` runtime shutdown
+/// (the runtime joins `spawn_blocking` work) and orphans download children.
+const NETWORK_BUDGET: Duration = Duration::from_secs(300);
+/// Per-file curl ceilings: fail fast on dead routes instead of retrying for
+/// the default "forever" (curl's `--max-time` also kills stuck transfers).
+const CURL_CONNECT_TIMEOUT_SECS: &str = "10";
+const CURL_MAX_TIME_SECS: &str = "280";
+
+/// Run `f` on a detached thread; error if it doesn't finish within `budget`.
+///
+/// The worker thread may outlive the budget (we can't cancel blocking
+/// I/O mid-flight), but every child process it spawns is itself bounded
+/// (`curl --max-time`), so the leak self-heals.
+fn with_timeout<T>(
+    budget: Duration,
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(budget) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            anyhow::bail!("BGE model download exceeded network budget {budget:?}")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("BGE model download thread panicked")
+        }
+    }
+}
 
 /// Trait for sentence embedders. Implementations must be thread-safe so the
 /// retrieval path can share a single instance behind an `Arc`.
@@ -136,6 +174,10 @@ fn download_via_curl(dest: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
                 "4",
                 "--retry-delay",
                 "2",
+                "--connect-timeout",
+                CURL_CONNECT_TIMEOUT_SECS,
+                "--max-time",
+                CURL_MAX_TIME_SECS,
                 "--progress-bar",
                 "-o",
             ])
@@ -168,7 +210,10 @@ fn resolve_model_paths() -> Result<(PathBuf, PathBuf, PathBuf)> {
         return require_model_files(&vendor);
     }
 
-    match download_via_hf_hub() {
+    // Network phase: hard wall-clock budget so a stalled HuggingFace
+    // connection can never pin the daemon's blocking pool (and thereby
+    // runtime shutdown) forever.
+    with_timeout(NETWORK_BUDGET, move || match download_via_hf_hub() {
         Ok(paths) => Ok(paths),
         Err(hf_err) => {
             tracing::warn!(
@@ -182,7 +227,7 @@ fn resolve_model_paths() -> Result<(PathBuf, PathBuf, PathBuf)> {
                 )
             })
         }
-    }
+    })
 }
 
 impl BgeSmallEmbedder {

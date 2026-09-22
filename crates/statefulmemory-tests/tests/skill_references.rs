@@ -25,7 +25,7 @@ fn install_writes_all_five_sidecars() {
     // test HOME, even when no agent is auto-detected on the runner PATH.
     let out = env
         .cmd()
-        .args(["install", "--agent", "claude-code"])
+        .args(["install", "--agent", "claude-code", "--no-laya"])
         .output()
         .expect("run install");
     assert!(
@@ -57,7 +57,7 @@ fn sidecar_bytes_match_source() {
     let env = CliEnv::new();
     let out = env
         .cmd()
-        .args(["install", "--agent", "claude-code"])
+        .args(["install", "--agent", "claude-code", "--no-laya"])
         .output()
         .expect("install must succeed");
     assert!(

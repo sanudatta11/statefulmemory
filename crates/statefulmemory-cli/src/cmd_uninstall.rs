@@ -39,7 +39,9 @@ pub async fn dispatch_uninstall(_fmt: Formatter, purge: bool) -> ExitCode {
         cwd.join(".windsurf")
             .join("rules")
             .join("statefulmemory-memory.md"),
-        home.join(".cursor").join("rules").join("statefulmemory.mdc"),
+        home.join(".cursor")
+            .join("rules")
+            .join("statefulmemory.mdc"),
         PathBuf::from("/usr/local/bin/statefulmemory"),
     ];
     let block_targets: Vec<PathBuf> = vec![
@@ -140,9 +142,9 @@ pub async fn dispatch_uninstall(_fmt: Formatter, purge: bool) -> ExitCode {
 
     if git_hooks_present {
         match crate::git_hooks::remove_git_hooks(&cwd) {
-            Ok(n) if n > 0 => {
-                removed.push(format!("removed statefulmemory blocks from {n} git hook(s)"))
-            }
+            Ok(n) if n > 0 => removed.push(format!(
+                "removed statefulmemory blocks from {n} git hook(s)"
+            )),
             Ok(_) => {}
             Err(e) => failed.push(format!("failed   git hooks ({e})")),
         }
@@ -168,18 +170,14 @@ pub async fn dispatch_uninstall(_fmt: Formatter, purge: bool) -> ExitCode {
 }
 
 async fn dispatch_purge(home: &Path, cwd: &Path) -> ExitCode {
-    let _ = std::process::Command::new("statefulmemory")
-        .args(["daemon", "stop"])
-        .status();
-    let _ = std::process::Command::new("smem")
-        .args(["daemon", "stop"])
-        .status();
-    let _ = std::process::Command::new("sm")
-        .args(["daemon", "stop"])
-        .status();
-    let _ = std::process::Command::new("memlayer")
-        .args(["daemon", "stop"])
-        .status();
+    for bin in ["statefulmemory", "smem", "sm", "memlayer"] {
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(["daemon", "stop"]);
+        let _ = statefulmemory_core::process::status_with_timeout(
+            &mut cmd,
+            std::time::Duration::from_secs(5),
+        );
+    }
 
     // Best-effort stop of the install-managed Laya sidecar before wiping data.
     stop_laya_sidecar(home);

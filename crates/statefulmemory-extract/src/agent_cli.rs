@@ -434,6 +434,9 @@ pub async fn invoke(provider: &Provider, prompt: &str, requested_model: &str) ->
 async fn invoke_once(provider: &Provider, prompt: &str, model: Option<&str>) -> Result<String> {
     let args = build_args(provider.id, prompt, model);
     let mut cmd = Command::new(&provider.bin);
+    // Kill the agent CLI if the timeout future is dropped — otherwise the
+    // child outlives the request and keeps burning CPU (or holds the pipe).
+    cmd.kill_on_drop(true);
     cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

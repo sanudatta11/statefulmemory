@@ -27,12 +27,15 @@ pub fn hooks_dir(dir: &Path) -> Option<PathBuf> {
     if !crate_is_repo(dir) {
         return None;
     }
-    let out = Command::new("git")
-        .args(["-C"])
+    let mut rev = Command::new("git");
+    rev.args(["-C"])
         .arg(dir)
-        .args(["rev-parse", "--git-path", "hooks"])
-        .output()
-        .ok()?;
+        .args(["rev-parse", "--git-path", "hooks"]);
+    let out = statefulmemory_core::process::output_with_timeout(
+        &mut rev,
+        std::time::Duration::from_secs(10),
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -188,7 +191,9 @@ mod tests {
         let hook = hooks_dir(repo.path()).unwrap().join("post-commit");
         let text = fs::read_to_string(&hook).unwrap();
         assert_eq!(text.matches(HOOK_START).count(), 1);
-        assert!(text.contains("smem verify --quiet") || text.contains("statefulmemory verify --quiet"));
+        assert!(
+            text.contains("smem verify --quiet") || text.contains("statefulmemory verify --quiet")
+        );
         let mode = fs::metadata(&hook).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
     }

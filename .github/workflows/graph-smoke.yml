@@ -68,12 +68,33 @@ jobs:
 
           # Graph CLI verbs (daemon-independent paths).
           "$BIN" graph rebuild
-          STATS=$("$BIN" --output json graph stats)
-          echo "$STATS"
-          ENTITIES=$(echo "$STATS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_entities"])')
-          EDGES=$(echo "$STATS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_edges"])')
-          test "$ENTITIES" -ge 3 || { echo "expected >=3 entities, got $ENTITIES"; exit 1; }
-          test "$EDGES" -ge 1 || { echo "expected >=1 edge, got $EDGES"; exit 1; }
+          "$BIN" --output json graph stats > /tmp/graph-stats.json
+          cat /tmp/graph-stats.json
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("/tmp/graph-stats.json"))
+          if s["total_entities"] < 3:
+              print("expected >=3 entities,", s["total_entities"], file=sys.stderr); sys.exit(1)
+          if s["total_edges"] < 1:
+              print("expected >=1 edge,", s["total_edges"], file=sys.stderr); sys.exit(1)
+          if s["total_mentions"] < 3:
+              print("expected >=3 mentions,", s["total_mentions"], file=sys.stderr); sys.exit(1)
+          if not s.get("edges_by_relation"):
+              print("edges_by_relation empty", file=sys.stderr); sys.exit(1)
+          print("stats OK:", s)
+          PY
+
+          # Graph query RPC must walk live edges (seed + neighbors + edges).
+          "$BIN" graph query validate --hops 2 --json > /tmp/graph-q.json
+          python3 - <<'PY'
+          import json, sys
+          q = json.load(open("/tmp/graph-q.json"))
+          if not q.get("edges"):
+              print("graph query returned no edges:", q, file=sys.stderr); sys.exit(1)
+          if len(q.get("entities", [])) < 2:
+              print("expected seed + neighbor entities:", q, file=sys.stderr); sys.exit(1)
+          print("query OK:", len(q["entities"]), "entities,", len(q["edges"]), "edges")
+          PY
 
           # Briefing expansion: with [graph] on, seeded query returns the
           # co-mentioning decision rows through the context RPC (provenance
@@ -87,6 +108,7 @@ jobs:
           # Default config has graph.enabled=false; unit tests assert output is
           # unchanged when disabled (service) and zero expansion on empty cues
           # (daemon lib). Re-run the daemon lib graph tests as the parity gate.
-          cargo test -p statefulmemory-daemon --lib -- graph_expansion
-          cargo test -p statefulmemory-storage --lib -- graph::
-          cargo test -p statefulmemory-cli --lib -- cmd_graph::
+          # `timeout` bounds each binary so a hang cannot eat the job budget.
+          timeout 300 cargo test -p statefulmemory-daemon --lib -- graph_expansion
+          timeout 300 cargo test -p statefulmemory-storage --lib -- graph::
+          timeout 300 cargo test -p statefulmemory-cli --lib -- cmd_graph::

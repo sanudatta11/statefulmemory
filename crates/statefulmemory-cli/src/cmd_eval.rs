@@ -28,9 +28,11 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
         "beam1m" | "beam-1m" => BenchmarkKind::Beam1m,
         "beam10m" | "beam-10m" => BenchmarkKind::Beam10m,
         "staleness" => BenchmarkKind::Staleness,
-        other => return Err(format!(
+        other => {
+            return Err(format!(
             "unknown benchmark '{other}'; valid: locomo, longmemeval, beam1m, beam10m, staleness"
-        )),
+        ))
+        }
     };
 
     let data_dir = std::env::var("STATEFULMEMORY_EVAL_DATA")
@@ -45,8 +47,9 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
             // short-lived; dropping would delete the DB under the runner.
             std::mem::forget(tmp);
             if benchmark_kind == BenchmarkKind::Staleness {
-                let (memories, queries) = statefulmemory_eval::datasets::staleness::load(&eval_data_dir)
-                    .map_err(|e| format!("load staleness fixture: {e:#}"))?;
+                let (memories, queries) =
+                    statefulmemory_eval::datasets::staleness::load(&eval_data_dir)
+                        .map_err(|e| format!("load staleness fixture: {e:#}"))?;
                 (
                     memories,
                     queries,
@@ -226,8 +229,47 @@ fn load_dataset(
 mod tests {
     use super::*;
 
+    struct EnvRestore {
+        key: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    impl EnvRestore {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let restore = Self {
+                key,
+                value: std::env::var_os(key),
+            };
+            std::env::set_var(key, value);
+            restore
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let restore = Self {
+                key,
+                value: std::env::var_os(key),
+            };
+            std::env::set_var(key, value);
+            restore
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match self.value.as_ref() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[test]
     fn run_eval_smoke_does_not_invent_accuracy() {
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let data_dir = tempfile::tempdir().unwrap();
+        let _data_dir_env = EnvRestore::set_path("STATEFULMEMORY_DATA_DIR", data_dir.path());
         let args = EvalArgs {
             benchmark: "locomo".into(),
             smoke: true,
@@ -263,9 +305,11 @@ mod tests {
             no_supersede: false,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        std::env::set_var("STATEFULMEMORY_EVAL_DATA", "/tmp/statefulmemory-eval-missing-dataset");
+        let _eval_data_env = EnvRestore::set(
+            "STATEFULMEMORY_EVAL_DATA",
+            "/tmp/statefulmemory-eval-missing-dataset",
+        );
         let res = rt.block_on(run_eval(args, Some(OutputFormat::Json)));
-        std::env::remove_var("STATEFULMEMORY_EVAL_DATA");
         match res {
             Err(e) => {
                 assert!(e.contains("LoCoMo dataset missing"), "{e}");

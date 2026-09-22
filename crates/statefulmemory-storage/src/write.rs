@@ -1678,6 +1678,93 @@ mod tests {
         assert_eq!(mentions, 4);
     }
 
+    /// IndexGraph is additive: content change never deletes stale
+    /// entities/mentions (lock for handle_index_graph's no-DELETE contract).
+    #[test]
+    fn write_thread_index_graph_content_change_keeps_stale_mentions() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("t.db");
+
+        {
+            let conn = crate::db::open_write(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO observations (id, sync_id, session_id, type, title, content)
+                 VALUES (1, 'sync1', 's1', 'decision', 't', 'c')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let handle = spawn_write_thread(
+            "gstale".into(),
+            db_path.clone(),
+            8,
+            Duration::from_millis(5),
+            None,
+        )
+        .unwrap();
+
+        let index = |content: &str| {
+            let (tx, rx) = oneshot::channel();
+            handle
+                .send(WriteRequest::IndexGraph {
+                    observation_id: 1,
+                    title: "t".to_string(),
+                    content: content.to_string(),
+                    anchors: vec!["src/auth.rs::run".to_string()],
+                    created_at_epoch: 1_700_000_000,
+                    reply: tx,
+                })
+                .unwrap();
+            rx.blocking_recv()
+                .expect("IndexGraph reply must fire")
+                .expect("IndexGraph must succeed");
+        };
+
+        index("see `Widget` inside crates/foo/bar.rs");
+        index("rewritten to `Gadget` inside crates/foo/bar.rs");
+
+        let conn = crate::db::open_read(&db_path).unwrap();
+        let has = |norm: &str| -> bool {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM entity_mentions m
+                     JOIN entities e ON e.id = m.entity_id
+                     WHERE e.norm_name = ?1",
+                    params![norm],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            n > 0
+        };
+        assert!(
+            has("widget"),
+            "stale backtick entity mention must survive content change (additive contract)"
+        );
+        assert!(has("gadget"), "new backtick entity must be indexed");
+        assert!(
+            has("run"),
+            "anchor-derived mentions must survive re-index"
+        );
+        let widget_mentions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entity_mentions m
+                 JOIN entities e ON e.id = m.entity_id WHERE e.norm_name = 'widget'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            widget_mentions, 1,
+            "re-index must not duplicate the stale mention"
+        );
+    }
+
     #[test]
     fn insert_facts_merges_key_expand_for_fts() {
         let dir = TempDir::new().unwrap();

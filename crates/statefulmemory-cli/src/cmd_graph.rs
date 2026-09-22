@@ -225,8 +225,8 @@ fn stats(project_name: &str, fmt: Formatter) -> Result<(), VerbErr> {
             db_path.display()
         )));
     }
-    let conn =
-        statefulmemory_storage::db::open_read(&db_path).map_err(|e| VerbErr::Local(e.to_string()))?;
+    let conn = statefulmemory_storage::db::open_read(&db_path)
+        .map_err(|e| VerbErr::Local(e.to_string()))?;
     let s = graph::stats(&conn).map_err(|e| VerbErr::Local(e.to_string()))?;
     match fmt {
         Formatter::Text => print!("{s}"),
@@ -252,8 +252,8 @@ fn rebuild(project_name: &str, quiet: bool) -> Result<(), VerbErr> {
             db_path.display()
         )));
     }
-    let conn =
-        statefulmemory_storage::db::open_write(&db_path).map_err(|e| VerbErr::Local(e.to_string()))?;
+    let conn = statefulmemory_storage::db::open_write(&db_path)
+        .map_err(|e| VerbErr::Local(e.to_string()))?;
     let created = graph::backfill_from_anchors(&conn).map_err(|e| VerbErr::Local(e.to_string()))?;
     println!("graph rebuild: {created} new entities from anchors");
     if !graph_enabled_in_config(project_name) && !quiet {
@@ -326,5 +326,28 @@ mod tests {
         let ents = [e(1, "auth", "auth")];
         assert_eq!(pick_entity_id(&ents, "vector"), None);
         assert_eq!(pick_entity_id(&[], "auth"), None);
+    }
+
+    #[test]
+    fn stats_missing_project_db_errors() {
+        // Unlikely project name → db path must not exist in any real install.
+        let err = stats("__sm_e2e_missing_db__", Formatter::Json).unwrap_err();
+        match err {
+            VerbErr::Local(msg) => {
+                assert!(msg.contains("not found"), "unexpected message: {msg}")
+            }
+            _ => panic!("expected VerbErr::Local for missing project db"),
+        }
+    }
+
+    #[test]
+    fn rebuild_missing_project_db_errors() {
+        let err = rebuild("__sm_e2e_missing_db__", true).unwrap_err();
+        match err {
+            VerbErr::Local(msg) => {
+                assert!(msg.contains("not found"), "unexpected message: {msg}")
+            }
+            _ => panic!("expected VerbErr::Local for missing project db"),
+        }
     }
 }

@@ -116,7 +116,11 @@ pub async fn run(
         let ok = client.health_ok();
         println!(
             "laya health: {}",
-            if ok { "ok" } else { "unreachable — run `make laya-sidecar` or disable [laya]" }
+            if ok {
+                "ok"
+            } else {
+                "unreachable — run `make laya-sidecar` or disable [laya]"
+            }
         );
     }
 

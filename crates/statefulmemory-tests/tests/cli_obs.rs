@@ -610,11 +610,16 @@ fn ts25_oversized_stdin_exits_2() {
         .spawn()
         .expect("spawn obs save");
     {
-        let stdin = child.stdin.as_mut().expect("stdin");
+        // Take + drop stdin so the child sees EOF after the oversized write.
+        let mut stdin = child.stdin.take().expect("stdin");
         // Best-effort write; the child may close stdin once it hits the cap.
         let _ = stdin.write_all(oversized.as_bytes());
     }
-    let out = child.wait_with_output().expect("wait");
+    let out = statefulmemory_core::process::wait_child(
+        child,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("wait");
     assert_eq!(
         out.status.code(),
         Some(2),

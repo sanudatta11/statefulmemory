@@ -88,9 +88,17 @@ async fn ts10_status_reads_manifest_length() {
     )
     .unwrap();
 
-    // Spawn the daemon against the pre-seeded data dir.
+    // Spawn the daemon against the pre-seeded data dir. KillOnDrop guarantees
+    // the child dies even if an assert below panics — no orphaned daemon.
+    struct KillOnDrop(std::process::Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
     let bin = statefulmemory_tests::locate_binary();
-    let mut child = std::process::Command::new(&bin)
+    let child = std::process::Command::new(&bin)
         .args(["daemon", "start", "--foreground"])
         .env("STATEFULMEMORY_DATA_DIR", data_dir.path())
         .env("STATEFULMEMORY_LOG", "warn")
@@ -98,6 +106,7 @@ async fn ts10_status_reads_manifest_length() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn daemon");
+    let mut _daemon = KillOnDrop(child);
 
     // Wait for the socket then open a gRPC connection.
     use tonic::transport::{Endpoint, Uri};
@@ -157,9 +166,7 @@ async fn ts10_status_reads_manifest_length() {
         .await
         .unwrap()
         .into_inner();
-
-    let _ = child.kill();
-    let _ = child.wait();
+    // Daemon child killed by `KillOnDrop` at scope exit.
 
     assert_eq!(resp.total_exported_chunks, 2, "manifest has 2 chunks");
     assert_eq!(resp.unseen_chunk_count, 2, "none imported yet");

@@ -807,4 +807,408 @@ mod tests {
             .unwrap();
         assert_eq!(edge_n2, 1);
     }
+
+    /// Fresh-import field fidelity: mention observation ids must follow the
+    /// per-destination observation remap (dst ids ≠ src ids), and edge
+    /// relation / weight / offsets / source survive byte-for-byte.
+    #[test]
+    fn graph_import_remaps_obs_ids_and_preserves_edge_fields() {
+        let (_dir, src) = open_db();
+        seed(&src);
+        let obs_id: i64 = src
+            .query_row("SELECT id FROM observations ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        src.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'validate', 'validate')",
+            [],
+        )
+        .unwrap();
+        let e1: i64 = src
+            .query_row(
+                "SELECT id FROM entities WHERE norm_name = 'validate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        src.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'refresh', 'refresh')",
+            [],
+        )
+        .unwrap();
+        let e2: i64 = src
+            .query_row("SELECT id FROM entities WHERE norm_name = 'refresh'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        src.execute(
+            "INSERT INTO entity_mentions (entity_id, observation_id, offsets, source)
+             VALUES (?1, ?2, '[4,12]', 'backtick')",
+            params![e1, obs_id],
+        )
+        .unwrap();
+        src.execute(
+            "INSERT INTO entity_mentions (entity_id, observation_id, source)
+             VALUES (?1, ?2, 'anchor')",
+            params![e2, obs_id],
+        )
+        .unwrap();
+        src.execute(
+            "INSERT INTO entity_edges
+                 (from_entity, to_entity, relation, weight, first_seen, last_seen, src_observation_id)
+             VALUES (?1, ?2, 'co_occurs', 3.5, 10, 20, ?3)",
+            params![e1, e2, obs_id],
+        )
+        .unwrap();
+
+        let payload = dump_payload(&src, "demo", "2026-09-12T00:00:00Z").unwrap();
+        // Archive itself carries the exact fields (not just counts).
+        assert_eq!(payload.entity_mentions[0].offsets.as_deref(), Some("[4,12]"));
+        let edge = &payload.entity_edges[0];
+        assert_eq!(edge.relation, "co_occurs");
+        assert_eq!(edge.weight, 3.5);
+        assert_eq!(edge.first_seen, 10);
+        assert_eq!(edge.last_seen, 20);
+
+        // Destination pre-populated with 5 observations so the imported row
+        // lands at id 6 — a naive (non-remapped) import would point mentions
+        // at src obs id 1 and silently corrupt the graph.
+        let (_dir2, mut dst) = open_db();
+        dst.execute("INSERT INTO sessions (id, directory) VALUES ('s1', '/tmp')", [])
+            .unwrap();
+        for i in 0..5i64 {
+            dst.execute(
+                "INSERT INTO observations (sync_id, session_id, type, title, content)
+                 VALUES (?1, 's1', 'note', 'dummy', 'dummy')",
+                params![format!("dum-{i}")],
+            )
+            .unwrap();
+        }
+        let report = apply_payload(&mut dst, &payload, "merge").unwrap();
+        assert_eq!(report.observations_imported, 1);
+        assert_eq!(report.mentions_imported, 2);
+        assert_eq!(report.edges_imported, 1);
+
+        let new_obs: i64 = dst
+            .query_row(
+                "SELECT id FROM observations WHERE sync_id = 'sync-a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_obs, 6, "pre-seeded rows must shift the imported id");
+
+        let mention_rows: Vec<(i64, Option<String>, String)> = dst
+            .prepare(
+                "SELECT observation_id, offsets, source
+                 FROM entity_mentions ORDER BY source",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(mention_rows.len(), 2);
+        // ORDER BY source: anchor first, backtick second.
+        assert_eq!(mention_rows[0], (6, None, "anchor".to_string()));
+        assert_eq!(
+            mention_rows[1],
+            (6, Some("[4,12]".to_string()), "backtick".to_string()),
+            "mention must follow the remapped observation id"
+        );
+
+        let (rel, weight, first_seen, last_seen, src_obs): (String, f64, i64, i64, Option<i64>) =
+            dst.query_row(
+                "SELECT relation, weight, first_seen, last_seen, src_observation_id
+                 FROM entity_edges",
+                [],
+                |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                },
+            )
+            .unwrap();
+        assert_eq!(rel, "co_occurs");
+        assert_eq!(weight, 3.5, "edge weight must survive exactly");
+        assert_eq!(first_seen, 10);
+        assert_eq!(last_seen, 20);
+        assert_eq!(src_obs, Some(6), "edge src_observation_id remapped");
+    }
+
+    /// Re-import accumulates edge weight (weight = w + w) without growing
+    /// the topology — the merge contract the daemon relies on.
+    #[test]
+    fn graph_reimport_accumulates_edge_weight() {
+        let (_dir, src) = open_db();
+        seed(&src);
+        let obs_id: i64 = src
+            .query_row("SELECT id FROM observations ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        src.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'validate', 'validate')",
+            [],
+        )
+        .unwrap();
+        let e1: i64 = src
+            .query_row(
+                "SELECT id FROM entities WHERE norm_name = 'validate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        src.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'refresh', 'refresh')",
+            [],
+        )
+        .unwrap();
+        let e2: i64 = src
+            .query_row("SELECT id FROM entities WHERE norm_name = 'refresh'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        src.execute(
+            "INSERT INTO entity_edges
+                 (from_entity, to_entity, relation, weight, first_seen, last_seen, src_observation_id)
+             VALUES (?1, ?2, 'mentions', 3.5, 1, 2, ?3)",
+            params![e1, e2, obs_id],
+        )
+        .unwrap();
+
+        let payload = dump_payload(&src, "demo", "2026-09-12T00:00:00Z").unwrap();
+        let (_dir2, mut dst) = open_db();
+        apply_payload(&mut dst, &payload, "merge").unwrap();
+        let w1: f64 = dst
+            .query_row("SELECT weight FROM entity_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(w1, 3.5);
+
+        apply_payload(&mut dst, &payload, "merge").unwrap();
+        let (w2, n): (f64, i64) = dst
+            .query_row(
+                "SELECT weight, (SELECT count(*) FROM entity_edges) FROM entity_edges",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-import must not duplicate the edge");
+        assert!((w2 - 7.0).abs() < 1e-9, "weight must accumulate 3.5+3.5, got {w2}");
+    }
+
+    /// Minimal payload with one session + observation (FK anchor) and the
+    /// given graph slices — for hand-built import edge cases.
+    fn graph_payload(
+        entities: Vec<ArchivedEntity>,
+        mentions: Vec<ArchivedEntityMention>,
+        edges: Vec<ArchivedEntityEdge>,
+    ) -> ArchivePayload {
+        ArchivePayload {
+            format: "statefulmemory.archive".into(),
+            archive_version: 1,
+            schema_version: 9,
+            exported_at: "2026-09-12T00:00:00Z".into(),
+            project: "demo".into(),
+            observations: vec![ArchivedObservation {
+                id: 1,
+                sync_id: "sync-a".into(),
+                session_id: "s1".into(),
+                r#type: "note".into(),
+                title: "T".into(),
+                content: "C".into(),
+                tool_name: None,
+                scope: "project".into(),
+                created_by: None,
+                topic_key: None,
+                normalized_hash: None,
+                revision_count: 0,
+                duplicate_count: 0,
+                last_seen_at: None,
+                created_at: "2026-09-01T00:00:00Z".into(),
+                updated_at: "2026-09-01T00:00:00Z".into(),
+                deleted_at: None,
+                review_after: None,
+                code_anchor: None,
+            }],
+            sessions: vec![ArchivedSession {
+                id: "s1".into(),
+                directory: "/tmp".into(),
+                started_at: "2026-09-01T00:00:00Z".into(),
+                ended_at: None,
+                summary: None,
+            }],
+            prompts: vec![],
+            facts: vec![],
+            relations: vec![],
+            entities,
+            entity_mentions: mentions,
+            entity_edges: edges,
+        }
+    }
+
+    #[test]
+    fn graph_import_skips_self_edges_and_orphans() {
+        let (_dir, mut dst) = open_db();
+        let payload = graph_payload(
+            vec![
+                ArchivedEntity { id: 1, kind: "concept".into(), name: "a".into(), norm_name: "a".into() },
+                ArchivedEntity { id: 2, kind: "concept".into(), name: "b".into(), norm_name: "b".into() },
+            ],
+            vec![
+                // Good mention (obs 1 exists in payload).
+                ArchivedEntityMention { entity_id: 1, observation_id: 1, offsets: None, source: "backtick".into() },
+                // Orphan: entity id not in payload.
+                ArchivedEntityMention { entity_id: 99, observation_id: 1, offsets: None, source: "backtick".into() },
+                // Orphan: observation id not in payload.
+                ArchivedEntityMention { entity_id: 1, observation_id: 99, offsets: None, source: "anchor".into() },
+            ],
+            vec![
+                // Self-edge → skipped.
+                ArchivedEntityEdge { from_entity: 1, to_entity: 1, relation: "mentions".into(), weight: 1.0, first_seen: 1, last_seen: 2, src_observation_id: Some(1) },
+                // Unknown endpoint → skipped.
+                ArchivedEntityEdge { from_entity: 1, to_entity: 77, relation: "mentions".into(), weight: 1.0, first_seen: 1, last_seen: 2, src_observation_id: None },
+                // Good edge.
+                ArchivedEntityEdge { from_entity: 1, to_entity: 2, relation: "mentions".into(), weight: 2.0, first_seen: 1, last_seen: 2, src_observation_id: Some(1) },
+            ],
+        );
+
+        let report = apply_payload(&mut dst, &payload, "merge").unwrap();
+        assert_eq!(report.entities_imported, 2);
+        assert_eq!(report.mentions_imported, 1, "only the well-formed mention lands");
+        assert_eq!(report.edges_imported, 1, "self-edge and orphan edge both skipped");
+        assert_eq!(
+            report.skipped, 4,
+            "2 orphan mentions + self-edge + orphan edge = 4 skips"
+        );
+        let (n_ent, n_ment, n_edge): (i64, i64, i64) = dst
+            .query_row(
+                "SELECT (SELECT count(*) FROM entities),
+                        (SELECT count(*) FROM entity_mentions),
+                        (SELECT count(*) FROM entity_edges)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((n_ent, n_ment, n_edge), (2, 1, 1));
+    }
+
+    #[test]
+    fn graph_import_merges_into_preexisting_local_entity() {
+        let (_dir, mut dst) = open_db();
+        dst.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'Old', 'validate')",
+            [],
+        )
+        .unwrap();
+        let local_id: i64 = dst
+            .query_row("SELECT id FROM entities", [], |r| r.get(0))
+            .unwrap();
+
+        let payload = graph_payload(
+            vec![ArchivedEntity { id: 7, kind: "file".into(), name: "Validate".into(), norm_name: "validate".into() }],
+            vec![ArchivedEntityMention { entity_id: 7, observation_id: 1, offsets: None, source: "anchor".into() }],
+            vec![],
+        );
+        let report = apply_payload(&mut dst, &payload, "merge").unwrap();
+        assert_eq!(report.entities_imported, 1, "upsert counts as imported");
+
+        let (id, name, kind): (i64, String, String) = dst
+            .query_row(
+                "SELECT id, name, kind FROM entities WHERE norm_name = 'validate'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(id, local_id, "local id preserved (no duplicate row)");
+        assert_eq!(name, "Validate", "payload display name wins");
+        assert_eq!(kind, "file", "payload kind wins");
+        let n: i64 = dst
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "norm_name upsert must not create a second row");
+        // Mention must land on the SAME local id via the entity remap.
+        let mention_ent: i64 = dst
+            .query_row("SELECT entity_id FROM entity_mentions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mention_ent, local_id);
+    }
+
+    #[test]
+    fn graph_import_clamps_sub_one_weight_and_widens_span_with_min_max() {
+        let (_dir, mut dst) = open_db();
+        // Pre-existing local topology for norm a/b with a wider/narrower span.
+        dst.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'a', 'a')",
+            [],
+        )
+        .unwrap();
+        let la: i64 = dst.query_row("SELECT id FROM entities", [], |r| r.get(0)).unwrap();
+        dst.execute(
+            "INSERT INTO entities (kind, name, norm_name) VALUES ('concept', 'b', 'b')",
+            [],
+        )
+        .unwrap();
+        let lb: i64 = dst
+            .query_row("SELECT id FROM entities WHERE id != ?1", params![la], |r| r.get(0))
+            .unwrap();
+        dst.execute(
+            "INSERT INTO entity_edges
+                 (from_entity, to_entity, relation, weight, first_seen, last_seen, src_observation_id)
+             VALUES (?1, ?2, 'mentions', 5.0, 100, 200, NULL)",
+            params![la, lb],
+        )
+        .unwrap();
+
+        let payload = graph_payload(
+            vec![
+                ArchivedEntity { id: 1, kind: "concept".into(), name: "a".into(), norm_name: "a".into() },
+                ArchivedEntity { id: 2, kind: "concept".into(), name: "b".into(), norm_name: "b".into() },
+                ArchivedEntity { id: 3, kind: "concept".into(), name: "c".into(), norm_name: "c".into() },
+            ],
+            vec![],
+            vec![
+                // Merges with pre-seeded edge: span widens both directions.
+                ArchivedEntityEdge { from_entity: 1, to_entity: 2, relation: "mentions".into(), weight: 2.5, first_seen: 50, last_seen: 300, src_observation_id: None },
+                // Fresh edge with sub-one weight → clamped to 1.0 on insert.
+                ArchivedEntityEdge { from_entity: 2, to_entity: 3, relation: "fixes".into(), weight: 0.5, first_seen: 1, last_seen: 2, src_observation_id: None },
+            ],
+        );
+        apply_payload(&mut dst, &payload, "merge").unwrap();
+
+        let (w_ab, first_ab, last_ab): (f64, i64, i64) = dst
+            .query_row(
+                "SELECT weight, first_seen, last_seen FROM entity_edges
+                 WHERE from_entity = ?1 AND to_entity = ?2",
+                params![la, lb],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!((w_ab - 7.5).abs() < 1e-9, "5.0 + 2.5 must accumulate, got {w_ab}");
+        assert_eq!(first_ab, 50, "first_seen = MIN(100, 50)");
+        assert_eq!(last_ab, 300, "last_seen = MAX(200, 300)");
+
+        let w_c: f64 = dst
+            .query_row(
+                "SELECT weight FROM entity_edges WHERE relation = 'fixes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(w_c, 1.0, "fresh insert clamps weight < 1 up to 1.0");
+    }
+
+    #[test]
+    fn graph_import_v1_empty_graph_is_noop() {
+        let (_dir, mut dst) = open_db();
+        // v1 payloads decode to empty graph vecs — apply must not error.
+        let payload = graph_payload(vec![], vec![], vec![]);
+        let report = apply_payload(&mut dst, &payload, "merge").unwrap();
+        assert_eq!(report.entities_imported, 0);
+        assert_eq!(report.mentions_imported, 0);
+        assert_eq!(report.edges_imported, 0);
+        let n: i64 = dst
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
 }

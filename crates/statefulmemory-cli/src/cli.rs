@@ -1054,7 +1054,8 @@ mod tests {
 
     #[test]
     fn daemon_start_foreground_parses() {
-        let cli = Cli::try_parse_from(["statefulmemory", "daemon", "start", "--foreground"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["statefulmemory", "daemon", "start", "--foreground"]).unwrap();
         match cli.command {
             Command::Daemon(DaemonArgs {
                 verb: DaemonVerb::Start { foreground },
@@ -1091,8 +1092,8 @@ mod tests {
 
     #[test]
     fn hook_session_start_limit_override_parses() {
-        let cli =
-            Cli::try_parse_from(["statefulmemory", "hook", "session-start", "--limit", "5"]).unwrap();
+        let cli = Cli::try_parse_from(["statefulmemory", "hook", "session-start", "--limit", "5"])
+            .unwrap();
         match cli.command {
             Command::Hook(h) => match h.verb {
                 HookVerb::SessionStart(a) => assert_eq!(a.limit, 5),
@@ -1115,8 +1116,8 @@ mod tests {
 
     #[test]
     fn output_flag_is_global() {
-        let cli =
-            Cli::try_parse_from(["statefulmemory", "--output", "json", "daemon", "status"]).unwrap();
+        let cli = Cli::try_parse_from(["statefulmemory", "--output", "json", "daemon", "status"])
+            .unwrap();
         assert_eq!(cli.output, Some(OutputFormat::Json));
     }
 
@@ -1136,7 +1137,8 @@ mod tests {
             arg.get_env().is_none(),
             "project arg should not have env binding"
         );
-        let cli = Cli::try_parse_from(["statefulmemory", "--project", "explicit", "version"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["statefulmemory", "--project", "explicit", "version"]).unwrap();
         assert_eq!(cli.project.as_deref(), Some("explicit"));
     }
 
@@ -1180,7 +1182,8 @@ mod tests {
 
     #[test]
     fn obs_search_invalid_mode_rejected() {
-        let res = Cli::try_parse_from(["statefulmemory", "obs", "search", "q", "--mode", "lexical"]);
+        let res =
+            Cli::try_parse_from(["statefulmemory", "obs", "search", "q", "--mode", "lexical"]);
         assert!(res.is_err(), "value_parser must reject 'lexical'");
     }
 
@@ -1193,7 +1196,14 @@ mod tests {
     #[test]
     fn obs_context_flags_parse() {
         let cli = Cli::try_parse_from([
-            "statefulmemory", "obs", "context", "--query", "deploy", "--mode", "hybrid", "--rerank",
+            "statefulmemory",
+            "obs",
+            "context",
+            "--query",
+            "deploy",
+            "--mode",
+            "hybrid",
+            "--rerank",
             "haiku",
         ])
         .unwrap();
@@ -1319,13 +1329,15 @@ mod tests {
 
     #[test]
     fn hook_session_start_rejects_non_integer_limit() {
-        let res = Cli::try_parse_from(["statefulmemory", "hook", "session-start", "--limit", "abc"]);
+        let res =
+            Cli::try_parse_from(["statefulmemory", "hook", "session-start", "--limit", "abc"]);
         assert!(res.is_err(), "non-integer limit must be rejected by clap");
     }
 
     #[test]
     fn mem_export_parses() {
-        let cli = Cli::try_parse_from(["statefulmemory", "mem", "export", "--out", "x.mem"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["statefulmemory", "mem", "export", "--out", "x.mem"]).unwrap();
         match cli.command {
             Command::Mem(a) => match a.verb {
                 MemVerb::Export(e) => assert_eq!(e.out.as_os_str(), "x.mem"),

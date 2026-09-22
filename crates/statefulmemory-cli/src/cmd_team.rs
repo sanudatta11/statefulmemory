@@ -14,8 +14,8 @@ use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 
-use statefulmemory_proto as p;
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
+use statefulmemory_proto as p;
 use thiserror::Error;
 
 use crate::cli::{

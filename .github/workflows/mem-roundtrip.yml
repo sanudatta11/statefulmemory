@@ -51,15 +51,24 @@ jobs:
           printf 'fn main(){}\n' > main.rs && git add . && git commit -qm init
 
           P1=$(git -C . rev-parse HEAD)
+          # graph.enabled before saves -> save-path IndexGraph writes edges
+          # (rebuild alone only backfills anchor entities/mentions).
+          "$BIN" config set graph.enabled true
           "$BIN" obs save --type decision --title "portable decision one" \
             --content 'decision one content `token`' --anchor main.rs::one
           "$BIN" obs save --type decision --title "portable decision two" \
-            --content 'decision two content superseding the older one' \
-            --anchor main.rs::two
+            --content 'decision two content superseding the older one' --anchor main.rs::two
           "$BIN" graph rebuild
 
-          ET=$("$BIN" --output json graph stats | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_entities"])')
-          test "$ET" -ge 1 || { echo "expected graph entities before export"; exit 1; }
+          "$BIN" --output json graph stats > /tmp/stats-before.json
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("/tmp/stats-before.json"))
+          for k in ("total_entities", "total_mentions", "total_edges"):
+              assert s[k] >= 1, f"expected {k} >= 1 before export, got {s[k]}"
+          assert s.get("edges_by_relation"), "edges_by_relation empty before export"
+          print("pre-export graph OK:", s)
+          PY
 
           "$BIN" mem export --out "$T/backup.mem"
           test -s "$T/backup.mem" || { echo "export produced empty archive"; exit 1; }
@@ -75,6 +84,22 @@ jobs:
           "$BIN" obs search "portable decision" --mode hybrid | grep -q "portable" \
             || { echo "imported observations missing"; exit 1; }
 
-          # .mem v2 carries the entity graph; imported graph must be non-empty.
-          IM_ENT=$("$BIN" --output json graph stats | python3 -c 'import sys,json;print(json.load(sys.stdin)["total_entities"])')
-          test "$IM_ENT" -ge 1 || { echo "graph entities lost on import"; exit 1; }
+          # .mem v2 carries the entity graph; entities + mentions + edges and
+          # the relation map must all survive the wipe byte-for-byte.
+          "$BIN" --output json graph stats > /tmp/stats-after.json
+          python3 - <<'PY'
+          import json, sys
+          b = json.load(open("/tmp/stats-before.json"))
+          a = json.load(open("/tmp/stats-after.json"))
+          for k in ("total_entities", "total_mentions", "total_edges"):
+              if a[k] != b[k]:
+                  print(f"FAIL {k}: before={b[k]} after={a[k]}", file=sys.stderr)
+                  sys.exit(1)
+          if sorted(map(tuple, a.get("edges_by_relation", []))) != sorted(
+              map(tuple, b.get("edges_by_relation", []))
+          ):
+              print("FAIL edges_by_relation mismatch:", b.get("edges_by_relation"),
+                    a.get("edges_by_relation"), file=sys.stderr)
+              sys.exit(1)
+          print("post-import graph fidelity OK:", a)
+          PY

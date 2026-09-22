@@ -205,6 +205,26 @@ mod tests {
         };
         assert!(c2.validate().is_ok());
     }
+
+    #[test]
+    fn graph_edge_types_default_excludes_co_occurs() {
+        let g = GraphConfig::default();
+        assert_eq!(
+            g.edge_types,
+            vec![
+                "mentions".to_string(),
+                "fixes".to_string(),
+                "contradicts".to_string()
+            ],
+            "default traversal set is the three hand-curated relations"
+        );
+        assert!(
+            !g.edge_types.iter().any(|t| t == "co_occurs"),
+            "co_occurs is export-only (dumps keep it; default query set excludes it)"
+        );
+        // Toggle fields that gate graph behavior stay conservative by default.
+        assert!(!GraphConfig::default().enabled, "graph default off");
+    }
 }
 
 // -----------------------------------------------------------------------------

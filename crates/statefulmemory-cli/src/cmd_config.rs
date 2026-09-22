@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use statefulmemory_core::config::{
-    self, statefulmemory_global_config_path, statefulmemory_project_config_path, StatefulMemoryConfig,
+    self, statefulmemory_global_config_path, statefulmemory_project_config_path,
+    StatefulMemoryConfig,
 };
 
 use crate::cli::{ConfigGetArgs, ConfigSetArgs, ConfigShowArgs, ConfigVerb};
@@ -320,6 +321,10 @@ mod tests {
         dir
     }
 
+    fn read_global_config(dir: &tempfile::TempDir) -> toml::Value {
+        toml::from_str(&std::fs::read_to_string(dir.path().join("config.toml")).unwrap()).unwrap()
+    }
+
     fn clear_env() {
         for k in [
             "STATEFULMEMORY_EXTRACT_ENABLED",
@@ -344,7 +349,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         clear_env();
-        let _d = fresh_dir();
+        let dir = fresh_dir();
 
         set(ConfigSetArgs {
             key: "extract.model".into(),
@@ -359,9 +364,9 @@ mod tests {
         })
         .unwrap();
 
-        let cfg = config::load_resolved(None);
-        assert_eq!(cfg.extract.model, config::ModelKind::Sonnet);
-        assert!(cfg.extract.enabled);
+        let raw = read_global_config(&dir);
+        assert_eq!(raw["extract"]["model"].as_str(), Some("sonnet"));
+        assert_eq!(raw["extract"]["enabled"].as_bool(), Some(true));
 
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }
@@ -372,7 +377,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         clear_env();
-        let _d = fresh_dir();
+        let _dir = fresh_dir();
 
         set(ConfigSetArgs {
             key: "extract.model".into(),
@@ -458,7 +463,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         clear_env();
-        let _d = fresh_dir();
+        let dir = fresh_dir();
 
         // Global has extract.enabled=true.
         set(ConfigSetArgs {
@@ -475,9 +480,13 @@ mod tests {
         })
         .unwrap();
 
-        let cfg = config::load_resolved(None);
-        assert!(cfg.extract.enabled, "extract section preserved");
-        assert_eq!(cfg.rerank.model, config::ModelKind::Sonnet);
+        let raw = read_global_config(&dir);
+        assert_eq!(
+            raw["extract"]["enabled"].as_bool(),
+            Some(true),
+            "extract section preserved"
+        );
+        assert_eq!(raw["rerank"]["model"].as_str(), Some("sonnet"));
 
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }

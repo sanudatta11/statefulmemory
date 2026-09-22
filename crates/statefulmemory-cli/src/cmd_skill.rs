@@ -284,15 +284,15 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
         // ── Claude Code global skill ────────────────────────────────────────
         let claude_global = home.join(".claude").join("skills").join("statefulmemory");
         match install_file(&claude_global.join("SKILL.md"), SKILL_MD) {
-            Ok(true) => {
-                installed.push("Claude Code (global)    ~/.claude/skills/statefulmemory/SKILL.md".into())
-            }
+            Ok(true) => installed
+                .push("Claude Code (global)    ~/.claude/skills/statefulmemory/SKILL.md".into()),
             Ok(false) => skipped.push("Claude Code (global)    (unchanged)".into()),
             Err(e) => eprintln!("  warn: Claude Code global install failed: {e}"),
         }
         match install_skill_references(&claude_global) {
-            Ok(true) => installed
-                .push("Claude Code (refs)      ~/.claude/skills/statefulmemory/references/*.md".into()),
+            Ok(true) => installed.push(
+                "Claude Code (refs)      ~/.claude/skills/statefulmemory/references/*.md".into(),
+            ),
             Ok(false) => skipped.push("Claude Code (refs)      (unchanged)".into()),
             Err(e) => eprintln!("  warn: Claude Code references install failed: {e}"),
         }
@@ -376,7 +376,10 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     }
 
     if selected.contains(&AgentId::Cursor) {
-        let cursor_path = home.join(".cursor").join("rules").join("statefulmemory.mdc");
+        let cursor_path = home
+            .join(".cursor")
+            .join("rules")
+            .join("statefulmemory.mdc");
         match install_file(&cursor_path, &format!("---\ndescription: statefulmemory memory protocol\nalwaysApply: true\n---\n\n{AGENT_RULE}")) {
             Ok(true)  => installed.push(format!("Cursor (global)         {}", cursor_path.display())),
             Ok(false) => skipped.push("Cursor (global)         (unchanged)".into()),
@@ -511,15 +514,19 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     // ── Daemon restart ──────────────────────────────────────────────────────
     let socket = statefulmemory_core::paths::socket_path();
     if socket.exists() {
-        match std::process::Command::new(
+        let mut stop = std::process::Command::new(
             std::env::current_exe().unwrap_or_else(|_| "statefulmemory".into()),
-        )
-        .args(["daemon", "stop"])
-        .output()
-        {
+        );
+        stop.args(["daemon", "stop"]);
+        match statefulmemory_core::process::output_with_timeout(
+            &mut stop,
+            std::time::Duration::from_secs(10),
+        ) {
             Ok(out) if out.status.success() => {
                 println!();
-                println!("Stopped running daemon — next statefulmemory call will spawn the new binary.");
+                println!(
+                    "Stopped running daemon — next statefulmemory call will spawn the new binary."
+                );
             }
             Ok(_) | Err(_) => {}
         }
@@ -1045,7 +1052,11 @@ mod tests {
         let after: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&tmp).unwrap()).unwrap();
         let ss = after["hooks"]["SessionStart"].as_array().unwrap();
-        assert_eq!(ss.len(), 2, "Catalyst entry preserved + statefulmemory appended");
+        assert_eq!(
+            ss.len(),
+            2,
+            "Catalyst entry preserved + statefulmemory appended"
+        );
         assert_eq!(
             ss[0]["hooks"][0]["command"].as_str().unwrap(),
             "catalyst session-start",
@@ -1194,7 +1205,11 @@ mod tests {
             "statefulmemory session summarize \"$CLAUDE_SESSION_ID\" --auto",
         );
         let arr = root["hooks"]["Stop"].as_array().unwrap();
-        assert_eq!(arr.len(), 2, "non-statefulmemory Stop hook must be preserved");
+        assert_eq!(
+            arr.len(),
+            2,
+            "non-statefulmemory Stop hook must be preserved"
+        );
         let has_other = arr
             .iter()
             .any(|b| b["hooks"][0]["command"].as_str() == Some("some-other-tool cleanup"));

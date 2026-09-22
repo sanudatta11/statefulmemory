@@ -11,14 +11,30 @@
 //! ```
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use tracing::error;
 
 use statefulmemory_core::config::Config;
 use statefulmemory_daemon::server;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    // Manual runtime so shutdown can be hard-bounded: `#[tokio::main]`'s
+    // implicit `Runtime::drop` joins the blocking pool indefinitely, which
+    // means a stuck `spawn_blocking` (e.g. a stalled BGE model download)
+    // keeps the daemon alive long after SIGTERM drain finished. Tests that
+    // wait for exit would then hang for the full stall duration.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    let code = rt.block_on(run());
+    // 6 s: graceful drain is 5 s (signals spec) + 1 s slack for join.
+    rt.shutdown_timeout(Duration::from_secs(6));
+    code
+}
+
+async fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse(&args) {
         Mode::DaemonStart { foreground: _ } => match Config::load() {
