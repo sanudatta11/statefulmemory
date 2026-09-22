@@ -237,6 +237,7 @@ pub struct StatefulMemoryConfig {
     pub search: SearchConfig,
     pub verify: VerifyConfig,
     pub graph: GraphConfig,
+    pub laya: LayaConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -369,6 +370,47 @@ pub struct VerifyConfig {
     /// unprovable observations. Search still returns them flagged.
     /// Unanchored observations are never filtered.
     pub serve_stale: bool,
+}
+
+/// Optional Laya System-1 HTTP sidecar (Wave 4). Opt-in; soft-fails to
+/// heuristic router / Claude decide+conflict when disabled or unreachable.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct LayaConfig {
+    /// Master switch. Default false — must opt in.
+    pub enabled: bool,
+    /// Sidecar base URL (no trailing slash required).
+    pub url: String,
+    /// Hard timeout for each predict call (ms). Keep tight for router.
+    pub timeout_ms: u64,
+    /// Use Laya for Easy/Normal/Hard query routing.
+    pub router: bool,
+    /// Use Laya for `Decide` synthesis.
+    pub decide: bool,
+    /// Use Laya for conflict judge + resolve_pair.
+    pub conflict: bool,
+    /// Model nickname for decide/conflict (`typed-decisions`).
+    pub model_decide: String,
+    /// Model nickname for router (`english`).
+    pub model_router: String,
+    /// Below this confidence, treat Laya answer as failure → fallback.
+    pub min_confidence: f64,
+}
+
+impl Default for LayaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: "http://127.0.0.1:8765".into(),
+            timeout_ms: 80,
+            router: true,
+            decide: true,
+            conflict: true,
+            model_decide: "typed-decisions".into(),
+            model_router: "english".into(),
+            min_confidence: 0.35,
+        }
+    }
 }
 
 /// Entity-graph / briefing-expansion layer (spec: graph-briefing).
@@ -784,6 +826,38 @@ fn apply_statefulmemory_env_overrides(cfg: &mut StatefulMemoryConfig) {
             tracing::warn!(value = %v, "ignoring STATEFULMEMORY_GRAPH_RANKER: must be bfs or ppr");
         }
     }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_ENABLED") {
+        cfg.laya.enabled = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_URL") {
+        let u = v.trim();
+        if !u.is_empty() {
+            cfg.laya.url = u.to_string();
+        }
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_TIMEOUT_MS") {
+        if let Ok(n) = v.parse::<u64>() {
+            cfg.laya.timeout_ms = n;
+        } else {
+            tracing::warn!(value = %v, "ignoring STATEFULMEMORY_LAYA_TIMEOUT_MS: not an integer");
+        }
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_ROUTER") {
+        cfg.laya.router = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_DECIDE") {
+        cfg.laya.decide = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_CONFLICT") {
+        cfg.laya.conflict = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_LAYA_MIN_CONFIDENCE") {
+        if let Ok(n) = v.parse::<f64>() {
+            cfg.laya.min_confidence = n;
+        } else {
+            tracing::warn!(value = %v, "ignoring STATEFULMEMORY_LAYA_MIN_CONFIDENCE: not a float");
+        }
+    }
 }
 
 fn parse_bool_env(v: &str) -> bool {
@@ -802,6 +876,7 @@ pub struct BootstrapReport {
     pub search_mode: String,
     pub extract: bool,
     pub conflict: bool,
+    pub laya: bool,
 }
 
 const INSTALL_DEFAULTS: &str = r#"
@@ -824,6 +899,17 @@ workers = 1
 enabled = true
 model = "fast"
 timeout_secs = 5
+
+[laya]
+enabled = true
+url = "http://127.0.0.1:8765"
+timeout_ms = 80
+router = true
+decide = true
+conflict = true
+model_decide = "typed-decisions"
+model_router = "english"
+min_confidence = 0.35
 
 [storage]
 backend = "sqlite"
@@ -867,6 +953,11 @@ pub fn ensure_config_toml(statefulmemory_dir: &std::path::Path) -> Result<Bootst
         .and_then(|t| t.get("enabled"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let laya = merged
+        .get("laya")
+        .and_then(|t| t.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let backend = merged
         .get("storage")
         .and_then(|t| t.get("backend"))
@@ -880,6 +971,7 @@ pub fn ensure_config_toml(statefulmemory_dir: &std::path::Path) -> Result<Bootst
         search_mode,
         extract,
         conflict,
+        laya,
     })
 }
 
@@ -1134,7 +1226,9 @@ model = "sonnet"
         assert!(raw.contains("enabled = true"));
         assert!(r.extract);
         assert!(r.conflict);
+        assert!(r.laya);
         assert_eq!(r.backend, "sqlite");
+        assert!(raw.contains("[laya]"));
     }
 
     #[test]

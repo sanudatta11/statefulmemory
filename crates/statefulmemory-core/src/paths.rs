@@ -75,6 +75,31 @@ pub fn tokens_db_path() -> PathBuf {
     data_dir().join("tokens.db")
 }
 
+/// Bundled Laya FastAPI app (`server.py` + requirements) installed by `smem install`.
+pub fn laya_sidecar_dir() -> PathBuf {
+    data_dir().join("laya-sidecar")
+}
+
+/// Dedicated Python venv for the Laya sidecar (`smem install` creates it).
+pub fn laya_venv_dir() -> PathBuf {
+    data_dir().join("laya-venv")
+}
+
+/// Python interpreter inside the Laya venv (platform-aware).
+pub fn laya_venv_python() -> PathBuf {
+    let venv = laya_venv_dir();
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python3")
+    }
+}
+
+/// Optional pidfile written when the daemon/install auto-spawns the sidecar.
+pub fn laya_sidecar_pid_path() -> PathBuf {
+    data_dir().join("laya-sidecar.pid")
+}
+
 /// Diagnostics dump path with a UTC RFC-3339 timestamp suffix (no colons, file-system safe).
 pub fn diagnostics_path(ts: &chrono::DateTime<chrono::Utc>) -> PathBuf {
     let ts = ts.format("%Y%m%dT%H%M%SZ");

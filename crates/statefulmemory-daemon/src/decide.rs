@@ -61,17 +61,9 @@ pub async fn handle(svc: &StatefulMemoryService, req: DecideRequest) -> Result<D
     }
     conflicts = load_conflicts(svc, &req.project_name, &ids)?;
 
-    let prompt = build_decide_prompt(&req.question, &hits, &conflicts);
-    let raw = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        svc.state.claude_client.ask(&prompt, "auto"),
-    )
-    .await
-    .map_err(|_| Status::unavailable("decide model timed out"))?
-    .map_err(|e| Status::unavailable(e.to_string()))?;
-
-    let parsed =
-        parse_decide_json(&raw).map_err(|e| Status::internal(format!("decide parse: {e}")))?;
+    let cfg = statefulmemory_core::config::load_resolved(Some(&req.project_name));
+    let (parsed, signals_json) =
+        decide_with_laya_or_claude(svc, &req.question, &hits, &conflicts, &cfg).await?;
 
     let mut resolution_id = None;
     let mut wrote = false;
@@ -117,6 +109,7 @@ pub async fn handle(svc: &StatefulMemoryService, req: DecideRequest) -> Result<D
         conflicts,
         resolution_observation_id: resolution_id,
         wrote_resolution: wrote,
+        signals_json,
     })
 }
 
@@ -125,6 +118,149 @@ fn decision_topic_key(question: &str) -> String {
     h.update(question.trim().as_bytes());
     let hex = format!("{:x}", h.finalize());
     format!("decision/{}", &hex[..12])
+}
+
+#[allow(clippy::result_large_err)]
+async fn decide_with_laya_or_claude(
+    svc: &StatefulMemoryService,
+    question: &str,
+    hits: &[Observation],
+    conflicts: &[DecideConflict],
+    cfg: &statefulmemory_core::config::StatefulMemoryConfig,
+) -> Result<(DecideParsed, Option<String>), Status> {
+    if let Some(parsed) = try_laya_decide(svc, question, hits, conflicts, cfg).await {
+        let signals = serde_json::json!({
+            "source": "laya",
+            "recommendation": parsed.recommendation,
+            "confidence": parsed.confidence,
+            "should_record": parsed.should_record,
+        });
+        return Ok((parsed, Some(signals.to_string())));
+    }
+
+    let prompt = build_decide_prompt(question, hits, conflicts);
+    let raw = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        svc.state.claude_client.ask(&prompt, "auto"),
+    )
+    .await
+    .map_err(|_| Status::unavailable("decide model timed out"))?
+    .map_err(|e| Status::unavailable(e.to_string()))?;
+
+    let parsed =
+        parse_decide_json(&raw).map_err(|e| Status::internal(format!("decide parse: {e}")))?;
+    crate::laya::log_teacher(
+        "decide",
+        &prompt,
+        &serde_json::json!({ "source": "claude" }),
+        &serde_json::json!({
+            "recommendation": parsed.recommendation,
+            "confidence": parsed.confidence,
+            "should_record": parsed.should_record,
+        }),
+    );
+    Ok((parsed, None))
+}
+
+async fn try_laya_decide(
+    svc: &StatefulMemoryService,
+    question: &str,
+    hits: &[Observation],
+    conflicts: &[DecideConflict],
+    cfg: &statefulmemory_core::config::StatefulMemoryConfig,
+) -> Option<DecideParsed> {
+    if !cfg.laya.enabled || !cfg.laya.decide {
+        return None;
+    }
+    let client = svc.state.laya.as_ref()?;
+
+    let mut options: Vec<String> = hits
+        .iter()
+        .map(|o| {
+            let t: String = o.title.chars().take(80).collect();
+            if t.is_empty() {
+                format!("obs-{}", o.id)
+            } else {
+                t
+            }
+        })
+        .collect();
+    // Dedup while preserving order.
+    let mut seen = HashSet::new();
+    options.retain(|o| seen.insert(o.clone()));
+
+    let mut evidence_blob = String::new();
+    for o in hits {
+        let snippet: String = o.content.chars().take(300).collect();
+        evidence_blob.push_str(&format!("#{} {} — {}\n", o.id, o.title, snippet));
+    }
+    let mut conflicts_blob = String::new();
+    for c in conflicts {
+        conflicts_blob.push_str(&format!("#{} ~ #{} ({})\n", c.a_id, c.b_id, c.status));
+    }
+
+    let state = crate::laya_schemas::decide_state(question, &evidence_blob, &conflicts_blob);
+    let questions = crate::laya_schemas::decide_questions(&options);
+    let model = cfg.laya.model_decide.clone();
+    let client = std::sync::Arc::clone(client);
+    let state_c = state.clone();
+    let questions_c = questions.clone();
+
+    let pred = tokio::task::spawn_blocking(move || client.predict(&state_c, &questions_c, &model))
+        .await
+        .ok()?
+        .ok()?;
+
+    // Sufficiency gate: if explicitly false, fall through to Claude.
+    if let Some(false) = {
+        let c = svc.state.laya.as_ref()?;
+        c.noul_true(&pred, "sufficient")
+    } {
+        tracing::debug!("laya decide: evidence insufficient — Claude fallback");
+        return None;
+    }
+
+    let client = svc.state.laya.as_ref()?;
+    let rec = client.choice_value(&pred, "recommendation")?.to_string();
+    if rec.eq_ignore_ascii_case("abstain") {
+        return None;
+    }
+    let confidence = client.score_value(&pred, "confidence").unwrap_or(0.6) as f32;
+    let should_record = client.noul_true(&pred, "should_record").unwrap_or(false);
+
+    // Map recommendation label back to supporting evidence ids (title match).
+    let mut evidence = Vec::new();
+    for o in hits {
+        let t: String = o.title.chars().take(80).collect();
+        if t == rec || format!("obs-{}", o.id) == rec {
+            evidence.push((o.id, "supports".into()));
+        }
+    }
+    if evidence.is_empty() {
+        if let Some(first) = hits.first() {
+            evidence.push((first.id, "context".into()));
+        }
+    }
+
+    let parsed = DecideParsed {
+        recommendation: rec.clone(),
+        rationale: format!("Laya System-1 choice among retrieved memories (conf={confidence:.2})."),
+        confidence,
+        evidence,
+        should_record,
+    };
+    crate::laya::log_teacher(
+        "decide",
+        &crate::laya_schemas::decide_state(question, &evidence_blob, &conflicts_blob),
+        &questions,
+        &serde_json::json!({
+            "recommendation": rec,
+            "confidence": confidence,
+            "should_record": should_record,
+            "source": "laya",
+        }),
+    );
+    Some(parsed)
 }
 
 #[allow(clippy::result_large_err)]

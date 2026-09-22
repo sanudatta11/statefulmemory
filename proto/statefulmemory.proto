@@ -895,6 +895,8 @@ message DecideResponse {
   repeated DecideConflict conflicts = 5;
   optional int64 resolution_observation_id = 6;  // if a resolution row was written
   bool wrote_resolution = 7;
+  // Optional JSON blob of System-1 (Laya) calibrated signals; empty when unused.
+  optional string signals_json = 8;
 }
 
 // ---

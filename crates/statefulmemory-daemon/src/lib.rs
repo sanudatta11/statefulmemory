@@ -14,6 +14,8 @@ pub mod error_map;
 pub mod extract_worker;
 pub mod lifecycle;
 pub mod logging;
+pub mod laya;
+pub mod laya_schemas;
 pub mod mem_export;
 pub mod mem_import;
 pub mod query_expand;

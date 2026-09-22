@@ -340,6 +340,11 @@ pub struct InstallArgs {
     /// Skip git-hook installation even when cwd is a git repo.
     #[arg(long)]
     pub no_git_hooks: bool,
+
+    /// Skip Laya System-1 sidecar prerequisites (Python venv, deps, spawn).
+    /// Config `[laya]` keys are still filled by bootstrap unless already set.
+    #[arg(long)]
+    pub no_laya: bool,
 }
 
 #[derive(Args, Debug)]

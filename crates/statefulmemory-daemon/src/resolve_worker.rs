@@ -194,13 +194,74 @@ pub async fn resolve_pair(
     let new = read_q::get(&conn, &ObservationKey::Id(new_id))?;
     drop(conn);
 
+    if let Some(verdict) = try_laya_resolve(&cfg, &old, &new).await {
+        apply_verdict(&project_state, &old, &new, &verdict).await?;
+        return Ok(verdict);
+    }
+
     let prompt = build_resolve_prompt(&old.title, &old.content, &new.title, &new.content);
     let raw = tokio::time::timeout(timeout, client.ask(&prompt, model))
         .await
         .map_err(|_| anyhow::anyhow!("resolve judge timed out"))??;
     let verdict = parse_resolve_json(&raw)?;
+    crate::laya::log_teacher(
+        "resolve",
+        &prompt,
+        &serde_json::json!({ "source": "claude" }),
+        &serde_json::json!({
+            "action": format!("{:?}", verdict.action),
+            "confidence": verdict.confidence,
+        }),
+    );
     apply_verdict(&project_state, &old, &new, &verdict).await?;
     Ok(verdict)
+}
+
+async fn try_laya_resolve(
+    cfg: &config::StatefulMemoryConfig,
+    old: &statefulmemory_storage::Observation,
+    new: &statefulmemory_storage::Observation,
+) -> Option<ResolveVerdict> {
+    if !cfg.laya.enabled || !cfg.laya.conflict {
+        return None;
+    }
+    let client = std::sync::Arc::new(crate::laya::LayaClient::new(&cfg.laya));
+    let state = crate::laya_schemas::resolve_state(&old.title, &old.content, &new.title, &new.content);
+    let questions = crate::laya_schemas::resolve_questions();
+    let model = cfg.laya.model_decide.clone();
+    let client_c = std::sync::Arc::clone(&client);
+    let state_c = state.clone();
+    let questions_c = questions.clone();
+    let pred = tokio::task::spawn_blocking(move || client_c.predict(&state_c, &questions_c, &model))
+        .await
+        .ok()?
+        .ok()?;
+
+    let action_s = client.choice_value(&pred, "action")?;
+    let action = match action_s {
+        "keep_new" => ResolveAction::KeepNew,
+        "keep_old" => ResolveAction::KeepOld,
+        "keep_both" => ResolveAction::KeepBoth,
+        "synthesize" => ResolveAction::Synthesize,
+        _ => return None,
+    };
+    let confidence = client.score_value(&pred, "confidence").unwrap_or(0.6);
+    let verdict = ResolveVerdict {
+        action,
+        statement: String::new(),
+        confidence,
+    };
+    crate::laya::log_teacher(
+        "resolve",
+        &state,
+        &questions,
+        &serde_json::json!({
+            "action": action_s,
+            "confidence": confidence,
+            "source": "laya",
+        }),
+    );
+    Some(verdict)
 }
 
 async fn apply_verdict(

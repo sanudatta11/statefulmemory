@@ -42,7 +42,8 @@ pub async fn run(
                 severity: "warn".into(),
                 message: format!("Database file does not exist at {}", db_path.display()),
                 remedy: Some(
-                    "Store an observation or run `statefulmemory obs save` to initialize project".into(),
+                    "Store an observation or run `statefulmemory obs save` to initialize project"
+                        .into(),
                 ),
             };
             vec![finding]
@@ -104,10 +105,29 @@ pub async fn run(
         cfg.search.router,
         cfg.graph.ranker,
     );
+
+    // Laya System-1 sidecar probe (CLI-side; Doctor RPC may be unimplemented).
+    println!(
+        "laya: enabled={} url={} router={} decide={} conflict={}",
+        cfg.laya.enabled, cfg.laya.url, cfg.laya.router, cfg.laya.decide, cfg.laya.conflict
+    );
+    if cfg.laya.enabled {
+        let client = statefulmemory_daemon::laya::LayaClient::new(&cfg.laya);
+        let ok = client.health_ok();
+        println!(
+            "laya health: {}",
+            if ok { "ok" } else { "unreachable — run `make laya-sidecar` or disable [laya]" }
+        );
+    }
+
     if args.repair {
-        println!("Doctor auto-repair completed. Checks: {ok_count} passed, {warn_count} warnings, {err_count} errors.");
+        println!(
+            "Doctor auto-repair completed. Checks: {ok_count} passed, {warn_count} warnings, {err_count} errors."
+        );
     } else {
-        println!("Doctor health check finished. Checks: {ok_count} passed, {warn_count} warnings, {err_count} errors.");
+        println!(
+            "Doctor health check finished. Checks: {ok_count} passed, {warn_count} warnings, {err_count} errors."
+        );
     }
 
     Ok(())

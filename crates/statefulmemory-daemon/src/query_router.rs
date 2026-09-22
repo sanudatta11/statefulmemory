@@ -1,9 +1,15 @@
 //! Adaptive query complexity router (Wave 3 / Adaptive-RAG-inspired).
 //!
-//! Heuristic only — no trained classifier. Routes Easy queries off the dense
-//! + CE path to keep p99 under 300 ms.
+//! Heuristic baseline + optional Laya System-1 choice (Wave 4). When Laya is
+//! disabled, unreachable, times out, or low-confidence → heuristic only.
+//! Never calls an agent CLI for tier selection.
 
+use std::sync::Arc;
+
+use crate::laya::LayaClient;
+use crate::laya_schemas;
 use crate::query_expand;
+use statefulmemory_core::config::LayaConfig;
 
 /// Retrieval effort tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +28,15 @@ impl QueryTier {
             Self::Easy => "easy",
             Self::Normal => "normal",
             Self::Hard => "hard",
+        }
+    }
+
+    pub fn from_str_label(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "easy" => Some(Self::Easy),
+            "normal" => Some(Self::Normal),
+            "hard" => Some(Self::Hard),
+            _ => None,
         }
     }
 
@@ -84,6 +99,77 @@ pub fn classify(query: &str, router_enabled: bool) -> QueryTier {
     QueryTier::Normal
 }
 
+/// Prefer Laya when enabled; on any failure use [`classify`] (never Claude).
+pub async fn classify_maybe_laya(
+    query: &str,
+    router_enabled: bool,
+    laya: Option<&Arc<LayaClient>>,
+    laya_cfg: &LayaConfig,
+) -> QueryTier {
+    let heuristic = classify(query, router_enabled);
+    if !router_enabled {
+        return heuristic;
+    }
+    let Some(client) = laya else {
+        return heuristic;
+    };
+    if !laya_cfg.enabled || !laya_cfg.router {
+        return heuristic;
+    }
+
+    if let Some(cached) = client.cached_tier(query) {
+        if let Some(t) = QueryTier::from_str_label(&cached) {
+            return t;
+        }
+    }
+
+    let client = Arc::clone(client);
+    let q = query.to_string();
+    let model = laya_cfg.model_router.clone();
+    let state = laya_schemas::router_state(&q);
+    let questions = laya_schemas::router_questions();
+    let state_c = state.clone();
+    let questions_c = questions.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        client
+            .predict(&state_c, &questions_c, &model)
+            .map(|r| (client, r))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((client, pred))) => {
+            if let Some(label) = client.choice_value(&pred, "tier") {
+                if let Some(tier) = QueryTier::from_str_label(label) {
+                    let conf = pred
+                        .answers
+                        .get("tier")
+                        .and_then(|a| a.confidence)
+                        .unwrap_or(1.0);
+                    client.put_tier_cache(&q, tier.as_str(), conf);
+                    crate::laya::log_teacher(
+                        "router",
+                        &state,
+                        &questions,
+                        &serde_json::json!({ "tier": label, "confidence": conf, "source": "laya" }),
+                    );
+                    return tier;
+                }
+            }
+            heuristic
+        }
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "laya router predict failed — heuristic");
+            heuristic
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "laya router join failed — heuristic");
+            heuristic
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +198,11 @@ mod tests {
             classify("how does validate relate to refresh", true),
             QueryTier::Hard
         );
+    }
+
+    #[test]
+    fn from_str_label_roundtrip() {
+        assert_eq!(QueryTier::from_str_label("EASY"), Some(QueryTier::Easy));
+        assert_eq!(QueryTier::from_str_label("nope"), None);
     }
 }

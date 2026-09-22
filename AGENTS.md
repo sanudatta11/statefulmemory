@@ -226,6 +226,32 @@ MCP tools (stdio via `statefulmemory mcp`): `memory_search`, `memory_recent`,
   a second write connection.
 - RPCs (additive): `ListEntities`, `GetEntity`, `GraphQuery`.
 
+## Laya System-1 sidecar (Wave 4, opt-in via install)
+
+`smem install` / `statefulmemory install` (same binary path; unless `--no-laya`):
+
+1. Merges `[laya] enabled = true` into `~/.statefulmemory/config.toml` (missing keys only)
+2. Writes `~/.statefulmemory/laya-sidecar/{server.py,requirements.txt,run.sh}`
+3. Creates `~/.statefulmemory/laya-venv` and `pip install -r requirements.txt`
+4. Best-effort starts uvicorn on `127.0.0.1:8765`
+
+The daemon also soft-spawns the local sidecar when `[laya] enabled` and health
+fails (loopback URL only). Non-local `url` = team/shared sidecar — no auto-spawn.
+Teacher logs → `~/.statefulmemory/laya_train/*.jsonl`. Fine-tune later (Kaggle
+RLCD); day-1 uses off-the-shelf `typed-decisions` + english root.
+Primary ship gate: router p99 / Easy-skip (not decide accuracy).
+
+Override:
+
+```toml
+[laya]
+enabled = true
+url = "http://127.0.0.1:8765"   # or http://team-host:8765
+timeout_ms = 80
+```
+
+Env: `STATEFULMEMORY_LAYA_ENABLED/URL/TIMEOUT_MS/ROUTER/DECIDE/CONFLICT`.
+
 ## Roadmap status (short)
 
 Shipped: hybrid default, MCP, Decide, `.mem` archives (**v2 now carries the
@@ -233,7 +259,9 @@ entity graph**), in-force `supersedes_ids`, staleness eval, anchors + verify +
 git hooks, optional decay / evidence window / token budget, **entity graph (V11)
 + `graph` CLI + MCP tool + CI gates (graph-smoke / mem-roundtrip / eval
 regression)**, **Dream-lite review scan (`dream run --review`, heuristic + no
-LLM, applies nothing)**, **effective-context compile + repo ingest + opt-in PPR**.
+LLM, applies nothing)**, **effective-context compile + repo ingest + opt-in PPR**,
+**Laya System-1 sidecar (Wave 4) for router/decide/conflict via `smem install`**.
 
 Still open: graphify bridge / auto-anchor, multi-relation `obs judge`, eval CI
-scorecard promotion, graph default-on after multi-hop gate. Details: `docs/ROADMAP.md`.
+scorecard promotion, graph default-on after multi-hop gate, Laya fine-tune
+export (Wave 4b). Details: `docs/ROADMAP.md`.

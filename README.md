@@ -38,33 +38,51 @@ Engineering comparison: [Why StatefulMemory?](https://statefulmemory.dev/docs/wh
 ## Install
 
 **Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL/`pkg-config`, macOS or Linux
-(WSL OK). Windows is out of scope for v1.
+(WSL OK). Windows is out of scope for v1. **Python 3.10+** is optional but
+recommended so `install` can set up the Laya System-1 sidecar out of the box.
 
 ```bash
 git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
-make prereqs && make install    # → ~/.local/bin/statefulmemory
+make prereqs && make install    # → ~/.local/bin/statefulmemory (+ smem)
 export PATH="$HOME/.local/bin:$PATH"
-statefulmemory --version
+statefulmemory --version        # same binary as: smem --version
 ```
 
 Full guide: [Install](https://statefulmemory.dev/docs/install/).
+Laya sidecar: [`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md).
 
 ## 30-second example
 
 ```bash
-statefulmemory install --agent cursor   # or: statefulmemory install
+smem install --agent cursor     # or: statefulmemory install
+# installs skills/MCP + Laya sidecar prereqs (venv, deps, local spawn)
+# skip Laya with: smem install --no-laya
 SID=$(uuidgen)
-statefulmemory obs save --type decision \
+smem obs save --type decision \
   --title "use pgx not GORM" \
   --content "Team prefers raw SQL via pgx" \
   --session "$SID"
-statefulmemory obs context --query "database access layer" --limit 10
-statefulmemory decide "Should we keep pgx?"
+smem obs context --query "database access layer" --limit 10
+smem decide "Should we keep pgx?"
 ```
 
-Agents use MCP (`statefulmemory mcp`) or shell-out. **Python/TypeScript SDKs are not
+Agents use MCP (`smem mcp` / `statefulmemory mcp`) or shell-out. **Python/TypeScript SDKs are not
 shipped.** Preference-evolution walkthrough:
 [`demos/preference-evolution.sh`](demos/preference-evolution.sh).
+
+### Laya System-1 (decide / conflict / query router)
+
+Optional non-autoregressive typed-decision sidecar ([Laya](https://huggingface.co/convaiinnovations/laya)).
+Not an embedder or reranker — search/context stay BM25 + BGE + local CE.
+
+| What | Where |
+| --- | --- |
+| Config | `[laya]` in `~/.statefulmemory/config.toml` (filled by install) |
+| Sidecar app | `~/.statefulmemory/laya-sidecar/` |
+| Python venv | `~/.statefulmemory/laya-venv/` |
+| Manual start | `make laya-sidecar` or `~/.statefulmemory/laya-sidecar/run.sh` |
+
+Details: [`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md) · [`AGENTS.md`](AGENTS.md).
 
 ## Architecture
 
@@ -78,6 +96,7 @@ flowchart LR
   DB[(project SQLite FTS5 plus optional vec)]
   G[(global.sqlite)]
   Workers[embed extract resolve verify]
+  Laya[Laya System-1 sidecar]
   Agents --> CLI
   Agents --> MCP
   CLI --> D
@@ -87,7 +106,13 @@ flowchart LR
   WT --> G
   D --> Workers
   Workers --> DB
+  D --> Laya
 ```
+
+Retrieval stays local (BM25 + BGE + optional local CE). Optional **Laya**
+provides non-autoregressive typed decisions for query routing, Decide, and
+conflict resolution — soft-fails to heuristics / agent CLI. Details:
+[`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md).
 
 Details: [Architecture](https://statefulmemory.dev/docs/architecture/).
 
@@ -118,14 +143,16 @@ Do not quote smoke or tiny slices against published leaderboards.
 
 | Surface | Status |
 |---|---|
-| MCP: `memory_search`, `memory_recent`, `memory_context`, `memory_add`, `memory_facts`, `memory_health`, `memory_decide` | Shipped (`statefulmemory mcp`) |
-| `statefulmemory install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
+| MCP: `memory_search`, `memory_recent`, `memory_context`, `memory_add`, `memory_facts`, `memory_health`, `memory_decide`, `memory_graph_query` | Shipped (`statefulmemory mcp`) |
+| `statefulmemory install` / `smem install` — Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, `.agents`, VS Code, Copilot CLI, Copilot, Gemini CLI, Codex, Amazon Q | Shipped |
+| Laya System-1 sidecar (typed router / decide / conflict) | Shipped (`install` sets up local venv; `--no-laya` to skip) |
 | LangGraph, OpenAI Agents SDK, CrewAI, AutoGen, LlamaIndex, Vercel AI SDK | **Not yet** |
 
 ```bash
-statefulmemory install                 # auto-detect
+statefulmemory install                 # auto-detect (same: smem install)
 statefulmemory install --agent cursor
 statefulmemory install --all
+statefulmemory install --no-laya       # skip Laya System-1 sidecar prereqs
 ```
 
 Full matrix: [Integrations](https://statefulmemory.dev/docs/integrations/).

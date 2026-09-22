@@ -7,7 +7,8 @@
         eval-locomo-smoke eval-locomo-fetch eval-bge-model \
         eval-locomo-extract eval-locomo-facts \
         eval-locomo eval-locomo-full \
-        eval-locomo-e2e eval-locomo-compare eval-staleness
+        eval-locomo-e2e eval-locomo-compare eval-staleness \
+        laya-sidecar
 
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
@@ -105,6 +106,9 @@ help:
 	@echo "  eval-staleness       Fixture: supersession vs --no-supersede baseline"
 	@echo "                       LIMIT=N = stratified cats 1–4; EXTRACT=1 (default) builds facts.db if missing"
 	@echo "                       STATEFULMEMORY_EVAL_CONCURRENCY=N parallel answer/judge (default 4)"
+	@echo ""
+	@echo "Laya (Wave 4 System-1)"
+	@echo "  laya-sidecar         Start Laya HTTP sidecar on 127.0.0.1:8765"
 	@echo ""
 	@echo "Eval (legacy eval binary in crates/statefulmemory-eval)"
 	@echo "  extract-locomo   Extract facts for LoCoMo conv-26 (requires BGE model)"
@@ -258,6 +262,14 @@ run-locomo: eval-bge-model
 	  --skip-ingest --limit 200 --k 20 \
 	  --out reports/locomo.md \
 	  2>&1 | tee reports/locomo.log
+
+# ── Laya System-1 sidecar (Wave 4) ────────────────────────────────────────────
+
+laya-sidecar:
+	@echo "Starting Laya sidecar on 127.0.0.1:8765 (USE_TF=0)"
+	cd $(CURDIR)/tools/laya-sidecar && \
+	  USE_TF=0 LAYA_HOST=127.0.0.1 LAYA_PORT=8765 \
+	  python3 -m uvicorn server:app --host 127.0.0.1 --port 8765
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 

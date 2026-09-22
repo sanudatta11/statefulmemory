@@ -190,8 +190,8 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
         Ok(r) => {
             if r.created {
                 println!(
-                    "Wrote ~/.statefulmemory/config.toml (search.mode={}, extract={}, conflict={}, storage={})",
-                    r.search_mode, r.extract, r.conflict, r.backend
+                    "Wrote ~/.statefulmemory/config.toml (search.mode={}, extract={}, conflict={}, laya={}, storage={})",
+                    r.search_mode, r.extract, r.conflict, r.laya, r.backend
                 );
             } else if !r.merged_keys.is_empty() {
                 println!(
@@ -204,6 +204,20 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
         }
         Err(e) => eprintln!("  warn: could not write ~/.statefulmemory/config.toml: {e}"),
     }
+
+    // Laya System-1: venv + pip + sidecar assets + best-effort start (local OOTB).
+    if args.no_laya {
+        println!("Skipping Laya sidecar setup (--no-laya).");
+    } else {
+        let laya = crate::laya_install::ensure_laya_prereqs();
+        for m in &laya.messages {
+            println!("{m}");
+        }
+        for w in &laya.warnings {
+            eprintln!("  warn: {w}");
+        }
+    }
+
     if !statefulmemory_extract::agent_cli::llm_cli_available() {
         eprintln!(
             "  warn: no agent CLI on PATH for extract/judge/rerank \
@@ -456,6 +470,14 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     println!("        Re-run with --all or --agent <id> to target more agents.");
     println!("        or run `tail -f ~/.statefulmemory/queries.log` after the new session starts");
     println!("        — you should see an `obs.context` line within a second.");
+    if !args.no_laya {
+        println!();
+        println!("Laya System-1: enabled in config when missing; local sidecar under");
+        println!("  ~/.statefulmemory/laya-sidecar (venv: ~/.statefulmemory/laya-venv).");
+        println!("  Team/remote: set [laya] url to your shared sidecar; install skips auto-spawn");
+        println!("  for non-loopback URLs. Skip with: smem install --no-laya");
+        println!("                 (same: statefulmemory install --no-laya)");
+    }
 
     // ── Git hooks (re-verify anchors after commit) ───────────────────────────
     let want_hooks = if args.no_git_hooks {

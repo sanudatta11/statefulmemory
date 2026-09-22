@@ -163,14 +163,23 @@ Doctor RPCs — see `proto/statefulmemory.proto`.
 ## Product commands agents should know
 
 ```bash
-statefulmemory install                 # skills + MCP; git hooks when cwd is a repo
+statefulmemory install                 # skills + MCP + Laya prereqs; git hooks when cwd is a repo
 statefulmemory install --no-git-hooks  # skip post-commit verify hooks
+statefulmemory install --no-laya       # skip Laya System-1 sidecar setup
+# smem is the same binary:
+smem install
 statefulmemory obs save --anchor path::symbol --title "…" --content "…"
 statefulmemory verify [--quiet]        # re-check anchors vs HEAD
 statefulmemory obs context --query "…" --max-tokens 500
 statefulmemory decide "…"
 statefulmemory mem export --out backup.mem
 ```
+
+## Laya System-1 (Wave 4)
+
+Optional HTTP sidecar for typed decide / conflict / query-router signals.
+`smem install` sets it up under `~/.statefulmemory/laya-{sidecar,venv}/` unless
+`--no-laya`. See [`AGENTS.md`](AGENTS.md) and [`tools/laya-sidecar/README.md`](tools/laya-sidecar/README.md).
 
 ## Pending roadmap (see `docs/ROADMAP.md`)
 

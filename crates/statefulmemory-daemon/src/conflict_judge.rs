@@ -74,14 +74,19 @@ impl ConflictClassifier for ClaudeConflictClassifier {
         new_title: &str,
         new_content: &str,
     ) -> anyhow::Result<ConflictVerdict> {
+        if let Some(v) = try_laya_conflict(old_title, old_content, new_title, new_content) {
+            return Ok(v);
+        }
+
         let prompt = build_prompt(old_title, old_content, new_title, new_content);
         let model_id = self.model_id.clone();
         let client = self.claude.clone();
         let timeout = self.timeout;
+        let prompt_for_ask = prompt.clone();
 
         let raw = with_rt(|rt| {
             rt.block_on(async move {
-                let fut = client.ask(&prompt, &model_id);
+                let fut = client.ask(&prompt_for_ask, &model_id);
                 tokio::time::timeout(timeout, fut)
                     .await
                     .map_err(|_| {
@@ -91,8 +96,42 @@ impl ConflictClassifier for ClaudeConflictClassifier {
             })
         })?;
 
-        parse_verdict(&raw)
+        let verdict = parse_verdict(&raw)?;
+        crate::laya::log_teacher(
+            "conflict",
+            &prompt,
+            &serde_json::json!({ "source": "claude" }),
+            &serde_json::json!({ "verdict": format!("{verdict:?}") }),
+        );
+        Ok(verdict)
     }
+}
+
+fn try_laya_conflict(
+    old_title: &str,
+    old_content: &str,
+    new_title: &str,
+    new_content: &str,
+) -> Option<ConflictVerdict> {
+    let cfg = statefulmemory_core::config::load_resolved(None);
+    if !cfg.laya.enabled || !cfg.laya.conflict {
+        return None;
+    }
+    let client = crate::laya::LayaClient::new(&cfg.laya);
+    let state = crate::laya_schemas::conflict_state(old_title, old_content, new_title, new_content);
+    let questions = crate::laya_schemas::conflict_questions();
+    let pred = client
+        .predict(&state, &questions, &cfg.laya.model_decide)
+        .ok()?;
+    let label = client.choice_value(&pred, "verdict")?;
+    let verdict = parse_verdict(label).ok()?;
+    crate::laya::log_teacher(
+        "conflict",
+        &state,
+        &questions,
+        &serde_json::json!({ "verdict": label, "source": "laya" }),
+    );
+    Some(verdict)
 }
 
 fn build_prompt(old_title: &str, old_content: &str, new_title: &str, new_content: &str) -> String {

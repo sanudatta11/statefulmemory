@@ -98,6 +98,8 @@ rcgen = "0.13"
 
 # HTTP server for `statefulmemory ui`
 tiny_http = "0.12"
+# Laya System-1 sidecar client (blocking; short timeouts)
+ureq = { version = "2.12", default-features = true }
 
 # Misc
 once_cell = "1"

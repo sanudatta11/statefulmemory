@@ -25,6 +25,7 @@ cross-project global mirror DB), the platform looks like this:
 | Code Anchors | **Shipped** | V7 `code_anchor` schema, CLI `--anchor` & Graphify call-graph bridge. |
 | TUI & Doctor | **Shipped** | `statefulmemory tui` observation browser and `statefulmemory doctor [--repair]` auto-repair. |
 | LLM judge | **Shipped** | Relation classifier (`observation_relations`). |
+| Laya System-1 | **Shipped** | Opt-in Wave 4 sidecar for router / decide / conflict; `smem install` sets up venv + assets + local spawn (`--no-laya` to skip). Fine-tune export deferred. |
 
 The agent-side surface is sound. The *retrieval substrate* is where the
 gap to the published research benchmarks lives.

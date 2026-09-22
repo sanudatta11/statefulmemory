@@ -183,6 +183,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         verify_pool,
         search_cache: Arc::new(crate::search_cache::SearchCache::default()),
         query_vec_cache: Arc::new(Mutex::new(HashMap::new())),
+        laya: crate::laya::LayaClient::try_from_config(&statefulmemory_cfg.laya),
     });
 
     let svc = StatefulMemoryService::new(state.clone());

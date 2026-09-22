@@ -25,6 +25,9 @@ CLI help do not roast peers by name.
 - Opt-in entity graph with BFS or HippoRAG-style PPR ranking (`graph.ranker = ppr`)
 - **Wave 3 retrieve:** adaptive Easy/Normal/Hard router, local MiniLM-style CE
   rerank (default, LLM-free), result LRU cache, index-time fact key expand
+- **Wave 4 (opt-in):** Laya System-1 HTTP sidecar for router / decide / conflict
+  typed decisions — not a reranker; soft-fails to heuristic (router) or agent
+  CLI (decide/conflict). See `tools/laya-sidecar/` and `[laya]` config.
 
 ## Effective context (200k / 1M ≈ 100M with memory)
 

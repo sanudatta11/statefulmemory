@@ -47,6 +47,7 @@ pub mod cmd_version;
 pub mod exit;
 pub mod formatter;
 pub mod git_hooks;
+pub mod laya_install;
 pub mod mcp_install;
 pub mod project_detect;
 pub mod render;

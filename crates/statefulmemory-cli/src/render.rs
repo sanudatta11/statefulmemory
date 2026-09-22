@@ -212,6 +212,11 @@ impl Render for p::DecideResponse {
                 writeln!(w, "recorded resolution observation #{id}")?;
             }
         }
+        if let Some(sig) = &self.signals_json {
+            if !sig.is_empty() {
+                writeln!(w, "signals: {sig}")?;
+            }
+        }
         Ok(())
     }
 
@@ -234,6 +239,7 @@ impl Render for p::DecideResponse {
             })).collect::<Vec<_>>(),
             "resolution_observation_id": self.resolution_observation_id,
             "wrote_resolution": self.wrote_resolution,
+            "signals_json": self.signals_json,
         })
     }
 }

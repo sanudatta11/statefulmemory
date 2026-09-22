@@ -435,6 +435,7 @@ impl MemoryServer {
             })).collect::<Vec<_>>(),
             "wrote_resolution": resp.wrote_resolution,
             "resolution_observation_id": resp.resolution_observation_id,
+            "signals_json": resp.signals_json,
         })))
     }
 

@@ -178,6 +178,9 @@ async fn dispatch_purge(home: &Path, cwd: &Path) -> ExitCode {
         .args(["daemon", "stop"])
         .status();
 
+    // Best-effort stop of the install-managed Laya sidecar before wiping data.
+    stop_laya_sidecar(home);
+
     let data_dirs = [
         home.join(".statefulmemory"),
         home.join(".memlayer"),
@@ -530,4 +533,27 @@ fn unpatch_claude_settings(path: &PathBuf) -> std::io::Result<bool> {
     let new_text = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
     fs::write(path, new_text + "\n")?;
     Ok(true)
+}
+
+/// Best-effort kill of the install-managed Laya uvicorn process via pidfile.
+fn stop_laya_sidecar(home: &Path) {
+    let pid_path = home.join(".statefulmemory").join("laya-sidecar.pid");
+    let Ok(s) = fs::read_to_string(&pid_path) else {
+        return;
+    };
+    let Ok(pid) = s.trim().parse::<i32>() else {
+        let _ = fs::remove_file(&pid_path);
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+        let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+    let _ = fs::remove_file(&pid_path);
 }

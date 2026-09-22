@@ -101,6 +101,8 @@ pub struct DaemonState {
     pub search_cache: std::sync::Arc<crate::search_cache::SearchCache>,
     /// In-process query embedding cache (sha256 text → vector).
     pub query_vec_cache: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, Vec<f32>>>>,
+    /// Optional Laya System-1 sidecar client. `None` when disabled or unhealthy.
+    pub laya: Option<std::sync::Arc<crate::laya::LayaClient>>,
 }
 
 #[derive(Clone)]
@@ -1767,7 +1769,13 @@ impl StatefulMemory for StatefulMemoryService {
         }
         let cfg = statefulmemory_core::config::load_resolved(Some(&r.project_name));
         let router_on = cfg.search.router.eq_ignore_ascii_case("adaptive");
-        let tier = crate::query_router::classify(&r.query, router_on);
+        let tier = crate::query_router::classify_maybe_laya(
+            &r.query,
+            router_on,
+            self.state.laya.as_ref(),
+            &cfg.laya,
+        )
+        .await;
         let mode_resolved = self
             .resolved_search_mode(r.mode.as_deref(), &r.project_name)
             .as_wire()
@@ -1972,7 +1980,13 @@ impl StatefulMemory for StatefulMemoryService {
         let recents = match query_ref {
             Some(q) => {
                 let router_on = cfg.search.router.eq_ignore_ascii_case("adaptive");
-                let tier = crate::query_router::classify(q, router_on);
+                let tier = crate::query_router::classify_maybe_laya(
+                    q,
+                    router_on,
+                    self.state.laya.as_ref(),
+                    &cfg.laya,
+                )
+                .await;
                 if !matches!(tier, crate::query_router::QueryTier::Easy) {
                     allow_graph_query = Some(q);
                 }
