@@ -76,9 +76,21 @@ Guide: [Anchors and verify](/docs/anchors-verify/).
 statefulmemory decide "Should we keep SQLite or move to Postgres?"
 ```
 
-Needs an agent CLI (`STATEFULMEMORY_LLM_*`). Guide: [Decide](/docs/decide/).
+Needs an agent CLI (`STATEFULMEMORY_LLM_*`) or Laya. Guide: [Decide](/docs/decide/).
 
-## 7. Back up
+## 7. Turn on Laya System-1
+
+```bash
+smem doctor                    # prints laya enabled / url / health
+curl -s http://127.0.0.1:8765/health
+# { "ok": true, "backend": "mlx", "loaded": [...], "error": null }
+```
+
+`smem install` already wired the sidecar — native **laya-mlx** on Apple Silicon
+(~13 ms router P50), PyTorch elsewhere. Decide and conflict take the fast path;
+weak calls fall back to your agent CLI. Guide: [Laya System-1](/docs/laya/).
+
+## 8. Back up
 
 ```bash
 statefulmemory mem export --out backup.mem
@@ -91,6 +103,7 @@ Data lives under `~/.statefulmemory/`. The daemon auto-starts on first use.
 ## Next
 
 - [Config](/docs/config/) — hybrid, verify, token budget, env overrides
+- [Laya System-1](/docs/laya/) — on-device typed decisions, native MLX
 - [LoCoMo eval](/docs/locomo/) — smoke, full, staleness
 - [Troubleshooting](/docs/troubleshooting/)
 - [Command cheat sheet](/docs/commands/)

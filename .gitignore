@@ -74,6 +74,14 @@ skills-lock.json
 .impeccable/build/
 
 
+# Local tool configs (machine-local absolute paths)
+.mcp.json
+opencode.json
+.windsurf/
+
+# Film render intermediates (web-ready MP4s live in website/public/videos/)
+brag-output-*/
+
 # Agent session logs
 session-*.md
 

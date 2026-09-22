@@ -26,9 +26,10 @@ CLI help do not roast peers by name.
 - Opt-in entity graph with BFS or HippoRAG-style PPR ranking (`graph.ranker = ppr`)
 - **Wave 3 retrieve:** adaptive Easy/Normal/Hard router, local MiniLM-style CE
   rerank (default, LLM-free), result LRU cache, index-time fact key expand
-- **Wave 4 (opt-in):** Laya System-1 HTTP sidecar for router / decide / conflict
-  typed decisions — not a reranker; soft-fails to heuristic (router) or agent
-  CLI (decide/conflict). See `tools/laya-sidecar/` and `[laya]` config.
+- **Laya System-1 (opt-in):** on-device typed decisions for router / decide /
+  conflict — native MLX on Apple Silicon, PyTorch elsewhere. Not a reranker;
+  soft-fails to heuristic (router) or agent CLI (decide/conflict).
+  See `tools/laya-sidecar/` and the [Laya guide](/docs/laya/).
 
 ## Effective context (200k / 1M ≈ 100M with memory)
 
@@ -42,6 +43,19 @@ trained LTM weights.
 
 Unmatched-harness caveat: this is a systems claim (more useful tokens per
 window), not a published LoCoMo/LongMemEval scorecard win.
+
+## Laya System-1: decisions, not text
+
+The optional Laya sidecar answers the discrete questions the memory layer asks —
+which retrieval tier a query needs, what Decide should recommend, whether two
+memories conflict — in one non-autoregressive forward pass. On Apple Silicon it
+runs native **laya-mlx** (published M3 Max P50 **13.4 ms** for the 421M
+checkpoint, no PyTorch); elsewhere it uses the PyTorch `laya` package. Same
+checkpoints, same typed schema. Weak calls soft-fail to heuristics or your
+agent CLI, so search and context keep working with Laya off.
+
+Numbers are from the `laya-mlx` project's published benchmarks and are not a
+statefulmemory-harness score. See [Laya System-1](/docs/laya/).
 
 ## Comparison
 

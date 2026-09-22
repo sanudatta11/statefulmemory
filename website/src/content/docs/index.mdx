@@ -1,179 +1,190 @@
 ---
-title: Overview
-description: "Persistent memory for coding agents — self-host or StatefulMemory Cloud SaaS. CLI + MCP → daemon → SQLite."
+title: statefulmemory
+description: "Persistent memory for coding agents, with an on-device System-1 that decides. Per-project SQLite, hybrid search, native MLX on Apple Silicon. Self-host or StatefulMemory Cloud."
+template: splash
+hero:
+  title: "Coding agents forget. statefulmemory remembers — Laya decides on-device."
+  tagline: "Persistent memory for coding agents: per-project SQLite, hybrid search, code-anchored verify — plus a local System-1 (native MLX on Apple Silicon) that routes, decides, and judges conflicts in one forward pass. Self-host or use StatefulMemory Cloud."
+  actions:
+    - text: Install
+      link: /docs/install/
+      icon: right-arrow
+      variant: primary
+    - text: Watch the film
+      link: '#watch-the-film'
+      icon: open-book
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/sanudatta11/statefulmemory
+      icon: github
+      variant: minimal
 head:
   - tag: meta
     attrs:
       name: keywords
-      content: statefulmemory, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, cloud SaaS, self-host, llms.txt
+      content: statefulmemory, AI coding agents, persistent memory, MCP, Claude Code, Cursor, OpenCode, local LLM, SQLite, cloud SaaS, self-host, Laya, MLX, Apple Silicon, llms.txt
 ---
 
-import { LinkButton } from '@astrojs/starlight/components';
+import { LinkButton, Card, CardGrid } from '@astrojs/starlight/components';
 
-# statefulmemory
+<div class="ml-quickstart" role="note" aria-label="Quick start">
+  <code>make install</code> then <code>smem install</code> — wires your agent (MCP),
+  git verify hooks, and the Laya System-1 sidecar.
+  <span class="ml-quickstart-alt">Skip Laya with <code>--no-laya</code> · same binary as <code>sm</code></span>
+</div>
 
-Persistent memory infrastructure for coding agents: **CLI + MCP → gRPC daemon →
-per-project SQLite**. **Self-host** on your machine or team, or use
-**StatefulMemory Cloud** (managed SaaS).
+## Watch the film
 
-<div class="ml-cta" role="group" aria-label="Get started with statefulmemory">
-  <div class="ml-cta-row">
-    <LinkButton href="/docs/install/" variant="primary" icon="right-arrow">
-      Install
-    </LinkButton>
-    <LinkButton href="/docs/why-statefulmemory/" variant="secondary" icon="open-book">
-      Why statefulmemory
-    </LinkButton>
-    <LinkButton href="https://github.com/sanudatta11/statefulmemory" variant="minimal" icon="github">
-      GitHub
-    </LinkButton>
+The full arc in two minutes — forget → remember → retrieve → verify → decide →
+connect → **Laya**.
+
+<video class="ml-demo-video" controls playsinline preload="metadata" src="/videos/brag.mp4" poster="/videos/brag-poster.jpg" title="statefulmemory — product film">
+  Your browser does not support video.
+</video>
+
+## What you get
+
+<CardGrid>
+  <Card title="14 install targets">
+    Claude Code, Cursor, Windsurf, OpenCode, Codex, Gemini CLI, Amazon Q and
+    more — MCP tools and skills wired in one command.
+  </Card>
+  <Card title="Inspectable SQLite">
+    Per-project database under `~/.statefulmemory/` with FTS5. Read it, back it
+    up, export it as a portable `.mem` archive — never a black box.
+  </Card>
+  <Card title="Hybrid, no API key">
+    BM25 + dense retrieval fused with RRF, plus a local reranker on the
+    self-host path. Search and context work fully offline.
+  </Card>
+  <Card title="On-device System-1">
+    Native **laya-mlx** on Apple Silicon decides query tier, Decide, and
+    conflict verdicts in one forward pass (~13 ms router P50 on an M3 Max).
+    PyTorch elsewhere.
+  </Card>
+</CardGrid>
+
+## Chat history is not project memory
+
+Your agent's chat log dies with the window. Every new session, it re-learns the
+same decisions, re-trips the same pitfalls, and drifts on the same open
+questions. StatefulMemory keeps the durable record: what you decided, why, and
+which code it is pinned to — then hands the agent the right context the next
+time it starts.
+
+Long context models still pay attention cost inside the window.
+[Effective context](/docs/search-context/) compiles decisions, anchors, and
+facts into a fixed host window, so a 200k or 1M-token agent acts like a much
+larger working set.
+
+## How it works
+
+<CardGrid>
+  <Card title="Remember">
+    <code>smem obs save --type decision --title "use pgx not GORM"</code>
+    — every choice lands in per-project SQLite, optionally pinned to code.
+  </Card>
+  <Card title="Retrieve">
+    <code>smem obs context --query "which ORM should we use?"</code>
+    — hybrid BM25 + dense, token-budgeted, ranked for the task at hand.
+  </Card>
+  <Card title="Verify">
+    <code>smem obs save --anchor src/auth.rs::login …</code>
+    — git hooks re-check anchors; stale claims are withdrawn from context.
+  </Card>
+  <Card title="Decide">
+    <code>smem decide "SQLite or Postgres?"</code>
+    — conflicting memories get a typed verdict: in force, superseded, archived.
+  </Card>
+  <Card title="Connect">
+    <code>smem graph query auth --hops 2</code>
+    — entity graph with PPR ranking surfaces related decisions you forgot existed.
+  </Card>
+  <Card title="Laya">
+    <code>smem install</code>
+    — a System-1 sidecar that answers router / decide / conflict questions
+    locally, with silent fallback. Full story on the [Laya page](/docs/laya/).
+  </Card>
+</CardGrid>
+
+## Laya System-1 — the on-device co-pilot
+
+<div class="ml-laya">
+  <div class="ml-laya-head">
+    <p class="ml-laya-eyebrow">LAYA · SYSTEM-1</p>
+    <h2>Thinks in one pass, not one round-trip.</h2>
+    <p>
+      The LLM is System-2: slow, token-hungry, remote. Laya is System-1:
+      non-autoregressive, local, typed — it answers the discrete questions your
+      memory layer asks (which retrieval tier, what should Decide say, does this
+      conflict) in a single forward pass.
+    </p>
   </div>
-  <p class="ml-cta-hint">
-    <code>make install</code>
-    <span aria-hidden="true">·</span>
-    wire with <code>statefulmemory install</code>
-    <span aria-hidden="true">·</span>
-    source on GitHub
+  <div class="ml-laya-lanes">
+    <div class="ml-laya-lane ml-laya-slow">
+      <span class="ml-lane-tag">System-2</span>
+      <p>LLM round-trip</p>
+      <ul>
+        <li>Tokens per call</li>
+        <li>Remote or paid</li>
+        <li>Latency on the network</li>
+      </ul>
+    </div>
+    <div class="ml-laya-lane ml-laya-fast">
+      <span class="ml-lane-tag ml-lane-tag-hot">System-1</span>
+      <p>Laya · one forward pass</p>
+      <ul>
+        <li>Router ~30 ms / Decide ~100–200 ms on MLX</li>
+        <li>Loopback · no network</li>
+        <li>Open weights · Apache-2.0 · $0 self-hosted</li>
+      </ul>
+    </div>
+  </div>
+  <div class="ml-laya-rows">
+    <div class="ml-laya-row"><code>query router</code><span>Easy skips dense · Hard expands + graph</span></div>
+    <div class="ml-laya-row"><code>decide</code><span>recommend a side · abstain when evidence is thin</span></div>
+    <div class="ml-laya-row"><code>conflict judge</code><span>SUPERSEDES verdicts for in-force memory</span></div>
+  </div>
+  <pre class="ml-laya-health"><code>{`$ curl -s http://127.0.0.1:8765/health
+{ "ok": true, "backend": "mlx", "loaded": [...], "error": null }`}</code></pre>
+  <p class="ml-laya-foot">
+    <code>auto</code> picks <strong>laya-mlx</strong> on Apple Silicon (macOS 14+,
+    Python ≥ 3.11) and PyTorch elsewhere — same checkpoints, same typed schema.
+    Weak calls soft-fail to heuristics or your agent CLI. Never a hard
+    dependency.
+    <span class="ml-laya-cta"><LinkButton href="/docs/laya/" variant="secondary" icon="open-book">Read the Laya guide</LinkButton></span>
   </p>
 </div>
 
-<video class="ml-demo-video" autoplay loop controls playsinline muted preload="metadata" src="/videos/own-your-memory-v2.mp4" title="Own your memory system">
-  Your browser does not support video.
-</video>
+## Own your memory
 
-<video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/overview-v2.mp4" title="statefulmemory overview">
-  Your browser does not support video.
-</video>
+<CardGrid>
+  <Card title="Self-host">
+    Daemon on your laptop (Unix socket) or team TCP+TLS. Data stays yours —
+    inspect, backup, delete.
+  </Card>
+  <Card title="StatefulMemory Cloud">
+    Same CLI and MCP surfaces, hosted storage and ops, when you would rather
+    not run the daemon.
+  </Card>
+  <Card title="Portable">
+    Export a `.mem` archive and import anywhere. Your memory follows you, not a
+    vendor's lock-in.
+  </Card>
+</CardGrid>
 
-## Install in one minute
+## Start here
 
-```bash
-git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
-make prereqs && make install
-export PATH="$HOME/.local/bin:$PATH"
-statefulmemory --version
-```
+<div class="ml-docs-index" role="list" aria-label="Start here">
+  <a href="/docs/why-statefulmemory/"><strong>Why statefulmemory</strong><span>Honest engineering comparison.</span></a>
+  <a href="/docs/install/"><strong>Install</strong><span>Build from source in a minute.</span></a>
+  <a href="/docs/agents/"><strong>Wire into your agent</strong><span>MCP tools, git verify hooks.</span></a>
+  <a href="/docs/laya/"><strong>Laya System-1</strong><span>On-device typed decisions, native MLX.</span></a>
+  <a href="/docs/decide/"><strong>Decide</strong><span>Resolve conflicting memories.</span></a>
+  <a href="/docs/config/"><strong>Config</strong><span>Overlays, env overrides, backends.</span></a>
+</div>
 
-## Use it
-
-1. **Wire your agent** — `statefulmemory install` (or `statefulmemory install --agent cursor`)
-2. **Save something useful** — `statefulmemory obs save --type decision --title "…" --content "…"` (add `--anchor path::symbol` for code-tied claims)
-3. **Pull context later** — `statefulmemory obs context --query "…" --limit 20`
-
-Full walkthrough: [Getting started](/docs/getting-started/) · Agent setup:
-[Wire into your agent](/docs/agents/) · Shipped vs wishlist:
-[Integrations](/docs/integrations/).
-
-Works with Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code,
-ZCode, VS Code / Copilot, Codex, Gemini CLI, Amazon Q, and any agent that can
-shell out or speak MCP. There is no Python Memory SDK yet — use MCP or the
-CLI. Deployment: [Self-hosting and Cloud](/docs/self-hosting/).
-
-## For LLMs and AI crawlers
-
-Machine-readable index: [llms.txt](/llms.txt) · fuller summary:
-[llms-full.txt](/llms-full.txt). Coding agents cloning the repo should read
+For LLM crawlers: [llms.txt](/llms.txt) · [llms-full.txt](/llms-full.txt) ·
 [AGENTS.md](https://github.com/sanudatta11/statefulmemory/blob/main/AGENTS.md)
-(OpenCode / Codex / local) or
+(OpenCode / Codex / local) ·
 [CLAUDE.md](https://github.com/sanudatta11/statefulmemory/blob/main/CLAUDE.md).
-
-## Guides
-
-<ul class="ml-guide-list">
-  <li>
-    <a href="/docs/why-statefulmemory/">
-      <strong>Why statefulmemory</strong>
-      <span>Self-host + Cloud SaaS vs vector DBs alone.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/architecture/">
-      <strong>Architecture</strong>
-      <span>CLI, MCP, daemon, SQLite, workers.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/install/">
-      <strong>Install</strong>
-      <span>Build from source, PATH, and doctor.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/getting-started/">
-      <strong>Getting started</strong>
-      <span>End-to-end tour across every core surface.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/agents/">
-      <strong>Wire into your agent</strong>
-      <span>MCP tools, git verify hooks, local LLM env.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/integrations/">
-      <strong>Integrations</strong>
-      <span>14 install targets shipped; frameworks not yet.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/self-hosting/">
-      <strong>Self-hosting and Cloud</strong>
-      <span>UDS / team TCP self-host, or StatefulMemory Cloud SaaS.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/observations/">
-      <strong>Observations</strong>
-      <span>Save, recent, history, reextract, reindex.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/search-context/">
-      <strong>Search and context</strong>
-      <span>Hybrid retrieval, token budgets, stale withdrawal.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/anchors-verify/">
-      <strong>Anchors and verify</strong>
-      <span>path::symbol digests and git hooks.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/decide/">
-      <strong>Decide</strong>
-      <span>Resolve conflicting memories with your agent CLI.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/mem/">
-      <strong>Mem archives</strong>
-      <span>Portable .mem export and import.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/config/">
-      <strong>Config</strong>
-      <span>Overlays, verify, decay, env overrides.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/locomo/">
-      <strong>LoCoMo eval</strong>
-      <span>Methodology; public wins wait on stratified runs.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/troubleshooting/">
-      <strong>Troubleshooting</strong>
-      <span>Doctor, daemon, and common failures.</span>
-    </a>
-  </li>
-  <li>
-    <a href="/docs/commands/">
-      <strong>Command cheat sheet</strong>
-      <span>Dense index linking out to the guides above.</span>
-    </a>
-  </li>
-</ul>

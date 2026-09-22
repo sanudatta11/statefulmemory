@@ -5,7 +5,7 @@ import sitemap from '@astrojs/sitemap';
 
 const site = 'https://statefulmemory.dev';
 const description =
-	'Persistent memory for coding agents — self-host or StatefulMemory Cloud SaaS. CLI + MCP, daemon, per-project SQLite.';
+	'Persistent memory for coding agents, with an on-device System-1 that decides. Self-host or StatefulMemory Cloud SaaS. CLI + MCP, daemon, per-project SQLite, native MLX on Apple Silicon.';
 
 // https://astro.build/config
 export default defineConfig({
@@ -46,6 +46,7 @@ export default defineConfig({
 						{ label: 'Overview', slug: '' },
 						{ label: 'Why statefulmemory', slug: 'docs/why-statefulmemory' },
 						{ label: 'Architecture', slug: 'docs/architecture' },
+						{ label: 'Laya System-1', slug: 'docs/laya' },
 						{ label: 'Install', slug: 'docs/install' },
 						{ label: 'Getting started', slug: 'docs/getting-started' },
 						{ label: 'Wire into your agent', slug: 'docs/agents' },
@@ -164,21 +165,21 @@ export default defineConfig({
 					tag: 'meta',
 					attrs: {
 						property: 'og:image:alt',
-						content: 'statefulmemory: persistent memory for AI coding agents',
+						content: 'statefulmemory: persistent memory for AI coding agents — coding agents forget, statefulmemory remembers, Laya decides on-device',
 					},
 				},
 				{
 					tag: 'meta',
 					attrs: {
 						property: 'og:image:width',
-						content: '1200',
+						content: '1920',
 					},
 				},
 				{
 					tag: 'meta',
 					attrs: {
 						property: 'og:image:height',
-						content: '675',
+						content: '1080',
 					},
 				},
 				{

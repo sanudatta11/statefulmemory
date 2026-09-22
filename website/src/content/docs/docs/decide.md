@@ -3,9 +3,11 @@ title: Decide
 description: Ask statefulmemory for a recommendation when project memories conflict; uses your agent CLI for the judge.
 ---
 
-**Decide** retrieves evidence, surfaces open conflict pairs, and asks your
-coding-agent CLI to recommend a resolution. Hybrid search stays local; the
-synthesis step needs an LLM backend on `PATH` (or `STATEFULMEMORY_LLM_*`).
+**Decide** retrieves evidence, surfaces open conflict pairs, and asks a judge to
+recommend a resolution. The judge is the local **Laya System-1** sidecar when
+`[laya] enabled` (one forward pass, ~100–200 ms on MLX for a batch), falling
+back to your coding-agent CLI. Hybrid search stays local; the Laya path needs
+no LLM at all.
 
 <video class="ml-demo-video" controls playsinline muted preload="metadata" src="/videos/decide-mem-v2.mp4" title="Decide and mem archives demo">
   Your browser does not support video.
@@ -26,13 +28,17 @@ statefulmemory decide "Which auth strategy is in force?" --limit 12
 
 MCP equivalent: `memory_decide`.
 
-Pin the model if needed:
+Pin the model if you are using the agent-CLI fallback:
 
 ```bash
 export STATEFULMEMORY_LLM_PROVIDER=opencode
 export STATEFULMEMORY_LLM_MODEL=qwen
 # or STATEFULMEMORY_LLM_BIN=/path/to/cursor-agent
 ```
+
+With Laya enabled, `statefulmemory decide` takes the fast path and no
+`STATEFULMEMORY_LLM_*` is needed. Raise `STATEFULMEMORY_LAYA_TIMEOUT_MS=250`
+so decide batches (~100–200 ms) fit. See [Laya System-1](/docs/laya/).
 
 ## What you get
 
@@ -53,6 +59,6 @@ Conflict edges come from the supersession / relation graph built when
 
 | Symptom | Fix |
 | --- | --- |
-| Fails immediately | No agent CLI → install OpenCode/Cursor/Claude/Gemini or set `STATEFULMEMORY_LLM_BIN` |
+| Fails immediately | No Laya and no agent CLI → install OpenCode/Cursor/Claude/Gemini or set `STATEFULMEMORY_LLM_BIN` |
 | Thin evidence | Save more notes; raise `--limit`; try a clearer question |
-| Want local-only | Do not use Decide; disable `conflict.enabled` / `extract.enabled` and keep hybrid search |
+| Want local-only | Enable Laya via `smem install`, or disable `conflict.enabled` / `extract.enabled` and keep hybrid search |

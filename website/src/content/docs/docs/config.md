@@ -57,6 +57,8 @@ Merge order (highest wins): env vars → project overlay → global → code def
 
 ### Laya sidecar backend
 
+Full walkthrough: [Laya System-1](/docs/laya/). Backend selection:
+
 `[laya] backend` picks the sidecar inference runtime:
 
 - `auto` (default): `laya-mlx` on Apple Silicon (macOS 14+, Python ≥ 3.11),

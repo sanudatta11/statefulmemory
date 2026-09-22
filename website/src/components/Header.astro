@@ -24,6 +24,7 @@ const shouldRenderSearch =
 	</div>
 	<div class="sl-flex print:hidden right-group ml-header__actions">
 		<div class="sl-flex social-icons">
+			<a class="ml-header-install" href="/docs/install/">Install</a>
 			<SocialIcons />
 		</div>
 		<ThemeSelect />
@@ -58,6 +59,19 @@ const shouldRenderSearch =
 			content: '';
 			height: 2rem;
 			border-inline-end: 1px solid var(--sl-color-gray-5);
+		}
+
+		.ml-header-install {
+			font-size: 0.9rem;
+			font-weight: 600;
+			color: var(--sl-color-text-accent);
+			text-decoration: none;
+			padding: 0.3rem 0.15rem;
+			white-space: nowrap;
+		}
+
+		.ml-header-install:hover {
+			color: var(--sl-color-text-invert);
 		}
 
 		@media (min-width: 50rem) {

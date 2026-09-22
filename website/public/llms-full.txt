@@ -25,6 +25,15 @@ Optional LLM steps (fact extract, conflict/supersession judge, rerank, Decide)
 shell out to whichever agent CLI is on PATH (OpenCode, Cursor Agent, Claude
 Code, Gemini CLI, Codex, Kilo, and others).
 
+**Laya System-1 (optional):** `smem install` also wires a local HTTP sidecar
+that answers discrete typed questions — retrieval tier (Easy/Normal/Hard),
+Decide recommendations, and conflict SUPERSEDES verdicts — in one
+non-autoregressive forward pass instead of an LLM round-trip. On Apple
+Silicon (macOS 14+, Python ≥ 3.11) it runs the native `laya-mlx` runtime
+(published M3 Max P50 13.4 ms for the 421M checkpoint); elsewhere it uses
+PyTorch `laya`. Search/context stay Rust-local regardless. Fallbacks: router
+→ heuristics, decide/conflict → agent CLI. Docs: statefulmemory.dev/docs/laya.
+
 There is no Python/TypeScript Memory SDK today — use MCP or the CLI.
 
 ## Install (self-host, short)

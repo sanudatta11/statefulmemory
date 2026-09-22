@@ -20,6 +20,7 @@ flowchart LR
   DB[(project SQLite FTS5 plus optional vec)]
   G[(global.sqlite)]
   Workers[embed extract resolve verify]
+  Laya[Laya System-1 sidecar]
   Agents --> CLI
   Agents --> MCP
   CLI --> D
@@ -29,6 +30,7 @@ flowchart LR
   WT --> G
   D --> Workers
   Workers --> DB
+  D -->|router / decide / conflict| Laya
 ```
 
 ## Components
@@ -41,13 +43,15 @@ flowchart LR
 | **Project DB** | SQLite + FTS5 under `~/.statefulmemory/`; optional sqlite-vec for hybrid |
 | **global.sqlite** | Cross-project BM25 mirror |
 | **Workers** | Background pools: embed (BGE-small), extract, resolve, verify |
+| **Laya System-1** | Optional local sidecar for typed router / decide / conflict decisions; native MLX on Apple Silicon ([Laya guide](/docs/laya/)) |
 
 ## Retrieval
 
 Default search/context is **hybrid**: BM25 + dense ANN fused with RRF. On the
 self-host path, search and context do not need a third-party search API key.
 Optional extract / conflict judge / rerank / Decide shell out to an agent CLI
-on `PATH`.
+on `PATH` — or to the local **Laya System-1** sidecar for router / decide /
+conflict when `[laya] enabled`.
 
 ## Deployment modes
 
