@@ -23,6 +23,7 @@ export default defineConfig({
 			customCss: ['./src/styles/custom.css'],
 			pagefind: true,
 			components: {
+				Head: './src/components/Head.astro',
 				Header: './src/components/Header.astro',
 				SocialIcons: './src/components/SocialIcons.astro',
 			},
@@ -130,10 +131,12 @@ export default defineConfig({
 					},
 				},
 				{
-					tag: 'meta',
+					tag: 'link',
 					attrs: {
-						name: 'robots',
-						content: 'index,follow,max-image-preview:large',
+						rel: 'sitemap',
+						type: 'application/xml',
+						title: 'Sitemap',
+						href: `${site}/sitemap-index.xml`,
 					},
 				},
 				{
@@ -181,6 +184,13 @@ export default defineConfig({
 				{
 					tag: 'meta',
 					attrs: {
+						property: 'og:image:type',
+						content: 'image/jpeg',
+					},
+				},
+				{
+					tag: 'meta',
+					attrs: {
 						name: 'twitter:card',
 						content: 'summary_large_image',
 					},
@@ -190,20 +200,6 @@ export default defineConfig({
 					attrs: {
 						name: 'twitter:image',
 						content: `${site}/og.jpg`,
-					},
-				},
-				{
-					tag: 'meta',
-					attrs: {
-						name: 'twitter:title',
-						content: 'statefulmemory',
-					},
-				},
-				{
-					tag: 'meta',
-					attrs: {
-						name: 'twitter:description',
-						content: description,
 					},
 				},
 				{
@@ -255,32 +251,15 @@ export default defineConfig({
 								operatingSystem: 'Linux, macOS',
 							},
 							{
-								'@type': 'FAQPage',
-								mainEntity: [
-									{
-										'@type': 'Question',
-										name: 'What is statefulmemory?',
-										acceptedAnswer: {
-											'@type': 'Answer',
-											text: 'statefulmemory is persistent memory for AI coding agents: CLI + MCP, gRPC daemon, and per-project SQLite. Self-host on your machine or team, or use StatefulMemory Cloud managed SaaS.',
-										},
-									},
-									{
-										'@type': 'Question',
-										name: 'Which AI coding agents work with statefulmemory?',
-										acceptedAnswer: {
-											'@type': 'Answer',
-											text: 'Claude Code, Cursor, Windsurf, Antigravity, OpenCode, Kimi Code, ZCode, VS Code / Copilot, Codex, Gemini CLI, Amazon Q, and any agent that can speak MCP or shell out to the statefulmemory CLI.',
-										},
-									},
-									{
-										'@type': 'Question',
-										name: 'Does statefulmemory work with local or open-source LLMs?',
-										acceptedAnswer: {
-											'@type': 'Answer',
-											text: 'Yes. Hybrid BM25 + dense search runs locally. Optional LLM steps (extract, conflict judge, Decide) use whichever agent CLI is on PATH. Pin with STATEFULMEMORY_LLM_BIN, STATEFULMEMORY_LLM_PROVIDER, and STATEFULMEMORY_LLM_MODEL (for example OpenCode + qwen).',
-										},
-									},
+								'@type': 'Organization',
+								name: 'statefulmemory',
+								url: site,
+								logo: {
+									'@type': 'ImageObject',
+									url: `${site}/favicon.svg`,
+								},
+								sameAs: [
+									'https://github.com/sanudatta11/statefulmemory',
 								],
 							},
 						],
