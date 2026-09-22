@@ -52,11 +52,23 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Archive site (include .well-known)
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        run: |
+          # actions/upload-pages-artifact@v4 tars with --exclude=".[^/]*",
+          # which silently drops top-level dot-dirs such as .well-known/.
+          # Build the Pages artifact ourselves so agent-discovery files ship.
+          tar --dereference --hard-dereference \
+            --directory website/dist \
+            -cvf "$RUNNER_TEMP/artifact.tar" \
+            .
+
       - name: Upload Pages artifact
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
-          path: website/dist
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
 
   deploy:
     name: Deploy to GitHub Pages
