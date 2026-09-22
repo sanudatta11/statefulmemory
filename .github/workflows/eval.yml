@@ -39,7 +39,7 @@ jobs:
       - name: Run statefulmemory eval smoke benchmark
         run: |
           mkdir -p ./eval
-          cargo run -p statefulmemory-cli -- eval --smoke --benchmark locomo --save-scorecard ./eval/scorecard.json --output json > ./eval/scorecard_output.json
+          cargo run -p statefulmemory-cli --bin statefulmemory -- eval --smoke --benchmark locomo --save-scorecard ./eval/scorecard.json --output json > ./eval/scorecard_output.json
 
       - name: Upload Scorecard Artifact
         uses: actions/upload-artifact@v5

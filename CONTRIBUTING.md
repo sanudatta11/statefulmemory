@@ -29,7 +29,7 @@ statefulmemory/
 cargo build --workspace --tests   # compile + test code
 cargo test --workspace --lib      # unit tests (no live daemon)
 cargo test -p statefulmemory-tests      # integration tests (spawns a temp daemon)
-RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli -- daemon start --foreground
+RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli --bin statefulmemory -- daemon start --foreground
 ```
 
 CI runs the same build + unit + integration path on every push/PR to `main`

@@ -75,7 +75,7 @@ cargo test -p statefulmemory-daemon --lib -- verify::
 cargo test -p statefulmemory-cli --lib -- git_hooks::
 
 # Run daemon in foreground (for debugging):
-RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli -- daemon start --foreground
+RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli --bin statefulmemory -- daemon start --foreground
 
 # LoCoMo / staleness local analysis (scorecards in ./eval/, gitignored)
 make eval-locomo-smoke              # fixture, no dataset / LLM

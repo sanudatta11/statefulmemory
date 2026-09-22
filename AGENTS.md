@@ -65,7 +65,7 @@ cargo test -p statefulmemory-daemon --lib -- verify::
 cargo test -p statefulmemory-cli --lib -- git_hooks::
 cargo test -p statefulmemory-core --lib -- tokens::
 
-RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli -- daemon start --foreground
+RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli --bin statefulmemory -- daemon start --foreground
 
 make eval-locomo-smoke
 make eval-staleness
