@@ -92,7 +92,9 @@ pub fn ensure_sqlite_vec_extension() {
                 *const (),
                 unsafe extern "C" fn(
                     *mut rusqlite::ffi::sqlite3,
-                    *mut *mut i8,
+                    // c_char (not i8): signedness is platform-defined — aarch64
+                    // Linux uses u8, x86_64 uses i8; rusqlite expects c_char.
+                    *mut *mut std::ffi::c_char,
                     *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> i32,
             >(
