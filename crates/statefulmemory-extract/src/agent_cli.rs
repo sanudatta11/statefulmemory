@@ -396,6 +396,69 @@ pub fn looks_like_unavailable_model(err: &str) -> bool {
         || lower.contains("model_not_found")
 }
 
+/// Heuristic for rate-limit / 429 / TPM / RPM shaped CLI errors.
+/// Mirrors the daemon extract worker classifier so eval and daemon pause
+/// on the same strings (OpenAI: "tokens per min (TPM) … try again in …").
+pub fn looks_like_rate_limit(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limit")
+        || lower.contains("too many requests")
+        || lower.contains("throttl")
+        || lower.contains("tokens per min")
+        || lower.contains("requests per min")
+        || lower.contains("tokens per day")
+        || lower.contains("please try again in")
+}
+
+/// Parse provider-supplied wait hints (`Please try again in 3.19s`,
+/// `try again in 48s`, `retry after 12000ms`). Caps at 90s so a bogus
+/// multi-minute hint cannot stall an interactive eval forever.
+pub fn rate_limit_retry_after(err: &str) -> Option<Duration> {
+    let lower = err.to_ascii_lowercase();
+    let idx = lower.find("try again in")?;
+    let rest = &err[idx + "try again in".len()..];
+    let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ':');
+    let num: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if num.is_empty() {
+        return None;
+    }
+    let value: f64 = num.parse().ok()?;
+    let unit_zone = &rest[num.len()..];
+    let secs = if unit_zone.to_ascii_lowercase().starts_with("ms") {
+        value / 1000.0
+    } else {
+        // default: seconds (OpenAI / Anthropic phrasing)
+        value
+    };
+    if !(0.0..=90.0).contains(&secs) {
+        return Some(Duration::from_secs(90));
+    }
+    Some(Duration::from_secs_f64(secs.max(0.5)))
+}
+
+/// Max consecutive rate-limit retries per model attempt before giving up.
+const RATE_LIMIT_MAX_RETRIES: u32 = 6;
+/// Backoff floor when the provider does not supply a wait hint.
+const RATE_LIMIT_BASE_DELAY: Duration = Duration::from_secs(2);
+/// Backoff ceiling when the provider does not supply a wait hint.
+const RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(60);
+
+fn rate_limit_backoff(attempt: u32, provider_hint: Option<Duration>) -> Duration {
+    if let Some(h) = provider_hint {
+        return h;
+    }
+    let shift = attempt.min(5);
+    let mult = 1u32 << shift;
+    RATE_LIMIT_BASE_DELAY
+        .saturating_mul(mult)
+        .min(RATE_LIMIT_MAX_DELAY)
+}
+
 pub async fn invoke(provider: &Provider, prompt: &str, requested_model: &str) -> Result<String> {
     let mapped = map_model(provider, requested_model);
     let mut attempts: Vec<Option<String>> = Vec::new();
@@ -411,20 +474,37 @@ pub async fn invoke(provider: &Provider, prompt: &str, requested_model: &str) ->
         if !seen.insert(key) {
             continue;
         }
-        match invoke_once(provider, prompt, model.as_deref()).await {
-            Ok(text) => return Ok(text),
-            Err(e) => {
-                let msg = format!("{e:#}");
-                if looks_like_unavailable_model(&msg) {
-                    tracing::info!(
-                        provider = provider.id,
-                        tried = %model.as_deref().unwrap_or("<agent-default>"),
-                        "model unavailable; trying agent default"
-                    );
-                    last_err = Some(e);
-                    continue;
+        let mut rate_retries = 0u32;
+        loop {
+            match invoke_once(provider, prompt, model.as_deref()).await {
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    let msg = format!("{e:#}");
+                    if looks_like_unavailable_model(&msg) {
+                        tracing::info!(
+                            provider = provider.id,
+                            tried = %model.as_deref().unwrap_or("<agent-default>"),
+                            "model unavailable; trying agent default"
+                        );
+                        last_err = Some(e);
+                        break;
+                    }
+                    if looks_like_rate_limit(&msg) && rate_retries < RATE_LIMIT_MAX_RETRIES {
+                        rate_retries += 1;
+                        let hint = rate_limit_retry_after(&msg);
+                        let delay = rate_limit_backoff(rate_retries, hint);
+                        tracing::warn!(
+                            provider = provider.id,
+                            attempt = rate_retries,
+                            max = RATE_LIMIT_MAX_RETRIES,
+                            delay_ms = delay.as_millis() as u64,
+                            "rate limited; backing off"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(e);
                 }
-                return Err(e);
             }
         }
     }
@@ -611,5 +691,46 @@ mod tests {
         );
         let args = build_args("kilo", "summarize", None);
         assert_eq!(args[0], "run");
+    }
+
+    #[test]
+    fn rate_limit_matches_openai_tpm_shape() {
+        let err = "opencode exited with exit status: 1: stderr=Error: Rate limit reached for gpt-4o-mini in organization org-x on tokens per min (TPM): Limit 200000, Used 200000, Requested 10636. Please try again in 3.19s.";
+        assert!(looks_like_rate_limit(err));
+        assert!(!looks_like_unavailable_model(err));
+        assert_eq!(
+            rate_limit_retry_after(err),
+            Some(Duration::from_secs_f64(3.19))
+        );
+    }
+
+    #[test]
+    fn rate_limit_matches_http_429() {
+        assert!(looks_like_rate_limit("HTTP 429 Too Many Requests"));
+        assert!(looks_like_rate_limit("rate-limit exceeded"));
+        assert!(!looks_like_rate_limit("connection refused"));
+        assert!(!looks_like_rate_limit("invalid model id"));
+    }
+
+    #[test]
+    fn rate_limit_retry_after_caps_and_units() {
+        assert_eq!(
+            rate_limit_retry_after("please try again in 48s"),
+            Some(Duration::from_secs(48))
+        );
+        assert_eq!(
+            rate_limit_retry_after("try again in 500ms"),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            rate_limit_retry_after("try again in 600s"),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(rate_limit_retry_after("no hint here"), None);
+        assert_eq!(
+            rate_limit_backoff(1, None),
+            RATE_LIMIT_BASE_DELAY.saturating_mul(2)
+        );
+        assert_eq!(rate_limit_backoff(1, Some(Duration::from_secs(3))), Duration::from_secs(3));
     }
 }

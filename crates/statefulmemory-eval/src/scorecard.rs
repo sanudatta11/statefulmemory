@@ -51,6 +51,14 @@ pub struct Scorecard {
     pub retrieval_p95_ms: f64,
     pub end_to_end_p50_ms: f64,
     pub end_to_end_p95_ms: f64,
+    /// Queries the run was asked to evaluate (after limit / stratified sample).
+    #[serde(default)]
+    pub queries_requested: usize,
+    /// Queries dropped because answer/judge LLM failed after retries.
+    /// Non-zero means the run was incomplete (runner fails before writing a
+    /// card; field exists so older/partial JSON stays self-describing).
+    #[serde(default)]
+    pub queries_skipped: usize,
 }
 
 impl Scorecard {
@@ -81,6 +89,8 @@ impl Scorecard {
             retrieval_p95_ms: report.retrieval_p95_ms,
             end_to_end_p50_ms: report.end_to_end_p50_ms,
             end_to_end_p95_ms: report.end_to_end_p95_ms,
+            queries_requested: report.queries_requested,
+            queries_skipped: report.queries_skipped,
         }
     }
 
@@ -137,6 +147,18 @@ impl Scorecard {
         }
         if let Some(pct) = self.superseded_served_pct {
             out.push_str(&format!("Superseded served: {:.2}%\n", pct));
+        }
+        if self.queries_requested > 0 {
+            out.push_str(&format!(
+                "Queries requested:  {}\n",
+                self.queries_requested
+            ));
+        }
+        if self.queries_skipped > 0 {
+            out.push_str(&format!(
+                "Queries SKIPPED:    {} (incomplete — do not publish)\n",
+                self.queries_skipped
+            ));
         }
         if !self.by_category.is_empty() {
             out.push_str("By category:\n");
@@ -204,6 +226,8 @@ mod tests {
             end_to_end_p95_ms: 800.0,
             rerank_p50_ms: None,
             rerank_p95_ms: None,
+            queries_requested: 10,
+            queries_skipped: 0,
             query_results: Vec::new(),
         }
     }
@@ -241,5 +265,17 @@ mod tests {
         let stats = loaded.by_category.get("single_hop").unwrap();
         assert_eq!(stats.correct, 4);
         assert_eq!(stats.total, 5);
+        assert_eq!(loaded.queries_requested, 10);
+        assert_eq!(loaded.queries_skipped, 0);
+    }
+
+    #[test]
+    fn skipped_queries_render_warning() {
+        let mut report = sample_report();
+        report.queries_skipped = 3;
+        let card = Scorecard::from_report(&report, "deadbeef");
+        assert_eq!(card.queries_skipped, 3);
+        assert!(card.render_text().contains("SKIPPED"));
+        assert!(card.render_text().contains("do not publish"));
     }
 }

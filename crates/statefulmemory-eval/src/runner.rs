@@ -270,6 +270,15 @@ pub struct RunReport {
     pub rerank_p50_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_p95_ms: Option<f64>,
+    /// Queries the run was asked to evaluate (after limit / stratified sample).
+    /// `total_queries` counts only completed results; a gap means skips.
+    #[serde(default)]
+    pub queries_requested: usize,
+    /// Queries dropped because the answer/judge LLM failed after retries.
+    /// Must be 0 for a publishable scorecard — never silently shrink the
+    /// denominator (that inflates accuracy via survivorship bias).
+    #[serde(default)]
+    pub queries_skipped: usize,
     pub query_results: Vec<QueryResult>,
 }
 
@@ -324,6 +333,14 @@ impl RunReport {
         if let Some(pct) = self.superseded_served_pct {
             md.push_str(&format!("| Superseded served | {:.1}% |\n", pct));
         }
+        md.push_str(&format!(
+            "| Queries requested | {} |\n",
+            self.queries_requested
+        ));
+        md.push_str(&format!(
+            "| Queries skipped (LLM fail) | {} |\n",
+            self.queries_skipped
+        ));
         if !self.by_category.is_empty() {
             md.push('\n');
             md.push_str("## By category\n\n");
@@ -694,33 +711,46 @@ pub async fn run(
         mode_tag,
         cfg.retrieval.evidence_window,
         cfg.retrieval.rerank,
+        total_queries,
+        answer_skipped_n,
     );
 
-    // Write JSON + Markdown.
+    // Write JSON + Markdown (kept even on failure paths for recovery /
+    // inspection — CI uploads them as artifacts).
     let json = serde_json::to_string_pretty(&report).context("serialize report")?;
     let json_path = cfg.output_path.with_extension("json");
     std::fs::write(&json_path, &json).context("write JSON report")?;
     std::fs::write(&cfg.output_path, report.to_markdown()).context("write Markdown report")?;
     info!(md = %cfg.output_path.display(), json = %json_path.display(), "report written");
     ui.note(format!(
-        "done  accuracy={:.1}%  ({}/{})  recall={:.3}  report={}",
+        "done  accuracy={:.1}%  ({}/{})  recall={:.3}  skipped={}  report={}",
         report.accuracy_pct,
         report.correct,
         report.total_queries,
         report.recall_at_k,
+        answer_skipped_n,
         cfg.output_path.display()
     ));
 
-    if aborted && !cfg.lexical_judge {
+    // Any skip = incomplete sample. Fail before Ok so cmd_eval never builds
+    // a scorecard (partial denominator would taint accuracy).
+    if answer_skipped_n > 0 && !cfg.lexical_judge {
         let hint = last_answer_err
             .lock()
             .await
             .clone()
             .unwrap_or_else(|| "unknown LLM error".into());
+        let abort_note = if aborted {
+            format!(
+                "aborted after {CONSECUTIVE_ANSWER_FAIL_ABORT} consecutive answer LLM failures; "
+            )
+        } else {
+            String::new()
+        };
         anyhow::bail!(
-            "aborted after {CONSECUTIVE_ANSWER_FAIL_ABORT} consecutive answer LLM failures \
-             ({answer_skipped_n} skips, {} completed). Partial report written to {}. \
-             Last error: {hint}",
+            "{abort_note}{answer_skipped_n} of {total_queries} queries skipped after answer/judge LLM failures \
+             ({} completed). No scorecard written — re-run when the provider is healthy. \
+             Partial report written to {}. Last error: {hint}",
             report.total_queries,
             cfg.output_path.display()
         );
@@ -929,8 +959,9 @@ async fn eval_one_query(
         let correct = match judge.judge(&judge_prompt).await {
             Ok(c) => c,
             Err(e) => {
-                warn!(query_id = %q.id, error = %e, "judge LLM failed, marking incorrect");
-                false
+                // Never default to incorrect on judge failure — that deflates
+                // the score. Skip the query (counted, aborts run before publish).
+                return Err(QueryEvalError::AnswerFailed(format!("judge LLM failed: {e:#}")));
             }
         };
         (model_answer, judge_prompt, correct)
@@ -1148,6 +1179,8 @@ fn build_report(
     mode_tag: &str,
     evidence_window: u8,
     rerank_enabled: bool,
+    queries_requested: usize,
+    queries_skipped: usize,
 ) -> RunReport {
     let total = results.len();
     let correct = results.iter().filter(|r| r.correct).count();
@@ -1281,6 +1314,8 @@ fn build_report(
         end_to_end_p95_ms: e2e_p95,
         rerank_p50_ms,
         rerank_p95_ms,
+        queries_requested,
+        queries_skipped,
         query_results: results,
     }
 }

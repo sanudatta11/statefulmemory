@@ -8,16 +8,17 @@
 //! `facts.db`.
 //!
 //! Two caches keep this idempotent across re-runs:
-//!   * [`ExtractionCache`] keyed by `sha256(window_json)` — successful
-//!     output and EH-4 "permanently failed" markers both land here so a
-//!     resumed run skips work that already burned model spend.
+//!   * [`ExtractionCache`] keyed by `sha256(window_json)` — only successful
+//!     output and EH-4 *parse* failures land here. Rate-limit / transport
+//!     errors stay misses so a resumed run retries them (never poison the
+//!     cache with a transient 429).
 //!   * [`EmbeddingCache`] keyed by `sha256(text)` — re-embedding identical
 //!     `(subject predicate object)` strings is wasted CPU on a repeat run.
 //!
 //! Concurrency:
-//!   The LLM fan-out is bounded by `concurrency` (default 4) via a
-//!   `tokio::sync::Semaphore`. `Arc<dyn ClaudeClient>` and `Vec<Turn>` are
-//!   `Send`/`Clone`, so each window runs in its own `tokio::spawn`.
+//!   The LLM fan-out is bounded by `concurrency` (default 4, override
+//!   `STATEFULMEMORY_EXTRACT_CONCURRENCY`) via a `tokio::sync::Semaphore`.
+//!   Lower on CI to stay under shared org TPM caps.
 //!
 //! Out of scope here:
 //!   * Entity extraction (spec-task-19a/19c).
@@ -45,9 +46,31 @@ use crate::entities_writer::{bulk_upsert_entities, EntityRow};
 use crate::facts_db::FactsDb;
 use crate::facts_writer::{insert_facts_for_project_returning_ids, FactWithEmbedding};
 
-const DEFAULT_CONCURRENCY: usize = 8;
+/// Default LLM fan-out. Kept modest (4) so burst TPM stays under common
+/// org caps; override with `STATEFULMEMORY_EXTRACT_CONCURRENCY` (1..=32).
+const DEFAULT_CONCURRENCY: usize = 4;
 const DEFAULT_WINDOW_SIZE: usize = 6;
 const DEFAULT_WINDOW_STRIDE: usize = 3;
+
+fn extract_concurrency_from_env(default: usize) -> usize {
+    std::env::var("STATEFULMEMORY_EXTRACT_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, 32)
+}
+
+/// Per-window outcome after a fan-out attempt.
+enum WindowOutcome {
+    /// Parsed facts — cache + write.
+    Facts(Vec<Fact>),
+    /// EH-4: model answered but output was unparseable after soft retry.
+    /// Safe to mark failed permanently (same spend will fail again).
+    PermanentFail,
+    /// Rate-limit / timeout / transport — do **not** write a failure
+    /// marker; leave as cache miss so the next run retries.
+    TransientFail,
+}
 
 /// Per-conversation extraction stats.
 #[derive(Debug, Clone, Default)]
@@ -121,7 +144,7 @@ impl ExtractPipeline {
             entity_extractor: None,
             haiku_entity_extractor: None,
             session_summaries: false,
-            concurrency: DEFAULT_CONCURRENCY,
+            concurrency: extract_concurrency_from_env(DEFAULT_CONCURRENCY),
             window_size: DEFAULT_WINDOW_SIZE,
             window_stride: DEFAULT_WINDOW_STRIDE,
             shards: 1,
@@ -252,9 +275,9 @@ impl ExtractPipeline {
             "starting extraction"
         );
 
-        // Collected per-miss results: (window_index, facts_or_failure).
+        // Collected per-miss results: (window_index, outcome).
         // Empty when all windows were cache hits (session summaries still run).
-        let mut fresh_results: Vec<(usize, std::result::Result<Vec<Fact>, ()>)> =
+        let mut fresh_results: Vec<(usize, WindowOutcome)> =
             Vec::with_capacity(miss_indices.len());
 
         if miss_indices.is_empty() {
@@ -263,9 +286,10 @@ impl ExtractPipeline {
             info!(project, "all windows cached; skipping Haiku fan-out");
         } else {
             // ---------- 5a. Probe: run first miss synchronously ----------
-            // If the very first Haiku call returns empty (bad model ID, auth
-            // failure, rate-limit), bail immediately rather than spawning
-            // hundreds of tasks that will all fail identically.
+            // If the very first call returns empty (bad model ID, auth
+            // failure), abort immediately rather than spawning hundreds of
+            // tasks that will all fail identically. Call/transport errors
+            // bubble as Err (caller fails the extract step; never cache them).
             {
                 let probe_idx = miss_indices[0];
                 let probe_window = &windows[probe_idx];
@@ -280,9 +304,24 @@ impl ExtractPipeline {
                     .ask(&probe_prompt, HAIKU_MODEL)
                     .await
                     .with_context(|| format!("probe window {probe_idx} failed"))?;
-                let probe_facts = parse_facts(&probe_raw, probe_window).unwrap_or_default();
+                let mut probe_facts = parse_facts(&probe_raw, probe_window).unwrap_or_default();
                 if probe_facts.is_empty() {
-                    // Cache the failure marker and abort — no point running the rest.
+                    // EH-4 soft retry before declaring the window bad.
+                    warn!(
+                        project,
+                        window = probe_idx,
+                        "probe parse empty; retrying once (EH-4)"
+                    );
+                    let retry = self
+                        .claude
+                        .ask(&probe_prompt, HAIKU_MODEL)
+                        .await
+                        .with_context(|| format!("probe window {probe_idx} retry failed"))?;
+                    probe_facts = parse_facts(&retry, probe_window).unwrap_or_default();
+                }
+                if probe_facts.is_empty() {
+                    // Only after a *successful* call with unparseable output —
+                    // mark failed so resume skips it; abort fan-out.
                     let _ = extraction_cache.put_failed(&window_keys[probe_idx]);
                     stats.windows_failed += 1;
                     stats.elapsed_ms = t0.elapsed().as_millis();
@@ -318,8 +357,7 @@ impl ExtractPipeline {
             // semaphore inside their own futures.
             let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
             let total_to_spawn = miss_indices.len().saturating_sub(1);
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Result<Vec<Fact>>)>();
-
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, WindowOutcome)>();
             for (task_n, &i) in miss_indices.iter().enumerate().skip(1) {
                 let sem = sem.clone();
                 let claude = self.claude.clone();
@@ -350,8 +388,8 @@ impl ExtractPipeline {
                     let raw = match claude.ask(&prompt, HAIKU_MODEL).await {
                         Ok(r) => r,
                         Err(e) => {
-                            warn!(project = %project_name, window = i, error = %e, "claude call failed");
-                            let _ = tx.send((i, Err(e)));
+                            warn!(project = %project_name, window = i, error = %e, "claude call failed; leaving as cache miss");
+                            let _ = tx.send((i, WindowOutcome::TransientFail));
                             return;
                         }
                     };
@@ -371,19 +409,42 @@ impl ExtractPipeline {
                                 "parse_facts empty; retrying once (EH-4)"
                             );
                             match claude.ask(&prompt, HAIKU_MODEL).await {
-                                Ok(raw2) => parse_facts(&raw2, &window),
+                                Ok(raw2) => match parse_facts(&raw2, &window) {
+                                    Ok(f2) if f2.is_empty() => WindowOutcome::PermanentFail,
+                                    Ok(f2) => WindowOutcome::Facts(f2),
+                                    Err(e) => {
+                                        warn!(
+                                            project = %project_name,
+                                            window = i,
+                                            error = %e,
+                                            "parse_facts error after EH-4; permanent fail"
+                                        );
+                                        WindowOutcome::PermanentFail
+                                    }
+                                },
                                 Err(e) => {
+                                    // Rate limit / transport on the retry — not a
+                                    // permanent parse failure; leave as miss.
                                     warn!(
                                         project = %project_name,
                                         window = i,
                                         error = %e,
-                                        "EH-4 retry call failed"
+                                        "EH-4 retry call failed; leaving as cache miss"
                                     );
-                                    Ok(Vec::new())
+                                    WindowOutcome::TransientFail
                                 }
                             }
                         }
-                        other => other,
+                        Ok(facts) => WindowOutcome::Facts(facts),
+                        Err(e) => {
+                            warn!(
+                                project = %project_name,
+                                window = i,
+                                error = %e,
+                                "parse_facts error; permanent fail"
+                            );
+                            WindowOutcome::PermanentFail
+                        }
                     };
                     let _ = tx.send((i, parsed));
                 });
@@ -397,36 +458,34 @@ impl ExtractPipeline {
             let progress_t0 = std::time::Instant::now();
             let mut completed = 0usize;
             let mut last_log_at = std::time::Instant::now();
-            while let Some((i, result)) = rx.recv().await {
-                match result {
-                    Ok(facts) => {
-                        if facts.is_empty() {
-                            // EH-4: parse_facts returned empty (either Haiku gave
-                            // us prose-only output or the slice was unparseable).
-                            // Mark as permanently failed so we don't reburn spend
-                            // on the next run.
-                            warn!(
-                                project,
-                                window_idx = i,
-                                "parse_facts returned empty; marking window failed (EH-4)"
-                            );
-                            stats.windows_failed += 1;
-                            fresh_results.push((i, Err(())));
-                        } else {
-                            debug!(
-                                project,
-                                window_idx = i,
-                                facts = facts.len(),
-                                "extracted facts"
-                            );
-                            stats.windows_extracted += 1;
-                            fresh_results.push((i, Ok(facts)));
-                        }
+            while let Some((i, outcome)) = rx.recv().await {
+                match outcome {
+                    WindowOutcome::Facts(facts) => {
+                        debug!(
+                            project,
+                            window_idx = i,
+                            facts = facts.len(),
+                            "extracted facts"
+                        );
+                        stats.windows_extracted += 1;
+                        fresh_results.push((i, WindowOutcome::Facts(facts)));
                     }
-                    Err(e) => {
-                        warn!(window_idx = i, error = %e, "haiku call failed; marking window failed");
+                    WindowOutcome::PermanentFail => {
+                        warn!(
+                            project,
+                            window_idx = i,
+                            "parse_facts returned empty; marking window failed (EH-4)"
+                        );
                         stats.windows_failed += 1;
-                        fresh_results.push((i, Err(())));
+                        fresh_results.push((i, WindowOutcome::PermanentFail));
+                    }
+                    WindowOutcome::TransientFail => {
+                        warn!(
+                            window_idx = i,
+                            "haiku call failed (transient); not caching failure"
+                        );
+                        stats.windows_failed += 1;
+                        fresh_results.push((i, WindowOutcome::TransientFail));
                     }
                 }
                 completed += 1;
@@ -470,16 +529,18 @@ impl ExtractPipeline {
         // Collected per-miss results declared before the if/else.
         // (fresh_results filled above when there were misses.)
 
-        // ---------- 6. Persist successful + failed extractions ----------
+        // ---------- 6. Persist successful + permanent-failed extractions ----------
+        // Transient failures are intentionally not written: next run retries them.
         let mut put_items: Vec<(String, Vec<Fact>)> = Vec::new();
-        for (i, res) in &fresh_results {
-            match res {
-                Ok(facts) => put_items.push((window_keys[*i].clone(), facts.clone())),
-                Err(()) => {
+        for (i, outcome) in &fresh_results {
+            match outcome {
+                WindowOutcome::Facts(facts) => put_items.push((window_keys[*i].clone(), facts.clone())),
+                WindowOutcome::PermanentFail => {
                     if let Err(e) = extraction_cache.put_failed(&window_keys[*i]) {
                         warn!(window_idx = i, error = %e, "failed to persist failure marker");
                     }
                 }
+                WindowOutcome::TransientFail => {}
             }
         }
         if !put_items.is_empty() {
@@ -497,8 +558,8 @@ impl ExtractPipeline {
             }
         }
         // Then fresh successes.
-        for (_, res) in &fresh_results {
-            if let Ok(facts) = res {
+        for (_, outcome) in &fresh_results {
+            if let WindowOutcome::Facts(facts) = outcome {
                 all_facts.extend(facts.iter().cloned());
             }
         }
@@ -1044,5 +1105,19 @@ mod tests {
     fn build_windows_empty_input() {
         let w = build_windows(&[], 6, 3);
         assert!(w.is_empty());
+    }
+
+    #[test]
+    fn extract_concurrency_env_override_clamps() {
+        // No env set → default.
+        std::env::remove_var("STATEFULMEMORY_EXTRACT_CONCURRENCY");
+        assert_eq!(extract_concurrency_from_env(DEFAULT_CONCURRENCY), 4);
+        std::env::set_var("STATEFULMEMORY_EXTRACT_CONCURRENCY", "2");
+        assert_eq!(extract_concurrency_from_env(DEFAULT_CONCURRENCY), 2);
+        std::env::set_var("STATEFULMEMORY_EXTRACT_CONCURRENCY", "99");
+        assert_eq!(extract_concurrency_from_env(DEFAULT_CONCURRENCY), 32);
+        std::env::set_var("STATEFULMEMORY_EXTRACT_CONCURRENCY", "0");
+        assert_eq!(extract_concurrency_from_env(DEFAULT_CONCURRENCY), 1);
+        std::env::remove_var("STATEFULMEMORY_EXTRACT_CONCURRENCY");
     }
 }

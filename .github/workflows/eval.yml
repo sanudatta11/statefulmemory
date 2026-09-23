@@ -91,10 +91,12 @@ jobs:
       # facts.db (23 MB, gitignored) — restore keyed on the dataset file so
       # the LLM run uses the same fact-augmented retrieval as local measure
       # cards; first miss extracts once with the same OpenAI key.
+      # Split restore/save: save only runs after a *successful* extract so a
+      # rate-limited / partial run can never poison the cache key.
       - name: Restore LoCoMo facts.db
         if: inputs.judge == 'llm' && inputs.dataset != 'smoke'
         id: facts-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/locomo/facts.db
           key: locomo-facts-v1-${{ hashFiles('data/locomo/locomo10.json') }}
@@ -109,7 +111,16 @@ jobs:
           STATEFULMEMORY_LLM_PROVIDER: opencode
           STATEFULMEMORY_LLM_BIN: opencode
           STATEFULMEMORY_LLM_MODEL: openai/gpt-4o-mini
+          # Keep extract fan-out under the shared 200k TPM org cap.
+          STATEFULMEMORY_EXTRACT_CONCURRENCY: "4"
         run: make eval-locomo-extract
+
+      - name: Save LoCoMo facts.db cache
+        if: inputs.judge == 'llm' && inputs.dataset != 'smoke' && steps.facts-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: data/locomo/facts.db
+          key: locomo-facts-v1-${{ hashFiles('data/locomo/locomo10.json') }}
 
       # Retrieval-level scorecard: --lexical-judge needs no agent CLI / LLM
       # secrets on the runner. Judge = gold present in retrieved hits.
@@ -180,12 +191,26 @@ jobs:
           cat ./eval/scorecard.json
 
       - name: Upload Scorecard Artifact
+        if: success()
         uses: actions/upload-artifact@v5
         with:
           name: benchmark-scorecard-${{ inputs.dataset }}-${{ inputs.judge }}
           path: |
             ./eval/scorecard.json
             ./eval/scorecard_output.json
+
+      # Report (JSON + MD) is written before the runner fails on skips/abort —
+      # keep it even when the job fails so the partial score is recoverable.
+      - name: Upload report (recovery)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: benchmark-report-${{ inputs.dataset }}-${{ inputs.judge }}
+          if-no-files-found: ignore
+          path: |
+            data/report.md
+            data/report.json
+            eval/extract-locomo.log
 
   update-scorecard:
     name: Update README Scorecard

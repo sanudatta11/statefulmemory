@@ -246,13 +246,15 @@ eval-bge-model:
 
 # Pre-extract facts for every LoCoMo conversation (expensive; opt-in via EXTRACT=1).
 # Session-tier summary facts are on by default (Mem0-style rollups).
+# pipefail: cargo exit status must survive `tee` so CI never caches a
+# half-built facts.db when windows fail.
 eval-locomo-extract: release eval-locomo-fetch eval-bge-model
 	@mkdir -p "$(EVAL_OUT)"
 	@echo "Extracting LoCoMo facts → $(EVAL_DATA)/locomo/facts.db (needs agent CLI; session summaries on)."
 	cd crates/statefulmemory-eval && \
-	RUST_LOG=info cargo run --release --bin eval -- extract \
+	bash -o pipefail -c 'RUST_LOG=info cargo run --release --bin eval -- extract \
 	  --benchmark locomo --data-dir "$(EVAL_DATA)" --session-summaries \
-	  2>&1 | tee "$(EVAL_OUT)/extract-locomo.log"
+	  2>&1 | tee "$(EVAL_OUT)/extract-locomo.log"'
 
 eval-locomo eval-locomo-full: release eval-locomo-fetch eval-bge-model $(EXTRACT_DEPS)
 	@mkdir -p "$(EVAL_OUT)"

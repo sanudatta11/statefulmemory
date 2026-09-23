@@ -417,6 +417,7 @@ async fn run_extract(
     let mut total_facts = 0usize;
     let mut total_entities = 0usize;
     let mut total_failed = 0usize;
+    let mut total_project_errors = 0usize;
     let t0 = std::time::Instant::now();
 
     for (i, project) in projects.iter().enumerate() {
@@ -438,21 +439,33 @@ async fn run_extract(
             }
             Err(e) => {
                 eprintln!("  [{:>3}/{}] {project}: ERROR {e:#}", i + 1, total_projects);
+                total_project_errors += 1;
             }
         }
     }
 
     println!(
-        "\nExtraction complete in {:?}. facts={} entities={} failed_windows={}",
+        "\nExtraction complete in {:?}. facts={} entities={} failed_windows={} project_errors={}",
         t0.elapsed(),
         total_facts,
         total_entities,
         total_failed,
+        total_project_errors,
     );
     let bench_cli = clap::ValueEnum::to_possible_value(&benchmark)
         .map(|v| v.get_name().to_string())
         .unwrap_or_else(|| format!("{benchmark:?}").to_lowercase());
     println!("Now run: cargo run --release --bin eval -- run --benchmark {bench_cli} --mode hybrid --out reports/p2-smoke.md");
+
+    // Non-zero on any failure so CI never caches a half-built facts.db.
+    // Transient (rate-limit) windows are left as cache misses — re-run the
+    // same command and they retry; only EH-4 parse failures are permanent.
+    if total_failed > 0 || total_project_errors > 0 {
+        anyhow::bail!(
+            "extraction incomplete: failed_windows={total_failed} project_errors={total_project_errors}. \
+             Re-run `eval extract` to retry transient failures (rate-limits are not cached)."
+        );
+    }
 
     Ok(())
 }
