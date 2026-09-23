@@ -234,7 +234,8 @@ async fn main() -> Result<()> {
                     num_queries
                 );
                 let iter = statefulmemory_eval::datasets::beam::memory_iter(scale, num_queries);
-                let total = statefulmemory_eval::ingest::ingest_stream(&data_dir, iter, 50_000).await?;
+                let total =
+                    statefulmemory_eval::ingest::ingest_stream(&data_dir, iter, 50_000).await?;
                 println!("Prepared {total} observations.");
             }
             _ => bail!("prepare is only needed for beam-1m and beam-10m"),
@@ -282,11 +283,17 @@ fn load_dataset(
     match kind {
         BenchmarkKind::Locomo => {
             let (m, q) = locomo::load(data_dir)?;
-            Ok((m, statefulmemory_eval::apply_query_limit(q, Some(limit), true)))
+            Ok((
+                m,
+                statefulmemory_eval::apply_query_limit(q, Some(limit), true),
+            ))
         }
         BenchmarkKind::Longmemeval => {
             let (m, q) = longmemeval::load(data_dir)?;
-            Ok((m, statefulmemory_eval::apply_query_limit(q, Some(limit), false)))
+            Ok((
+                m,
+                statefulmemory_eval::apply_query_limit(q, Some(limit), false),
+            ))
         }
         BenchmarkKind::Beam1m => {
             let (m, q) =
@@ -298,7 +305,10 @@ fn load_dataset(
         }
         BenchmarkKind::Staleness => {
             let (m, q) = statefulmemory_eval::datasets::staleness::load(data_dir)?;
-            Ok((m, statefulmemory_eval::apply_query_limit(q, Some(limit), false)))
+            Ok((
+                m,
+                statefulmemory_eval::apply_query_limit(q, Some(limit), false),
+            ))
         }
     }
 }

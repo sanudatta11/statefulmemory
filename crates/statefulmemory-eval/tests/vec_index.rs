@@ -13,8 +13,8 @@
 //! Uses `tempfile::TempDir` for isolation — no env-var manipulation, so
 //! parallel `cargo test` execution is safe (no `--test-threads=1` required).
 
-use statefulmemory_eval::vec_index::{bootstrap_vec_index, open_with_vec};
 use rusqlite::params;
+use statefulmemory_eval::vec_index::{bootstrap_vec_index, open_with_vec};
 use tempfile::TempDir;
 
 /// Encode a `&[f32]` to little-endian bytes the way `vec0` expects on insert.

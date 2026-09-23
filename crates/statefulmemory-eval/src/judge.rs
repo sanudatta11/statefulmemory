@@ -8,7 +8,9 @@
 use anyhow::Result;
 use tracing::debug;
 
-use statefulmemory_extract::claude_cli::{ClaudeCliClient, ClaudeClient, HAIKU_MODEL, SONNET_MODEL};
+use statefulmemory_extract::claude_cli::{
+    ClaudeCliClient, ClaudeClient, HAIKU_MODEL, SONNET_MODEL,
+};
 
 pub struct JudgeClient {
     inner: ClaudeCliClient,

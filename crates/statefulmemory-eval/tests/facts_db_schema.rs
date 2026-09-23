@@ -5,8 +5,8 @@
 //! `tests/` so they're exercised on the public API only and don't depend
 //! on `#[cfg(test)]` private bits.
 
-use statefulmemory_eval::facts_db::FactsDb;
 use rusqlite::params;
+use statefulmemory_eval::facts_db::FactsDb;
 use tempfile::TempDir;
 
 #[test]

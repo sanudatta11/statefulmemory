@@ -10,9 +10,9 @@
 //! Used by extract_pipeline (spec-task-18).
 
 use anyhow::{Context, Result};
+use rusqlite::{params, Connection};
 use statefulmemory_embed::quantize::{calibrate_scale, f32_to_int8};
 use statefulmemory_extract::Fact;
-use rusqlite::{params, Connection};
 
 /// One fact with its associated f32 embedding (typically BGE-small, 384-dim).
 #[derive(Clone)]

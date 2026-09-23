@@ -2,11 +2,11 @@
 //! TS-20: entities + entity_links + entities_vec schema applies cleanly;
 //! insert + lookup-by-name roundtrip works.
 
+use rusqlite::params;
 use statefulmemory_eval::entities_writer::{
     bulk_upsert_entities, link_entity_to_facts, upsert_entity, upsert_entity_vec, EntityRow,
 };
 use statefulmemory_eval::facts_db::FactsDb;
-use rusqlite::params;
 use tempfile::TempDir;
 
 fn dummy_vec(seed: f32) -> Vec<f32> {

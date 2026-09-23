@@ -277,8 +277,7 @@ impl ExtractPipeline {
 
         // Collected per-miss results: (window_index, outcome).
         // Empty when all windows were cache hits (session summaries still run).
-        let mut fresh_results: Vec<(usize, WindowOutcome)> =
-            Vec::with_capacity(miss_indices.len());
+        let mut fresh_results: Vec<(usize, WindowOutcome)> = Vec::with_capacity(miss_indices.len());
 
         if miss_indices.is_empty() {
             // All windows cached — skip Haiku, but still flatten cached facts
@@ -534,7 +533,9 @@ impl ExtractPipeline {
         let mut put_items: Vec<(String, Vec<Fact>)> = Vec::new();
         for (i, outcome) in &fresh_results {
             match outcome {
-                WindowOutcome::Facts(facts) => put_items.push((window_keys[*i].clone(), facts.clone())),
+                WindowOutcome::Facts(facts) => {
+                    put_items.push((window_keys[*i].clone(), facts.clone()))
+                }
                 WindowOutcome::PermanentFail => {
                     if let Err(e) = extraction_cache.put_failed(&window_keys[*i]) {
                         warn!(window_idx = i, error = %e, "failed to persist failure marker");

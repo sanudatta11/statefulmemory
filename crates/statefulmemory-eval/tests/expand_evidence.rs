@@ -3,7 +3,9 @@
 //! Skeleton (TS-1b): expand_evidence walks ±N observations clamped to session.
 
 use statefulmemory_core::paths;
-use statefulmemory_eval::{datasets::EvalMemory, ingest::ingest_memories, retrieve::expand_evidence};
+use statefulmemory_eval::{
+    datasets::EvalMemory, ingest::ingest_memories, retrieve::expand_evidence,
+};
 use statefulmemory_storage::ProjectRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
