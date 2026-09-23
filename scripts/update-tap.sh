@@ -11,8 +11,6 @@ set -euo pipefail
 TAG="${1:?usage: update-tap.sh <tag> <tap-repo-dir>}"
 TAP_DIR="${2:?usage: update-tap.sh <tag> <tap-repo-dir>}"
 REPO="${STATEFULMEMORY_RELEASE_REPO:-sanudatta11/statefulmemory}"
-VERSION="${TAG#v}"
-
 SUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS"
 echo "Fetching ${SUMS_URL}"
 SUMS="$(curl -fsSL "${SUMS_URL}")"
@@ -41,8 +39,7 @@ cat > "${FORMULA}" <<EOF
 class Statefulmemory < Formula
   desc "Persistent memory for AI coding agents (SQLite + hybrid search + MCP)"
   homepage "https://statefulmemory.dev"
-  version "${VERSION}"
-  license "MIT OR Apache-2.0"
+  license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
     on_arm do
@@ -71,14 +68,6 @@ class Statefulmemory < Formula
     bin.install "statefulmemory", "smem", "sm"
   end
 
-  test do
-    assert_match version.to_s, shell_output("#{bin}/statefulmemory --version")
-    assert_match version.to_s, shell_output("#{bin}/smem --version")
-    assert_match version.to_s, shell_output("#{bin}/sm --version")
-    # \`version\` is daemon-free (direct print, no spawn).
-    assert_match version.to_s, shell_output("#{bin}/statefulmemory version")
-  end
-
   def caveats
     <<~EOS
       Wire agents, git hooks, and (optionally) the Laya System-1 sidecar:
@@ -91,6 +80,14 @@ class Statefulmemory < Formula
       Python 3.10+ recommended for Laya (skip with: statefulmemory install --no-laya).
       The daemon auto-starts on first use.
     EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/statefulmemory --version")
+    assert_match version.to_s, shell_output("#{bin}/smem --version")
+    assert_match version.to_s, shell_output("#{bin}/sm --version")
+    # \`version\` is daemon-free (direct print, no spawn).
+    assert_match version.to_s, shell_output("#{bin}/statefulmemory version")
   end
 end
 EOF
