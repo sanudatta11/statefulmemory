@@ -106,6 +106,7 @@ jobs:
         if: inputs.judge == 'llm' && inputs.dataset != 'smoke' && steps.facts-cache.outputs.cache-hit != 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
           STATEFULMEMORY_LLM_PROVIDER: gemini
           STATEFULMEMORY_LLM_BIN: gemini
           STATEFULMEMORY_LLM_MODEL: gemini-2.5-flash
@@ -154,6 +155,7 @@ jobs:
           STATEFULMEMORY_LLM_MODEL: gemini-2.5-flash
           STATEFULMEMORY_EVAL_CONCURRENCY: "4"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
         run: |
           set -euo pipefail
           export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
