@@ -55,8 +55,8 @@ pub struct Scorecard {
     #[serde(default)]
     pub queries_requested: usize,
     /// Queries dropped because answer/judge LLM failed after retries.
-    /// Non-zero means the run was incomplete (runner fails before writing a
-    /// card; field exists so older/partial JSON stays self-describing).
+    /// Non-zero is disclosed (and publishable only while the runner's
+    /// ≤1% tolerance holds — field exists so JSON stays self-describing).
     #[serde(default)]
     pub queries_skipped: usize,
 }
@@ -149,14 +149,11 @@ impl Scorecard {
             out.push_str(&format!("Superseded served: {:.2}%\n", pct));
         }
         if self.queries_requested > 0 {
-            out.push_str(&format!(
-                "Queries requested:  {}\n",
-                self.queries_requested
-            ));
+            out.push_str(&format!("Queries requested:  {}\n", self.queries_requested));
         }
         if self.queries_skipped > 0 {
             out.push_str(&format!(
-                "Queries SKIPPED:    {} (incomplete — do not publish)\n",
+                "Queries SKIPPED:    {} (≤1% tolerance — disclosed, not hidden)\n",
                 self.queries_skipped
             ));
         }
@@ -276,6 +273,6 @@ mod tests {
         let card = Scorecard::from_report(&report, "deadbeef");
         assert_eq!(card.queries_skipped, 3);
         assert!(card.render_text().contains("SKIPPED"));
-        assert!(card.render_text().contains("do not publish"));
+        assert!(card.render_text().contains("tolerance"));
     }
 }

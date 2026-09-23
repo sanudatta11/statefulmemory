@@ -441,6 +441,28 @@ pub fn rate_limit_retry_after(err: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(secs.max(0.5)))
 }
 
+/// Heuristic for hard CLI wall-clock timeouts (`opencode timed out after 120s`).
+/// Distinct from rate limits: no provider wait hint — fixed short backoff.
+pub fn looks_like_timeout(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("timed out") || lower.contains("timeout after")
+}
+
+/// Max consecutive wall-clock timeout retries per model attempt.
+const TIMEOUT_MAX_RETRIES: u32 = 2;
+/// First timeout backoff; doubles up to [`TIMEOUT_MAX_DELAY`].
+const TIMEOUT_BASE_DELAY: Duration = Duration::from_secs(5);
+/// Ceiling for timeout backoff between retries.
+const TIMEOUT_MAX_DELAY: Duration = Duration::from_secs(30);
+
+fn timeout_backoff(attempt: u32) -> Duration {
+    let shift = attempt.min(4);
+    let mult = 1u32 << shift;
+    TIMEOUT_BASE_DELAY
+        .saturating_mul(mult)
+        .min(TIMEOUT_MAX_DELAY)
+}
+
 /// Max consecutive rate-limit retries per model attempt before giving up.
 const RATE_LIMIT_MAX_RETRIES: u32 = 6;
 /// Backoff floor when the provider does not supply a wait hint.
@@ -475,6 +497,7 @@ pub async fn invoke(provider: &Provider, prompt: &str, requested_model: &str) ->
             continue;
         }
         let mut rate_retries = 0u32;
+        let mut timeout_retries = 0u32;
         loop {
             match invoke_once(provider, prompt, model.as_deref()).await {
                 Ok(text) => return Ok(text),
@@ -499,6 +522,22 @@ pub async fn invoke(provider: &Provider, prompt: &str, requested_model: &str) ->
                             max = RATE_LIMIT_MAX_RETRIES,
                             delay_ms = delay.as_millis() as u64,
                             "rate limited; backing off"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    // Hard wall-clock timeout: retry with fixed backoff (no
+                    // provider hint). Isolated 120s hangs under load must not
+                    // permanently skip an eval query.
+                    if looks_like_timeout(&msg) && timeout_retries < TIMEOUT_MAX_RETRIES {
+                        timeout_retries += 1;
+                        let delay = timeout_backoff(timeout_retries);
+                        tracing::warn!(
+                            provider = provider.id,
+                            attempt = timeout_retries,
+                            max = TIMEOUT_MAX_RETRIES,
+                            delay_ms = delay.as_millis() as u64,
+                            "LLM CLI timed out; retrying"
                         );
                         tokio::time::sleep(delay).await;
                         continue;
@@ -713,6 +752,18 @@ mod tests {
     }
 
     #[test]
+    fn timeout_matches_cli_wall_clock_shape() {
+        assert!(looks_like_timeout("opencode timed out after 120s"));
+        assert!(looks_like_timeout(
+            "judge LLM failed: opencode timed out after 120s"
+        ));
+        assert!(!looks_like_timeout("connection refused"));
+        assert!(!looks_like_timeout("HTTP 429 Too Many Requests"));
+        assert_eq!(timeout_backoff(1), Duration::from_secs(10));
+        assert_eq!(timeout_backoff(4), TIMEOUT_MAX_DELAY);
+    }
+
+    #[test]
     fn rate_limit_retry_after_caps_and_units() {
         assert_eq!(
             rate_limit_retry_after("please try again in 48s"),
@@ -731,6 +782,9 @@ mod tests {
             rate_limit_backoff(1, None),
             RATE_LIMIT_BASE_DELAY.saturating_mul(2)
         );
-        assert_eq!(rate_limit_backoff(1, Some(Duration::from_secs(3))), Duration::from_secs(3));
+        assert_eq!(
+            rate_limit_backoff(1, Some(Duration::from_secs(3))),
+            Duration::from_secs(3)
+        );
     }
 }

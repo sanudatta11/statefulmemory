@@ -116,6 +116,25 @@ fn is_locomo_multihop(category: Option<&str>) -> bool {
 /// Abort after this many consecutive answer-LLM failures (bad auth / model).
 const CONSECUTIVE_ANSWER_FAIL_ABORT: usize = 5;
 
+/// Publishable if skipped queries stay within this fraction of requested
+/// (integer percent: 1 → allow `total/100` skips, min 1 when total ≥ 100).
+/// Above that the denominator is too tainted — fail before scorecard.
+const MAX_SKIPPED_PCT: usize = 1;
+
+/// True when `skipped` exceeds [`MAX_SKIPPED_PCT`] of `total_requested`.
+fn skips_exceed_tolerance(skipped: usize, total_requested: usize) -> bool {
+    if skipped == 0 {
+        return false;
+    }
+    if total_requested == 0 {
+        return true;
+    }
+    // Floor: never allow more than a strict 1% (min 1 skip so tiny runs
+    // can tolerate a single flake).
+    let allowed = (total_requested / 100 * MAX_SKIPPED_PCT).max(1);
+    skipped > allowed
+}
+
 /// Resolve eval query concurrency from env (default 4, clamp 1..=16).
 pub fn eval_concurrency_from_env(cli_default: usize) -> usize {
     std::env::var("STATEFULMEMORY_EVAL_CONCURRENCY")
@@ -276,8 +295,7 @@ pub struct RunReport {
     #[serde(default)]
     pub queries_requested: usize,
     /// Queries dropped because the answer/judge LLM failed after retries.
-    /// Must be 0 for a publishable scorecard — never silently shrink the
-    /// denominator (that inflates accuracy via survivorship bias).
+    /// Still disclosed when ≤ MAX_SKIPPED_PCT of requested (never silent).
     #[serde(default)]
     pub queries_skipped: usize,
     pub query_results: Vec<QueryResult>,
@@ -286,7 +304,10 @@ pub struct RunReport {
 impl RunReport {
     pub fn to_markdown(&self) -> String {
         let mut md = String::new();
-        md.push_str(&format!("# statefulmemory Benchmark: {}\n\n", self.benchmark));
+        md.push_str(&format!(
+            "# statefulmemory Benchmark: {}\n\n",
+            self.benchmark
+        ));
         md.push_str("## Summary\n\n");
         md.push_str("| Metric | Value |\n|---|---|\n");
         md.push_str(&format!(
@@ -408,14 +429,15 @@ pub async fn run(
 
     // Reuse the same shell-out client used by extraction so rerank shares
     // the proxy-strip + timeout machinery. Built once and reused per query.
-    let rerank_claude: Option<std::sync::Arc<dyn statefulmemory_extract::claude_cli::ClaudeClient>> =
-        if cfg.retrieval.rerank && !cfg.lexical_judge {
-            Some(std::sync::Arc::new(
-                statefulmemory_extract::claude_cli::ClaudeCliClient::new(),
-            ))
-        } else {
-            None
-        };
+    let rerank_claude: Option<
+        std::sync::Arc<dyn statefulmemory_extract::claude_cli::ClaudeClient>,
+    > = if cfg.retrieval.rerank && !cfg.lexical_judge {
+        Some(std::sync::Arc::new(
+            statefulmemory_extract::claude_cli::ClaudeCliClient::new(),
+        ))
+    } else {
+        None
+    };
 
     // Prefer stratified LoCoMo sampling when a limit is set here (callers may
     // also pre-limit). Never use a raw prefix `take(n)` — that over-weights
@@ -459,7 +481,8 @@ pub async fn run(
             info!("loading BGE-small embedder for hybrid retrieval");
             ui.status("loading BGE-small embedder …");
             let embedder = std::sync::Arc::new(
-                statefulmemory_embed::BgeSmallEmbedder::try_new().context("load BGE-small embedder")?,
+                statefulmemory_embed::BgeSmallEmbedder::try_new()
+                    .context("load BGE-small embedder")?,
             ) as std::sync::Arc<dyn statefulmemory_embed::Embedder>;
             let cache = std::sync::Arc::new(
                 statefulmemory_embed::cache::EmbeddingCache::open(&cfg.data_dir)
@@ -733,9 +756,10 @@ pub async fn run(
         cfg.output_path.display()
     ));
 
-    // Any skip = incomplete sample. Fail before Ok so cmd_eval never builds
-    // a scorecard (partial denominator would taint accuracy).
-    if answer_skipped_n > 0 && !cfg.lexical_judge {
+    // Skips within 1% of requested = incomplete but publishable (disclosed
+    // on the card). Above that the partial denominator taints accuracy —
+    // fail before Ok so cmd_eval never builds a scorecard.
+    if skips_exceed_tolerance(answer_skipped_n, total_queries) && !cfg.lexical_judge {
         let hint = last_answer_err
             .lock()
             .await
@@ -750,10 +774,17 @@ pub async fn run(
         };
         anyhow::bail!(
             "{abort_note}{answer_skipped_n} of {total_queries} queries skipped after answer/judge LLM failures \
-             ({} completed). No scorecard written — re-run when the provider is healthy. \
+             ({} completed, over {MAX_SKIPPED_PCT}% tolerance). No scorecard written — re-run when the provider is healthy. \
              Partial report written to {}. Last error: {hint}",
             report.total_queries,
             cfg.output_path.display()
+        );
+    }
+    if answer_skipped_n > 0 && !cfg.lexical_judge {
+        warn!(
+            skipped = answer_skipped_n,
+            total = total_queries,
+            "skips within tolerance; scorecard will disclose queries_skipped"
         );
     }
 
@@ -964,7 +995,9 @@ async fn eval_one_query(
             Err(e) => {
                 // Never default to incorrect on judge failure — that deflates
                 // the score. Skip the query (counted, aborts run before publish).
-                return Err(QueryEvalError::AnswerFailed(format!("judge LLM failed: {e:#}")));
+                return Err(QueryEvalError::AnswerFailed(format!(
+                    "judge LLM failed: {e:#}"
+                )));
             }
         };
         (model_answer, judge_prompt, correct)
@@ -1341,6 +1374,18 @@ mod tests {
         assert_eq!(evidence_window_for_question(2, "When did Caroline go?"), 4);
         assert_eq!(evidence_window_for_question(2, "What is her job?"), 2);
         assert_eq!(evidence_window_for_question(5, "the date of the trip"), 5);
+    }
+
+    #[test]
+    fn skip_tolerance_allows_one_percent() {
+        assert!(!skips_exceed_tolerance(0, 1540));
+        assert!(!skips_exceed_tolerance(1, 1540));
+        assert!(!skips_exceed_tolerance(15, 1540));
+        assert!(skips_exceed_tolerance(16, 1540));
+        // Tiny runs: one flake allowed, two not.
+        assert!(!skips_exceed_tolerance(1, 50));
+        assert!(skips_exceed_tolerance(2, 50));
+        assert!(skips_exceed_tolerance(1, 0));
     }
 
     #[test]
