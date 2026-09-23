@@ -2,7 +2,8 @@
 
 Cross-agent project instructions ([agents.md](https://agents.md/) convention).
 Read by OpenCode, Codex, Gemini CLI, Cursor, and peers. Claude Code also has
-[`CLAUDE.md`](CLAUDE.md) with the same architecture notes.
+[`CLAUDE.md`](CLAUDE.md) (same architecture notes; its migration-head line may
+lag — trust this file + `migrations/`).
 
 If both `AGENTS.md` and `CLAUDE.md` exist, OpenCode prefers this file.
 
@@ -11,27 +12,27 @@ If both `AGENTS.md` and `CLAUDE.md` exist, OpenCode prefers this file.
 Local, per-project persistent memory for coding agents. Thin CLI → gRPC
 daemon → SQLite (FTS5 + optional sqlite-vec). Self-host (UDS or team TCP) or
 StatefulMemory Cloud (managed SaaS). Optional LLM steps (extract, conflict judge,
-rerank, Decide) shell out to whichever agent CLI is on `PATH`. On self-host,
-hybrid search/context does not require a third-party search API key.
+rerank, Decide) shell out to whichever agent CLI is on `PATH` — no OpenAI/Anthropic
+SDK embedded. On self-host, hybrid search/context does not need a third-party
+search API key.
 
 **CLI:** primary binary `statefulmemory`; shorthands **`smem`** and **`sm`**
 (same binary).
 Data dir `~/.statefulmemory`; env prefix `STATEFULMEMORY_*`. Clean break from
 legacy `memlayer`: `smem uninstall --purge` then `smem install`.
 
-**Research skills (Wave 2 effective-context work):** agents implementing
-HippoRAG PPR / LongMemEval indexing / eval should load
-`firecrawl-research-papers`, `literature-search-arxiv`, and `paper-to-code`
-from `~/.agents/skills/`. Those are agent tooling, not the product skill under
+**Research skills** (HippoRAG PPR / LongMemEval work): load
+`firecrawl-research-papers`, `literature-search-arxiv`, `paper-to-code` from
+`~/.agents/skills/`. Those are agent tooling, not the product skill under
 `skills/statefulmemory`.
 
 ## Architecture (one paragraph)
 
-`statefulmemory` (`crates/statefulmemory-cli`) auto-spawns `statefulmemory-daemon` on first use.
-Per-project SQLite + FTS5, cross-project BM25 mirror (`global.sqlite`), write
-threads. Background pools: embed (BGE-small), extract, resolve, verify (code
-anchors vs git). Default retrieval is hybrid BM25 + dense RRF. Protocol:
-`proto/statefulmemory.proto`.
+`statefulmemory` (`crates/statefulmemory-cli`) auto-spawns `statefulmemory-daemon`
+on first use. Per-project SQLite + FTS5, cross-project BM25 mirror
+(`global.sqlite`), write threads. Background pools: embed (BGE-small), extract,
+resolve, verify (code anchors vs git). Default retrieval is hybrid BM25 + dense
+RRF; local CE rerank on by default. Protocol: `proto/statefulmemory.proto`.
 
 ## Crate order (low → high)
 
@@ -39,38 +40,49 @@ anchors vs git). Default retrieval is hybrid BM25 + dense RRF. Protocol:
 statefulmemory-core → statefulmemory-proto → statefulmemory-storage → statefulmemory-embed
 → statefulmemory-extract → statefulmemory-retrieval → statefulmemory-daemon → statefulmemory-client
 → statefulmemory-cli / statefulmemory-mcp / statefulmemory-sync
-statefulmemory-eval (benchmarks only) · statefulmemory-tests (needs live daemon)
+statefulmemory-eval (benchmarks only) · statefulmemory-tests (spawns its own temp daemons)
 ```
 
-## Conventions
+`website/` is a separate Astro/npm package (Node 22, `npm ci && npm run build`).
 
-- Migrations: `migrations/V{N}__name.sql`, head **V11** (`graph_briefing`).
-  Prefer `IF NOT EXISTS` / additive `ALTER TABLE`.
-- All DB writes go through the per-project write thread (`WriteRequest`).
-  Never open a second write connection from workers/RPC handlers.
-- Config: env > `~/.statefulmemory/projects/<name>.config.toml` >
-  `~/.statefulmemory/config.toml` > code defaults. Re-resolve per task.
-- Worker pools: `try_queue` drops on full; never block the save path.
-- Git: shell out only (`statefulmemory-core::git`). No git2/gix.
-- Do not name third-party memory products in product UI / CLI help / MCP
-  blurbs. Comparison and eval docs (`why-statefulmemory`, LoCoMo, baselines) may
-  name them with sources and unmatched-harness caveats. Never invent peer
-  features.
-
-## Build / test / debug
+## Build / test / lint / verify (match CI)
 
 ```bash
-cargo build --tests --workspace
+make check-inputs        # cargo + protoc + embedded skill assets + proto present
+make prereqs             # one-time: Rust, protoc, system deps
+
+cargo build --tests --workspace          # build test code too — catches compile errors
+cargo test --workspace --lib --bins      # unit tests, no daemon needed
 cargo test -p statefulmemory-storage --lib -- history_chain
-cargo test -p statefulmemory-daemon --lib -- verify::
-cargo test -p statefulmemory-cli --lib -- git_hooks::
-cargo test -p statefulmemory-core --lib -- tokens::
+cargo test -p statefulmemory-daemon  --lib -- verify::
+cargo test -p statefulmemory-cli     --lib -- git_hooks::
+cargo test -p statefulmemory-core    --lib -- tokens::
+
+make lint                # cargo clippy --workspace -- -D warnings (blocking)
+cargo fmt --all -- --check   # CI runs this but continue-on-error (advisory)
+
+cargo test -p statefulmemory-tests -- --test-threads=1   # integration; harness spawns temp daemons + isolated STATEFULMEMORY_DATA_DIR
+make test                # full workspace, 30-min timeout wrapper
 
 RUST_LOG=statefulmemory=debug cargo run -p statefulmemory-cli --bin statefulmemory -- daemon start --foreground
+```
 
-make eval-locomo-smoke
-make eval-staleness
-LIMIT=50 make eval-locomo
+CI order (`.github/workflows/ci.yml`): `check-inputs` → build `--tests` →
+`test --lib --bins -- --test-threads=2` → clippy `--all-targets -D warnings` →
+fmt check → integration tests. Separate gates: `graph-smoke.yml`,
+`mem-roundtrip.yml`, `eval.yml` (manual dispatch), `pages.yml`, `videos.yml`,
+`release.yml`. Integration tests work without a pre-running daemon (they spawn
+one); they fail where process spawn is sandbox-blocked.
+
+Makefile forces `CARGO_TARGET_DIR=$(CURDIR)/target` — always use `make …` or
+that env var, or you build against a stale sandbox target dir.
+
+### Eval
+
+```bash
+make eval-locomo-smoke    # fixture, no dataset / LLM
+make eval-staleness       # supersession vs --no-supersede baseline
+LIMIT=50 make eval-locomo # stratified slice (cats 1–4); EXTRACT=0 ablates facts path
 ```
 
 Pinned LoCoMo measure (OpenCode deepseek-flash, concurrency 4):
@@ -80,22 +92,57 @@ export STATEFULMEMORY_LLM_PROVIDER=opencode STATEFULMEMORY_LLM_BIN=opencode
 export STATEFULMEMORY_LLM_MODEL=opencode-go/deepseek-v4.1-flash
 export STATEFULMEMORY_EVAL_CONCURRENCY=4
 LIMIT=50 make eval-locomo
-# Facts path is default (builds facts.db if missing). Ablation: EXTRACT=0
-# Optional capable pin:
-# EXTRACT=force LIMIT=50 make eval-locomo
+# facts.db built on first run (EXTRACT=1 default; EXTRACT=force rebuilds)
 ```
 
-Full LoCoMo on AWS (one-shot EC2, scorecards → S3): see
-[`infra/eval/README.md`](infra/eval/README.md).
+Scorecards land in `./eval/` (gitignored). Full LoCoMo on AWS: see
+[`infra/eval/README.md`](infra/eval/README.md). Do not quote smoke or tiny
+slices against published leaderboards.
 
-Integration tests under `crates/statefulmemory-tests/` need a live daemon socket.
+## Git commits (repo hooks)
+
+Enable once per clone: `git config core.hooksPath .githooks`.
+`.githooks/commit-msg` enforces: **exactly one line**, Conventional Commits
+subject (`feat|fix|docs|…(scope): subject`), and **rejects** `Co-authored-by` /
+`Assisted-by` / `Signed-off-by` and "generated by / assisted by" phrases.
+Multi-line messages and AI attribution trailers will fail the commit.
+
+## Conventions
+
+- Migrations: `migrations/V{N}__name.sql` (per-project) — head **V12**
+  (`fact_key_expand`, rebuilds `observations_fts` with `key_expand`);
+  graph tables landed at V11. Separate `migrations-global/V1__global.sql` for
+  `global.sqlite`. Embedded via `refinery::embed_migrations!` — always
+  `IF NOT EXISTS` / additive `ALTER TABLE`.
+- All DB writes go through the per-project write thread (`WriteRequest`,
+  including `IndexGraph` and `WriteRequest::Custom`). Never open a second write
+  connection from workers/RPC handlers.
+- Config: env > `~/.statefulmemory/projects/<name>.config.toml` >
+  `~/.statefulmemory/config.toml` > code defaults. 3-level merge is recursive —
+  a per-project `[rerank]` does not erase global `[extract]`. Re-resolve per
+  task; never cache at daemon startup.
+- Worker pools: `try_queue` drops on full; never block the save path.
+- sqlite-vec: registered via `pragmas::ensure_sqlite_vec_extension()` inside
+  `db::open_write/read`. Any raw `Connection::open` on a vec0 DB will panic —
+  go through `db::`.
+- Git: shell out only (`statefulmemory-core::git`). No git2/gix.
+- `ConflictClassifier` trait lives in `storage::conflict_judge`; LLM impl in
+  `daemon::conflict_judge`.
+- `skills/statefulmemory/SKILL.md` + `references/*.md` are `include_str!`-ed
+  into the binary — edits need a rebuild to reach `smem install`.
+- Cargo pins: candle (not fastembed — enterprise TLS blocks its ONNX download);
+  `hf-hub` stays 0.4.x (0.5 breaks range requests). Don't "upgrade" these.
+- Do not name third-party memory products in product UI / CLI help / MCP
+  blurbs. Comparison and eval docs (`why-statefulmemory`, LoCoMo, baselines) may
+  name them with sources and unmatched-harness caveats. Never invent peer
+  features.
 
 ## Config (defaults that matter)
 
 ```toml
 [search]
 mode = "hybrid"
-rerank = true           # local CE by default ([rerank].backend)
+rerank = true           # local CE by default ([rerank].backend = "local")
 router = "adaptive"     # Easy skips dense; Hard enables expand+graph
 decay_lambda = 0.0      # off
 evidence_window = 0     # off
@@ -110,7 +157,7 @@ timeout_secs = 5
 serve_stale = false     # withdraw bad anchors from context
 
 [conflict]
-enabled = true          # LLM supersession judge
+enabled = true          # LLM supersession judge (FTS5 heuristic on judge error)
 
 [extract]
 enabled = false         # keep opt-in (LLM on every save otherwise)
@@ -119,19 +166,18 @@ enabled = false         # keep opt-in (LLM on every save otherwise)
 quantize = false
 
 [graph]
-enabled = false
-ranker = "ppr"          # when graph.enabled
+enabled = false         # flip only after CI multi-hop gate +5 pts
+ranker = "ppr"          # "bfs" | "ppr"
 ```
 
-`statefulmemory install` writes a bootstrap `~/.statefulmemory/config.toml` (hybrid +
-conflict + extract on) without clobbering existing keys. Git hooks
+`statefulmemory install` writes a bootstrap `~/.statefulmemory/config.toml`
+(hybrid + conflict + extract on) without clobbering existing keys. Git hooks
 (`post-commit` / `post-merge` / `post-checkout` → `statefulmemory verify --quiet`)
 install when cwd is a git repo; skip with `--no-git-hooks`.
 
 ## Local / open-source LLM wiring
 
-statefulmemory does **not** embed an OpenAI/Anthropic SDK for these steps. It detects
-an agent CLI and passes prompts on stdin / argv.
+Detects an agent CLI, passes prompts on stdin / argv.
 
 | Preference | How |
 |---|---|
@@ -141,30 +187,19 @@ an agent CLI and passes prompts on stdin / argv.
 | Inherit session model | leave roles as `fast` / `capable`; set host env if available |
 
 Host model hints checked: `OPENCODE_MODEL`, `CURSOR_MODEL`, `GEMINI_MODEL`,
-`ANTHROPIC_MODEL`, `KILO_MODEL`, …
-
-OpenCode / Kilo Zen catalog nicknames (`qwen`, `glm`, `deepseek`, …) resolve
-in `crates/statefulmemory-extract/src/opencode_models.rs`.
-
-Examples:
+`ANTHROPIC_MODEL`, `KILO_MODEL`, … OpenCode / Kilo Zen nicknames (`qwen`,
+`glm`, `deepseek`, …) resolve in
+`crates/statefulmemory-extract/src/opencode_models.rs`.
 
 ```bash
-# OpenCode + a concrete Zen model for extract/judge
-export STATEFULMEMORY_LLM_PROVIDER=opencode
-export STATEFULMEMORY_LLM_MODEL=opencode/qwen3.7-plus
-
-# Gemini CLI as the only LLM backend
-export STATEFULMEMORY_LLM_BIN=gemini
-export STATEFULMEMORY_LLM_PROVIDER=gemini
-
 # Disable LLM-backed features entirely (local retrieval only)
 statefulmemory config set extract.enabled false
 statefulmemory config set conflict.enabled false
 statefulmemory config set search.rerank false
 ```
 
-Hybrid **search** stays local (BGE-small + BM25) even when no agent CLI is
-installed. Only extract / conflict / rerank / Decide need a CLI.
+Hybrid **search** stays local (BGE-small + BM25) even with no agent CLI.
+Only extract / conflict / rerank / Decide need a CLI.
 
 ## Install targets (`statefulmemory install`)
 
@@ -175,7 +210,8 @@ Auto-detect or pass `--agent <id>` / `--all`:
 `amazon-q`.
 
 OpenCode config: `~/.config/opencode/opencode.json` (MCP). Shared skills also
-land under `.agents/` when that target is selected.
+land under `.agents/` when that target is selected. `--no-laya` skips sidecar
+setup; `--no-git-hooks` skips verify hooks.
 
 ## Commands useful while coding in this repo
 
@@ -192,7 +228,7 @@ statefulmemory mem export --out backup.mem
 statefulmemory graph query <entity> --hops 2
 statefulmemory graph rebuild         # backfill entities/edges from anchors
 statefulmemory graph stats
-statefulmemory dream run --review    # consolidation scan (review-only, no LLM)
+statefulmemory dream run --review    # consolidation scan (review-only, applies nothing, no LLM)
 ```
 
 MCP tools (stdio via `statefulmemory mcp`): `memory_search`, `memory_recent`,
@@ -207,42 +243,37 @@ MCP tools (stdio via `statefulmemory mcp`): `memory_search`, `memory_recent`,
   `verify.serve_stale` or `--include-stale`. Never hides `unanchored`.
 - Save accepts repeated `--anchor` / proto `anchors`; stamps commit + digest
   when cwd (or project repo) is a git work tree.
+- Graph RPCs (additive): `ListEntities`, `GetEntity`, `GraphQuery`.
 
 ## Entity graph (spec: .catalyst/specs/graph-briefing/spec.md)
 
-- Schema head **V11** (`graph_briefing`): `entities`, `entity_mentions`,
-  `entity_edges`. Migrations still under `migrations/`, refinery-embedded.
-- Config `[graph]` (default **off** until CI multi-hop gate +5 pts passes):
+- Schema: `entities`, `entity_mentions`, `entity_edges` (migration V11);
+  writes ride `WriteRequest::IndexGraph` on the write thread.
+- Config `[graph]` (default **off** until CI multi-hop gate passes):
   `enabled`, `hops` (≤2), `boost`, `edge_types`, `budget_pct`, `degree_cap`,
   `max_query_entities`, `ranker` (`bfs` | `ppr`), `ppr_damping`, `ppr_iters`.
   Env: `STATEFULMEMORY_GRAPH_ENABLED/HOPS/BOOST/RANKER`.
 - Entity extraction is **heuristics-only** (`statefulmemory-extract::entity_resolve`),
   no LLM on save or retrieval. `obs context` graph expansion is budget-capped
   (`budget_pct` × `max_tokens`) and never displaces primary hits. With
-  `graph.ranker = ppr`, expansion uses HippoRAG-style Personalized PageRank
-  over `entity_edges` (node specificity = 1/mention_count).
-- Wave 2 retrieve: fact-augmented query merge + heuristic time prune
-  (LongMemEval indexing tips); `smem context compile` / `smem ingest repo`.
-- Writes ride `WriteRequest::IndexGraph` on the per-project write thread — never
-  a second write connection.
-- RPCs (additive): `ListEntities`, `GetEntity`, `GraphQuery`.
+  `ranker = ppr`, expansion uses HippoRAG-style Personalized PageRank over
+  `entity_edges` (node specificity = 1/mention_count).
+- Wave 2 retrieve: fact-augmented query merge (`key_expand` FTS column) +
+  heuristic time prune; `smem context compile` / `smem ingest repo`.
 
 ## Laya System-1 sidecar (Wave 4, opt-in via install)
 
-`smem install` / `statefulmemory install` (same binary path; unless `--no-laya`):
+HTTP sidecar for typed router/decide/conflict signals only — not an embedder or
+reranker. `smem install` (unless `--no-laya`):
 
 1. Merges `[laya] enabled = true` into `~/.statefulmemory/config.toml` (missing keys only)
 2. Writes `~/.statefulmemory/laya-sidecar/{server.py,requirements.txt,run.sh}`
 3. Creates `~/.statefulmemory/laya-venv` and `pip install -r requirements.txt`
 4. Best-effort starts uvicorn on `127.0.0.1:8765`
 
-The daemon also soft-spawns the local sidecar when `[laya] enabled` and health
-fails (loopback URL only). Non-local `url` = team/shared sidecar — no auto-spawn.
-Teacher logs → `~/.statefulmemory/laya_train/*.jsonl`. Fine-tune later (Kaggle
-RLCD); day-1 uses off-the-shelf `typed-decisions` + english root.
-Primary ship gate: router p99 / Easy-skip (not decide accuracy).
-
-Override:
+Daemon soft-spawns the local sidecar when `[laya] enabled` and health fails
+(loopback URL only; non-local `url` = team sidecar, no auto-spawn). Needs
+Python 3.10+ on `PATH`. Teacher logs → `~/.statefulmemory/laya_train/*.jsonl`.
 
 ```toml
 [laya]
@@ -253,23 +284,12 @@ backend = "auto"                # auto | mlx | torch
 ```
 
 Env: `STATEFULMEMORY_LAYA_ENABLED/URL/TIMEOUT_MS/ROUTER/DECIDE/CONFLICT/BACKEND`.
+`auto` prefers **laya-mlx** on macOS 14+ / Python ≥ 3.11, else PyTorch.
+`/health` reports the active backend; `smem doctor` summarizes. Raise
+`timeout_ms` for decide/conflict batches (100–200 ms on MLX).
 
-Backend: `auto` prefers **laya-mlx** (native Apple Silicon port, same Laya
-checkpoints) on macOS 14+ / Python ≥ 3.11, else PyTorch `laya`. Sidecar
-`/health` reports the active backend. Raise `timeout_ms` for decide/conflict
-(two/three-question batches measured 100–200 ms on MLX; single-question
-router/conflict ~30 ms).
+## Roadmap
 
-## Roadmap status (short)
-
-Shipped: hybrid default, MCP, Decide, `.mem` archives (**v2 now carries the
-entity graph**), in-force `supersedes_ids`, staleness eval, anchors + verify +
-git hooks, optional decay / evidence window / token budget, **entity graph (V11)
-+ `graph` CLI + MCP tool + CI gates (graph-smoke / mem-roundtrip / eval
-regression)**, **Dream-lite review scan (`dream run --review`, heuristic + no
-LLM, applies nothing)**, **effective-context compile + repo ingest + opt-in PPR**,
-**Laya System-1 sidecar (Wave 4) for router/decide/conflict via `smem install`**.
-
-Still open: graphify bridge / auto-anchor, multi-relation `obs judge`, eval CI
-scorecard promotion, graph default-on after multi-hop gate, Laya fine-tune
-export (Wave 4b). Details: `docs/ROADMAP.md`.
+Open + shipped detail: [`docs/ROADMAP.md`](docs/ROADMAP.md). Still open:
+graphify bridge / auto-anchor, multi-relation `obs judge`, eval CI scorecard
+promotion, graph default-on after multi-hop gate, Laya fine-tune export (4b).
