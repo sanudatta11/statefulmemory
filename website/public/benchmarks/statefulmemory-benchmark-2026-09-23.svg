@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+<rect width="100%" height="100%" fill="#0b0f12"/>
+<rect x="36" y="36" width="1528" height="828" rx="28" fill="none" stroke="#c8783a" stroke-width="2"/>
+<rect x="36" y="36" width="8" height="828" fill="#c8783a"/>
+<g font-family="Inter,Arial,sans-serif">
+<text x="90" y="92" font-size="46" font-weight="800" fill="#f2f4f5">statefulmemory</text>
+<text x="90" y="130" font-size="21" fill="#9ca7ad">Benchmark snapshot • retrieval + rerank pipeline</text>
+<text x="90" y="166" font-size="24" font-weight="800" fill="#c8783a">1,540 queries requested</text>
+<rect x="90" y="205" width="445" height="165" rx="20" fill="#11181d" stroke="#263139" stroke-width="2"/>
+<text x="118" y="262" font-size="56" font-weight="800" fill="#c8783a">67.6%</text><text x="118" y="304" font-size="24" font-weight="800" fill="#edf1f2">Accuracy</text><text x="118" y="337" font-size="18" fill="#909da5">1,039 / 1,538</text>
+<rect x="565" y="205" width="445" height="165" rx="20" fill="#11181d" stroke="#263139" stroke-width="2"/>
+<text x="593" y="262" font-size="56" font-weight="800" fill="#c8783a">92.33%</text><text x="593" y="304" font-size="24" font-weight="800" fill="#edf1f2">Recall@k</text><text x="593" y="337" font-size="18" fill="#909da5">retrieval coverage</text>
+<rect x="1040" y="205" width="445" height="165" rx="20" fill="#11181d" stroke="#263139" stroke-width="2"/>
+<text x="1068" y="262" font-size="56" font-weight="800" fill="#c8783a">65.00%</text><text x="1068" y="304" font-size="24" font-weight="800" fill="#edf1f2">MRR</text><text x="1068" y="337" font-size="18" fill="#909da5">ranking quality</text>
+<text x="90" y="415" font-size="20" font-weight="800" fill="#c8783a">QUALITY / EFFICIENCY</text><text x="840" y="415" font-size="20" font-weight="800" fill="#c8783a">LATENCY</text>
+<g font-size="19">
+<text x="90" y="456" fill="#aeb8bd">Gold-substring recall</text><text x="650" y="456" text-anchor="end" fill="#f1f4f5" font-weight="800">35.89%</text>
+<text x="90" y="500" fill="#aeb8bd">Rerank skipped</text><text x="650" y="500" text-anchor="end" fill="#f1f4f5" font-weight="800">45.4%</text>
+<text x="90" y="544" fill="#aeb8bd">Mean prompt tokens</text><text x="650" y="544" text-anchor="end" fill="#f1f4f5" font-weight="800">8,012</text>
+<text x="90" y="588" fill="#aeb8bd">Total prompt tokens</text><text x="650" y="588" text-anchor="end" fill="#f1f4f5" font-weight="800">12.32M</text>
+<text x="840" y="456" fill="#aeb8bd">Retrieval p50</text><text x="1485" y="456" text-anchor="end" fill="#f1f4f5" font-weight="800">131.60 ms</text>
+<text x="840" y="500" fill="#aeb8bd">Retrieval p95</text><text x="1485" y="500" text-anchor="end" fill="#f1f4f5" font-weight="800">314.79 ms</text>
+<text x="840" y="544" fill="#aeb8bd">Rerank p50</text><text x="1485" y="544" text-anchor="end" fill="#f1f4f5" font-weight="800">11.75 s</text>
+<text x="840" y="588" fill="#aeb8bd">Rerank p95</text><text x="1485" y="588" text-anchor="end" fill="#f1f4f5" font-weight="800">64.44 s</text>
+<text x="840" y="632" fill="#aeb8bd">End-to-end p50</text><text x="1485" y="632" text-anchor="end" fill="#f1f4f5" font-weight="800">38.76 s</text>
+<text x="840" y="676" fill="#aeb8bd">End-to-end p95</text><text x="1485" y="676" text-anchor="end" fill="#f1f4f5" font-weight="800">147.21 s</text>
+</g>
+<rect x="90" y="730" width="1395" height="72" rx="14" fill="#10171b"/>
+<text x="116" y="758" font-size="16" fill="#87939a">Benchmark snapshot • exact metrics supplied by the evaluation run.</text>
+<text x="116" y="784" font-size="16" fill="#87939a">Pair with the evaluation methodology/dataset details; this is not a public leaderboard comparison.</text>
+<text x="1482" y="778" text-anchor="end" font-size="16" font-weight="800" fill="#c8783a">github.com/sanudatta11/statefulmemory</text>
+</g></svg>
