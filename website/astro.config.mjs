@@ -137,7 +137,7 @@ export default defineConfig({
 						rel: 'sitemap',
 						type: 'application/xml',
 						title: 'Sitemap',
-						href: `${site}/sitemap-index.xml`,
+						href: `${site}/sitemap.xml`,
 					},
 				},
 				{

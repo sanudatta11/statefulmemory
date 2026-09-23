@@ -36,12 +36,12 @@ Do these once before (or right after) the first successful `Pages` deploy on `ma
 4. **Google Search Console**
    - Add a **Domain** property for `statefulmemory.dev` (or URL-prefix `https://statefulmemory.dev/`)
    - Verify ownership with a **DNS TXT** record at the registrar
-   - Submit sitemap: `https://statefulmemory.dev/sitemap-index.xml`
-5. Confirm crawlability
+   - Submit sitemap: `https://statefulmemory.dev/sitemap.xml`
+4. Confirm crawlability
    - `https://statefulmemory.dev/robots.txt` lists the sitemap and allows AI search bots
-   - `https://statefulmemory.dev/sitemap-index.xml` returns 200 after deploy
-   - `sitemap-0.xml` lists every docs page (home + getting-started, install,
-     agents, commands, config, locomo, troubleshooting); `/404` is excluded
+   - `https://statefulmemory.dev/sitemap.xml` returns 200 after deploy
+   - lists every docs page (home + getting-started, install,
+      agents, commands, config, locomo, troubleshooting); `/404` is excluded
 6. Confirm LLM-ready surfaces
    - `https://statefulmemory.dev/llms.txt` (curated index)
    - `https://statefulmemory.dev/llms-full.txt` (plain-text product summary)

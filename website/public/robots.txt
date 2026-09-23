@@ -30,7 +30,7 @@ Allow: /
 User-agent: Applebot-Extended
 Allow: /
 
-Sitemap: https://statefulmemory.dev/sitemap-index.xml
+Sitemap: https://statefulmemory.dev/sitemap.xml
 
 # LLM context files (https://llmstxt.org/)
 # https://statefulmemory.dev/llms.txt

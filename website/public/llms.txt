@@ -37,5 +37,5 @@ Source: https://github.com/sanudatta11/statefulmemory
 
 ## Optional
 
-- [Sitemap](https://statefulmemory.dev/sitemap-index.xml)
+- [Sitemap](https://statefulmemory.dev/sitemap.xml)
 - [robots.txt](https://statefulmemory.dev/robots.txt)
