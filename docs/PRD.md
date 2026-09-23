@@ -948,8 +948,8 @@ IdleConnTimeout      = 10 minutes (TCP mode)
 - No notarization in v1; users on Gatekeeper add `xattr -d com.apple.quarantine` if installed via curl.
 
 ### 14.4 Distribution channels
-- GitHub Releases: `tar.gz` per target containing the binary + `LICENSE-MIT` + `LICENSE-APACHE` + a `README.md`.
-- Homebrew tap (formula points at GitHub Releases).
+- GitHub Releases: `tar.gz` per target containing the binary + `LICENSE-MIT` + `LICENSE-APACHE` + a `README.md`. **Shipped** — `.github/workflows/release.yml` builds 4 targets on `v*` tags and publishes `SHA256SUMS`.
+- Homebrew tap (formula points at GitHub Releases). **Shipped** — `sanudatta11/homebrew-tap`, bump via `scripts/update-tap.sh <tag> <tap-dir>`. Install: `brew install sanudatta11/tap/statefulmemory` (plain `brew install statefulmemory` once tapped). homebrew/core submission is the later milestone for an untapped bare `brew install statefulmemory`.
 - One-line installer: `curl -sSf https://statefulmemory.dev/install.sh | sh` (writes to `/usr/local/bin/statefulmemory` or `~/.local/bin/statefulmemory`).
 - `cargo install statefulmemory` deferred to post-v1. crates.io publishing is not part of the v1 release.
 

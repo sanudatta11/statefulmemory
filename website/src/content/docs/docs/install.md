@@ -1,13 +1,25 @@
 ---
 title: Install
-description: Build and install the statefulmemory CLI on macOS or Linux.
+description: Install the statefulmemory CLI on macOS or Linux via Homebrew or from source.
 ---
+
+## Homebrew (recommended)
+
+```bash
+brew install sanudatta11/tap/statefulmemory   # auto-taps the formula
+statefulmemory --version                     # same binary: smem --version / sm --version
+statefulmemory install                       # wire agents, git hooks, Laya sidecar
+```
+
+Prebuilt binaries for macOS (arm64 / Intel) and Linux (arm64 / amd64). After the
+tap is present, plain `brew install statefulmemory` and `brew upgrade` work too.
+Prefer source builds? See below.
+
+## Build from source
 
 **Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL / `pkg-config`, macOS or Linux (WSL OK).
 **Python 3.10+** is recommended so `install` can set up the Laya System-1 sidecar
 out of the box (typed decide / conflict / query router).
-
-## Build from source
 
 ```bash
 git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
@@ -25,7 +37,7 @@ found after install. Team TCP self-host and **StatefulMemory Cloud** (managed Sa
 
 | Path | Role |
 | --- | --- |
-| `~/.local/bin/statefulmemory` (+ `smem`, `sm`) | CLI binary (same code) |
+| `~/.local/bin/statefulmemory` (+ `smem`, `sm`), or Homebrew's `bin/` | CLI binary (same code) |
 | `~/.statefulmemory/` | Data dir (created on first use) |
 | `~/.statefulmemory/config.toml` | Written/merged by `install` (includes `[laya]` when missing) |
 | `~/.statefulmemory/laya-sidecar/` | Laya FastAPI app (unless `--no-laya`) |

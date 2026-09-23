@@ -8,9 +8,9 @@ This tour walks the main surfaces once. Each step links to a detailed guide.
 ## 1. Install the CLI
 
 ```bash
-git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
-make prereqs && make install
-export PATH="$HOME/.local/bin:$PATH"
+brew install sanudatta11/tap/statefulmemory   # or build from source:
+# git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
+# make prereqs && make install && export PATH="$HOME/.local/bin:$PATH"
 statefulmemory --version
 ```
 

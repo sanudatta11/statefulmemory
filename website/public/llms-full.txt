@@ -39,12 +39,20 @@ There is no Python/TypeScript Memory SDK today — use MCP or the CLI.
 ## Install (self-host, short)
 
 ```
+brew install sanudatta11/tap/statefulmemory   # macOS/Linux prebuilt (tap)
+statefulmemory --version
+statefulmemory install                 # auto-detect agents; registers MCP + skills
+                                 # (+ git verify hooks when cwd is a repo)
+```
+
+From source instead:
+
+```
 git clone https://github.com/sanudatta11/statefulmemory && cd statefulmemory
 make prereqs && make install
 export PATH="$HOME/.local/bin:$PATH"
 statefulmemory --version
-statefulmemory install                 # auto-detect agents; registers MCP + skills
-                                 # (+ git verify hooks when cwd is a repo)
+statefulmemory install
 ```
 
 ## Everyday usage

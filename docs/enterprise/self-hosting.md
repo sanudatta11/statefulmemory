@@ -29,8 +29,9 @@ cargo build --release -p statefulmemory-cli
 ```
 
 The binary is self-contained: `statefulmemory daemon start` runs the daemon in the
-same process. `cargo install --path crates/statefulmemory-cli` also works if you
-prefer an on-path install.
+same process. Prebuilt release binaries install via
+`brew install sanudatta11/tap/statefulmemory`; `cargo install --path crates/statefulmemory-cli`
+also works if you prefer an on-path install.
 
 ## Docker Compose
 

@@ -37,6 +37,16 @@ Engineering comparison: [Why StatefulMemory?](https://statefulmemory.dev/docs/wh
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install sanudatta11/tap/statefulmemory   # auto-taps; then plain `brew install statefulmemory` works too
+statefulmemory --version                     # same binary as: smem --version / sm --version
+statefulmemory install                       # wire agents (MCP), git hooks, Laya sidecar
+```
+
+### Build from source
+
 **Needs:** Rust stable (≥ 1.75), `protoc`, OpenSSL/`pkg-config`, macOS or Linux
 (WSL OK). Windows is out of scope for v1. **Python 3.10+** is optional but
 recommended so `install` can set up the Laya System-1 sidecar out of the box.

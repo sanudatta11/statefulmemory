@@ -7,7 +7,7 @@ Global matrix. Feature pages also list local tips under **Troubleshooting**.
 
 | Symptom | Fix |
 |---|---|
-| `command not found` | Put `~/.local/bin` on `PATH` — [Install](/docs/install/) |
+| `command not found` | Homebrew: `brew install sanudatta11/tap/statefulmemory`; source build: put `~/.local/bin` on `PATH` — [Install](/docs/install/) |
 | Exit 4: daemon down | `statefulmemory daemon force-start` |
 | Exit 5: no project | Run in a git repo, or `export STATEFULMEMORY_PROJECT=…` |
 | MCP missing in agent | `statefulmemory install`, then fully restart the agent — [Agents](/docs/agents/) |

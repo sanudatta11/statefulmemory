@@ -11,7 +11,7 @@ or `sm <cmd>` — three names, one binary.
 ## Install and agents
 
 ```bash
-make prereqs && make install
+brew install sanudatta11/tap/statefulmemory   # or: make prereqs && make install
 statefulmemory install
 statefulmemory install --agent cursor
 statefulmemory install --no-git-hooks

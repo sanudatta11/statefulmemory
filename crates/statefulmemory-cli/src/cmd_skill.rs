@@ -821,12 +821,29 @@ fn ensure_pretool_hook(root: &mut serde_json::Value, matcher: &str, cmd: &str) {
     }));
 }
 
+/// True when `exe` lives under a Homebrew-managed prefix (Cellar or brew
+/// prefix on macOS/Linux). Those installs are owned by brew: a side
+/// `/usr/local/bin` symlink would dangle after `brew upgrade` removes the
+/// old Cellar version, so we never create one for them.
+fn is_homebrew_managed(exe: &std::path::Path) -> bool {
+    let s = exe.to_string_lossy();
+    s.contains("/Cellar/")
+        || s.starts_with("/opt/homebrew/")
+        || s.starts_with("/usr/local/Homebrew/")
+        || s.starts_with("/home/linuxbrew/")
+}
+
 /// Symlink /usr/local/bin/statefulmemory → the running binary so GUI apps that
 /// don't inherit ~/.zshrc PATH can still find statefulmemory.
 /// Returns Ok(true) written, Ok(false) already correct, Err if no permission.
 fn install_usr_local_bin_symlink() -> std::io::Result<bool> {
     let target = std::path::Path::new("/usr/local/bin/statefulmemory");
     let current_exe = std::env::current_exe()?;
+
+    // Homebrew owns its prefix — don't leave a competing /usr/local/bin link.
+    if is_homebrew_managed(&current_exe) {
+        return Ok(false);
+    }
 
     // Already points at the right place — skip.
     if target.exists() {
@@ -930,6 +947,25 @@ fn install_block(path: &PathBuf, body: &str) -> std::io::Result<bool> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn homebrew_managed_detection() {
+        assert!(is_homebrew_managed(std::path::Path::new(
+            "/opt/homebrew/Cellar/statefulmemory/0.1.0/bin/statefulmemory"
+        )));
+        assert!(is_homebrew_managed(std::path::Path::new(
+            "/opt/homebrew/bin/statefulmemory"
+        )));
+        assert!(is_homebrew_managed(std::path::Path::new(
+            "/home/linuxbrew/.linuxbrew/bin/statefulmemory"
+        )));
+        assert!(!is_homebrew_managed(std::path::Path::new(
+            "/Users/x/.local/bin/statefulmemory"
+        )));
+        assert!(!is_homebrew_managed(std::path::Path::new(
+            "/usr/local/bin/statefulmemory"
+        )));
+    }
 
     #[test]
     fn ensure_pretool_hook_inserts_grep_entry() {
