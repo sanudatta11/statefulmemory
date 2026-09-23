@@ -149,6 +149,33 @@ Do not quote smoke or tiny slices against published leaderboards.
 | **Eval Gate** | pass |
 <!-- scorecard-end -->
 
+## Evaluation snapshot — 2026-09-23
+
+> Benchmark run supplied by the project author. This is an evaluation snapshot, not a public leaderboard comparison.
+
+| Metric | Value |
+|---|---:|
+| Accuracy | **67.6%** (1,039 / 1,538) |
+| Recall@k | **0.9233** |
+| MRR | **0.6500** |
+| Gold-substring recall | **0.3589** |
+| Rerank skipped | **45.4%** |
+| Mean prompt tokens | **8,012** |
+| Total prompt tokens | **12,322,044** |
+| Retrieval p50 | **131.60 ms** |
+| Retrieval p95 | **314.79 ms** |
+| Rerank p50 | **11,748.86 ms** |
+| Rerank p95 | **64,435.42 ms** |
+| End-to-end p50 | **38,755.07 ms** |
+| End-to-end p95 | **147,207.66 ms** |
+| Queries requested | **1,540** |
+
+<p align="center">
+  <img src="website/public/benchmarks/statefulmemory-benchmark-2026-09-23.svg" alt="statefulmemory benchmark snapshot" width="100%" />
+</p>
+
+Full benchmark notes: [2026-09-23 evaluation snapshot](docs/benchmarks/2026-09-23.md).
+
 ## Integrations
 
 | Surface | Status |
