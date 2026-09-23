@@ -122,6 +122,17 @@ jobs:
           path: data/locomo/facts.db
           key: locomo-facts-v1-${{ hashFiles('data/locomo/locomo10.json') }}
 
+      # Per-project ANN sidecars from ingest/prewarm — skip rebuild each run.
+      - name: Restore eval vec indexes
+        if: inputs.dataset != 'smoke'
+        id: vec-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/vec
+            data/embeddings.cache.sqlite
+          key: locomo-vec-v1-${{ hashFiles('data/locomo/locomo10.json') }}
+
       # Retrieval-level scorecard: --lexical-judge needs no agent CLI / LLM
       # secrets on the runner. Judge = gold present in retrieved hits.
       - name: Run benchmark (lexical judge)
@@ -163,7 +174,8 @@ jobs:
           STATEFULMEMORY_LLM_PROVIDER: opencode
           STATEFULMEMORY_LLM_BIN: opencode
           STATEFULMEMORY_LLM_MODEL: openai/gpt-4o-mini
-          STATEFULMEMORY_EVAL_CONCURRENCY: "4"
+          # 2× prior run (was 4); clamp allows 16. Watch TPM / rate-limit backoff.
+          STATEFULMEMORY_EVAL_CONCURRENCY: "8"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
@@ -198,6 +210,16 @@ jobs:
           path: |
             ./eval/scorecard.json
             ./eval/scorecard_output.json
+
+      # ANN + embed cache only after a green run (same integrity rule as facts.db).
+      - name: Save eval vec indexes
+        if: inputs.dataset != 'smoke' && steps.vec-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/vec
+            data/embeddings.cache.sqlite
+          key: locomo-vec-v1-${{ hashFiles('data/locomo/locomo10.json') }}
 
       # Report (JSON + MD) is written before the runner fails on skips/abort —
       # keep it even when the job fails so the partial score is recoverable.

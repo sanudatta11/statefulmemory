@@ -103,11 +103,12 @@ fn pct_bar(done: usize, total: usize, width: usize) -> String {
 /// clear winner, a Haiku-shuffle costs $$ and adds judge noise without
 /// materially improving accuracy.
 ///
-/// LoCoMo HybridRerank always reranks (threshold ignored) so multi-hop
+/// LoCoMo HybridRerank uses the ambiguity gate for non-multi-hop queries
+/// (threshold ignored only for multi-hop) so multi-hop
 /// candidates are not left in BM25/ANN order when facts look "clear".
 const RERANK_AMBIGUITY_THRESHOLD: f32 = 0.15;
 
-/// LoCoMo multi-hop (JSON cat 1 → `multi_hop`): always rerank + wider pool.
+/// LoCoMo multi-hop (JSON cat 1 → `multi_hop`): always rerank + wider pool (k*5).
 fn is_locomo_multihop(category: Option<&str>) -> bool {
     matches!(category, Some("multi_hop") | Some("1"))
 }
@@ -814,9 +815,10 @@ async fn eval_one_query(
         RetrievalMode::Hybrid | RetrievalMode::HybridRerank => {
             let (embedder, cache) =
                 hybrid_stack.expect("hybrid_stack initialised when mode is Hybrid or HybridRerank");
-            // LoCoMo (all cats) and multi-hop: wide candidate pool before rerank.
-            let retrieve_k = if retrieval.rerank && (benchmark == BenchmarkKind::Locomo || multihop)
-            {
+            // multi-hop keeps the wide pool (selection is the failure mode);
+            // other LoCoMo cats use k*3 (60 cands) — enough for rerank to
+            // fix top-10 order, ~40% fewer rerank tokens than k*5.
+            let retrieve_k = if retrieval.rerank && multihop {
                 k * 5
             } else if retrieval.rerank {
                 k * 3
@@ -824,8 +826,9 @@ async fn eval_one_query(
                 k
             };
             let facts_db_path = facts_db_path_for(benchmark, data_dir);
-            // LoCoMo always reranks when configured; multi-hop always; else ambiguity gate.
-            let force_rerank = retrieval.rerank && (benchmark == BenchmarkKind::Locomo || multihop);
+            // multi-hop + configured rerank: always rerank (selection is the
+            // failure mode). Other queries: ambiguity gate (top1−top2 < 0.15).
+            let force_rerank = retrieval.rerank && multihop;
             let mut rerank_ambiguous = true;
             let (raw_hits, raw_retrieval_us) = if facts_db_path.exists() {
                 let ret = crate::retrieve_facts::retrieve_facts(
