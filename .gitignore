@@ -69,9 +69,7 @@ skills-lock.json
 
 # Impeccable / Cursor harness (large binaries; product design lives in PRODUCT.md / DESIGN.md)
 .cursor/
-.impeccable/review/
-.impeccable/mocks/
-.impeccable/build/
+.impeccable/
 
 
 # Local tool configs (machine-local absolute paths)
