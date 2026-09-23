@@ -93,7 +93,15 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                 }
             }
             let (memories, queries) = load_dataset(benchmark_kind, &data_dir, args.limit)?;
-            let retrieval = default_profile(benchmark_kind);
+            let mut retrieval = default_profile(benchmark_kind);
+            // Lexical judging needs no LLM — also drop rerank (Claude shell-out)
+            // and stay on plain hybrid so CI without an agent CLI still runs.
+            if args.lexical_judge {
+                retrieval.rerank = false;
+                if retrieval.mode == RetrievalMode::HybridRerank {
+                    retrieval.mode = RetrievalMode::Hybrid;
+                }
+            }
             let shards = if matches!(
                 benchmark_kind,
                 BenchmarkKind::Beam1m | BenchmarkKind::Beam10m
@@ -102,7 +110,15 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
             } else {
                 1
             };
-            (memories, queries, retrieval, data_dir, false, false, shards)
+            (
+                memories,
+                queries,
+                retrieval,
+                data_dir,
+                args.lexical_judge,
+                false,
+                shards,
+            )
         };
 
     let limit = if args.smoke {
@@ -132,7 +148,13 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
         .map_err(|e| format!("eval run failed: {e:#}"))?;
 
     let commit_hash = option_env!("GIT_COMMIT_HASH").unwrap_or("dev");
-    let scorecard = Scorecard::from_report(&report, commit_hash);
+    let mut scorecard = Scorecard::from_report(&report, commit_hash);
+    // Lexical runs never called an answer/judge LLM — suppress any env pin
+    // so the card cannot claim a model that did not score it.
+    if lexical_judge {
+        scorecard.answer_model = None;
+        scorecard.judge_model = None;
+    }
 
     if let Some(save_path) = args.save_scorecard {
         scorecard
@@ -274,6 +296,7 @@ mod tests {
             benchmark: "locomo".into(),
             smoke: true,
             limit: Some(1),
+            lexical_judge: false,
             save_scorecard: None,
             no_supersede: false,
         };
@@ -301,6 +324,7 @@ mod tests {
             benchmark: "locomo".into(),
             smoke: false,
             limit: Some(1),
+            lexical_judge: false,
             save_scorecard: None,
             no_supersede: false,
         };

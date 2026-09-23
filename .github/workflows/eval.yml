@@ -1,21 +1,42 @@
 name: Evaluation Scorecard & Retrieval Benchmark
 
+# Manual-only: no push/pull_request triggers — scorecards no longer churn
+# the README on every commit. Run from the Actions tab (dataset input below).
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Dataset scale — limit50 = stratified 50 (default), full = all non-adversarial (1540), smoke = 1-query fixture"
+        type: choice
+        default: limit50
+        options:
+          - limit50
+          - full
+          - smoke
+      judge:
+        description: "Scoring — lexical = retrieval-only (free), llm = agent answer + LLM judge (needs GEMINI_API_KEY secret, hybrid+rerank)"
+        type: choice
+        default: lexical
+        options:
+          - lexical
+          - llm
+      update_readme:
+        description: "Overwrite the README scorecard block with this run — only for the published full+llm run; leave false otherwise"
+        type: boolean
+        default: false
 
-# PR comment step needs write; contents is enough for checkout + build.
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: eval-scorecard
+  cancel-in-progress: false
 
 jobs:
-  eval-smoke:
-    name: Retrieval Benchmark Scorecard
+  eval:
+    name: Retrieval Benchmark (${{ inputs.dataset }}, ${{ inputs.judge }})
     runs-on: ubuntu-latest
-
+    timeout-minutes: ${{ inputs.judge == 'llm' && 360 || 90 }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -36,70 +57,140 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run statefulmemory eval smoke benchmark
+      - name: Fetch LoCoMo dataset
+        if: inputs.dataset != 'smoke'
+        run: make eval-locomo-fetch
+
+      - name: Require GEMINI_API_KEY
+        if: inputs.judge == 'llm'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          if [ -z "${GEMINI_API_KEY}" ]; then
+            echo "::error::GEMINI_API_KEY secret not set — run: gh secret set GEMINI_API_KEY"
+            exit 1
+          fi
+
+      - name: Install Gemini CLI
+        if: inputs.judge == 'llm'
+        run: |
+          npm install -g @google/gemini-cli@0.60.0
+          gemini --version
+
+      - name: Cache BGE-small model
+        if: inputs.dataset != 'smoke'
+        uses: actions/cache@v4
+        with:
+          path: ~/.statefulmemory-models/bge-small
+          key: bge-small-en-v1.5
+
+      - name: Vendor BGE-small
+        if: inputs.dataset != 'smoke'
+        run: make eval-bge-model
+
+      # facts.db (23 MB, gitignored) — restore keyed on the dataset file so
+      # the LLM run uses the same fact-augmented retrieval as local measure
+      # cards; first miss extracts once with the same Gemini key.
+      - name: Restore LoCoMo facts.db
+        if: inputs.judge == 'llm' && inputs.dataset != 'smoke'
+        id: facts-cache
+        uses: actions/cache@v4
+        with:
+          path: data/locomo/facts.db
+          key: locomo-facts-v1-${{ hashFiles('data/locomo/locomo10.json') }}
+
+      - name: Build CLI (release)
+        run: cargo build --release -p statefulmemory-cli
+
+      - name: Extract LoCoMo facts (cache miss)
+        if: inputs.judge == 'llm' && inputs.dataset != 'smoke' && steps.facts-cache.outputs.cache-hit != 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          STATEFULMEMORY_LLM_PROVIDER: gemini
+          STATEFULMEMORY_LLM_BIN: gemini
+          STATEFULMEMORY_LLM_MODEL: gemini-2.5-flash
+        run: make eval-locomo-extract
+
+      # Retrieval-level scorecard: --lexical-judge needs no agent CLI / LLM
+      # secrets on the runner. Judge = gold present in retrieved hits.
+      - name: Run benchmark (lexical judge)
+        if: inputs.judge == 'lexical'
+        env:
+          STATEFULMEMORY_EVAL_DATA: ${{ github.workspace }}/data
+        run: |
+          set -euo pipefail
+          export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
+          BIN=target/release/statefulmemory
           mkdir -p ./eval
-          cargo run -p statefulmemory-cli --bin statefulmemory -- eval --smoke --benchmark locomo --save-scorecard ./eval/scorecard.json --output json > ./eval/scorecard_output.json
+          case "${{ inputs.dataset }}" in
+            smoke)
+              "$BIN" eval --smoke --benchmark locomo \
+                --save-scorecard ./eval/scorecard.json --output json \
+                > ./eval/scorecard_output.json
+              ;;
+            limit50)
+              "$BIN" eval --benchmark locomo --limit 50 --lexical-judge \
+                --save-scorecard ./eval/scorecard.json --output json \
+                > ./eval/scorecard_output.json
+              ;;
+            full)
+              # full = all non-adversarial queries (stratified limit 1540)
+              "$BIN" eval --benchmark locomo --limit 1540 --lexical-judge \
+                --save-scorecard ./eval/scorecard.json --output json \
+                > ./eval/scorecard_output.json
+              ;;
+          esac
+          cat ./eval/scorecard.json
+
+      # LLM path: hybrid + LLM rerank + agent answer + LLM judge, all through
+      # gemini-2.5-flash (explicit STATEFULMEMORY_LLM_MODEL wins over roles —
+      # answer-capable, judge/rerank/extract-fast all pin to flash).
+      - name: Run benchmark (LLM judge)
+        if: inputs.judge == 'llm'
+        env:
+          STATEFULMEMORY_EVAL_DATA: ${{ github.workspace }}/data
+          STATEFULMEMORY_LLM_PROVIDER: gemini
+          STATEFULMEMORY_LLM_BIN: gemini
+          STATEFULMEMORY_LLM_MODEL: gemini-2.5-flash
+          STATEFULMEMORY_EVAL_CONCURRENCY: "4"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
+          BIN=target/release/statefulmemory
+          mkdir -p ./eval
+          case "${{ inputs.dataset }}" in
+            smoke)
+              "$BIN" eval --smoke --benchmark locomo \
+                --save-scorecard ./eval/scorecard.json --output json \
+                > ./eval/scorecard_output.json
+              ;;
+            limit50)
+              "$BIN" eval --benchmark locomo --limit 50 \
+                --save-scorecard ./eval/scorecard.json --output json \
+                > ./eval/scorecard_output.json
+              ;;
+            full)
+              # full = all non-adversarial queries (stratified limit 1540)
+              "$BIN" eval --benchmark locomo --limit 1540 \
+                --save-scorecard ./eval/scorecard.json --output json \
+                > ./eval/scorecard_output.json
+              ;;
+          esac
+          cat ./eval/scorecard.json
 
       - name: Upload Scorecard Artifact
         uses: actions/upload-artifact@v5
         with:
-          name: benchmark-scorecard
-          path: ./eval/scorecard.json
-
-      - name: Scorecard regression gate
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          node .github/scripts/eval-gate.mjs ./eval/scorecard.json ./eval/baseline.json
-
-      - name: Comment PR Scorecard
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const fs = require('fs');
-            const card = JSON.parse(fs.readFileSync('./eval/scorecard.json', 'utf8'));
-            const marker = '<!-- statefulmemory-retrieval-scorecard -->';
-            const body = `${marker}
-            ### statefulmemory Retrieval Benchmark Scorecard
-            - **Benchmark**: ${card.benchmark}
-            - **Commit**: \`${card.commit_hash}\`
-            - **Accuracy**: **${card.accuracy_pct.toFixed(2)}%**
-            - **Recall@k**: **${(card.recall_at_k ?? 0).toFixed(4)}**
-            - **MRR**: **${(card.mrr ?? 0).toFixed(4)}**
-            - **Retrieval Latency (p50)**: ${card.retrieval_p50_ms.toFixed(2)} ms
-            - **Retrieval Latency (p95)**: ${card.retrieval_p95_ms.toFixed(2)} ms
-            - **End-to-End Latency (p50)**: ${card.end_to_end_p50_ms.toFixed(2)} ms
-            `;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-            });
-            const existing = comments.find((c) => c.user?.type === 'Bot' && c.body?.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-            }
+          name: benchmark-scorecard-${{ inputs.dataset }}-${{ inputs.judge }}
+          path: |
+            ./eval/scorecard.json
+            ./eval/scorecard_output.json
 
   update-scorecard:
     name: Update README Scorecard
-    needs: eval-smoke
-    if: github.event_name == 'push'
+    needs: eval
+    if: inputs.update_readme && inputs.judge == 'llm'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -108,7 +199,7 @@ jobs:
       - name: Download Scorecard Artifact
         uses: actions/download-artifact@v5
         with:
-          name: benchmark-scorecard
+          name: benchmark-scorecard-${{ inputs.dataset }}-${{ inputs.judge }}
           path: ./eval
 
       - name: Update README scorecard section
@@ -122,6 +213,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No scorecard changes to commit"
           else
-            git commit -m "ci: update README scorecard from eval smoke [skip ci]"
+            git commit -m "ci: update README scorecard from manual eval run [skip ci]"
             git push
           fi

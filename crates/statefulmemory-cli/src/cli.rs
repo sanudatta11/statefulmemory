@@ -282,13 +282,18 @@ pub struct EvalArgs {
     #[arg(long, default_value = "locomo")]
     pub benchmark: String,
 
-    /// Run in smoke mode (stops after 5 queries or --limit N).
+    /// Run in smoke mode (1-query in-memory fixture; no dataset fetch, lexical judge).
     #[arg(long)]
     pub smoke: bool,
 
     /// Limit maximum number of queries evaluated.
     #[arg(long)]
     pub limit: Option<usize>,
+
+    /// Score retrieval lexically (gold in hits) instead of answer/judge LLM
+    /// calls — runs the real dataset with no agent CLI on PATH (CI-safe).
+    #[arg(long)]
+    pub lexical_judge: bool,
 
     /// Save JSON benchmark scorecard to specified file path.
     #[arg(long)]
@@ -1070,6 +1075,28 @@ mod tests {
     fn version_subcommand_parses() {
         let cli = Cli::try_parse_from(["statefulmemory", "version"]).unwrap();
         assert!(matches!(cli.command, Command::Version));
+    }
+
+    #[test]
+    fn eval_lexical_judge_parses() {
+        let cli = Cli::try_parse_from([
+            "statefulmemory",
+            "eval",
+            "--benchmark",
+            "locomo",
+            "--limit",
+            "50",
+            "--lexical-judge",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Eval(a) => {
+                assert!(a.lexical_judge);
+                assert_eq!(a.limit, Some(50));
+                assert!(!a.smoke);
+            }
+            other => panic!("expected eval, got {other:?}"),
+        }
     }
 
     #[test]
