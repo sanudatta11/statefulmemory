@@ -106,28 +106,25 @@ pub async fn dispatch(client: &mut Client, project_name: &str, args: PreToolArgs
 /// must never block session start.
 pub async fn dispatch_session_start(project_name: &str, limit: i32) -> ExitCode {
     let socket = statefulmemory_core::paths::socket_path();
+    let cfg = crate::cmd_daemon::default_autospawn_config();
 
-    // A socket file can exist while the daemon behind it is dead (a crash left
-    // the file behind). Probe with a real RPC — a lazy tonic channel connect
-    // succeeds even against a dead socket.
-    let healthy = socket.exists() && probe_daemon(&socket).await;
+    // Probe with a real RPC — a lazy tonic channel connect succeeds even
+    // against a dead socket, and a crash can leave the file behind.
+    let healthy = crate::autospawn::probe(&socket).await;
 
     let status_msg = if healthy {
         "daemon ok"
     } else {
-        let was_stale = socket.exists();
-        if was_stale {
-            let _ = std::fs::remove_file(&socket);
-        }
-        let cfg = crate::cmd_daemon::default_autospawn_config();
-        if crate::autospawn::ensure_running(cfg).await.is_err() {
-            eprintln!("statefulmemory: daemon unavailable — starting without memory");
-            return ExitCode::SUCCESS;
-        }
-        if was_stale {
-            "daemon repaired (stale socket cleared)"
-        } else {
-            "daemon started"
+        match crate::autospawn::ensure_running(&cfg).await {
+            Ok(crate::autospawn::EnsureOutcome::AlreadyRunning) => "daemon ok",
+            Ok(crate::autospawn::EnsureOutcome::Spawned { was_stale: true }) => {
+                "daemon repaired (stale socket cleared)"
+            }
+            Ok(crate::autospawn::EnsureOutcome::Spawned { was_stale: false }) => "daemon started",
+            Err(_) => {
+                eprintln!("statefulmemory: daemon unavailable — starting without memory");
+                return ExitCode::SUCCESS;
+            }
         }
     };
     eprintln!("statefulmemory: {status_msg}");
@@ -154,24 +151,6 @@ pub async fn dispatch_session_start(project_name: &str, limit: i32) -> ExitCode 
     )
     .await;
     ExitCode::SUCCESS
-}
-
-/// Probe daemon liveness with a bounded `DaemonStatus` RPC. Returns false on
-/// connect error, RPC error, or timeout.
-async fn probe_daemon(socket: &Path) -> bool {
-    let channel = match statefulmemory_client::channel::connect_uds(socket) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let mut client = p::stateful_memory_client::StatefulMemoryClient::new(channel);
-    matches!(
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            client.daemon_status(p::DaemonStatusRequest {}),
-        )
-        .await,
-        Ok(Ok(_))
-    )
 }
 
 fn record_and_exit(

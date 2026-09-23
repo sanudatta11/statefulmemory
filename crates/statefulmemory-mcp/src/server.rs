@@ -38,8 +38,21 @@ pub struct MemoryServer {
 
 impl MemoryServer {
     pub fn new(socket_path: PathBuf, base_project: String, client_info: String) -> Self {
+        Self::with_recovery(socket_path, base_project, client_info, None)
+    }
+
+    pub fn with_recovery(
+        socket_path: PathBuf,
+        base_project: String,
+        client_info: String,
+        recover: Option<Arc<dyn crate::client::Recovery>>,
+    ) -> Self {
+        let client = match recover {
+            Some(r) => LazyClient::with_recovery(socket_path, r),
+            None => LazyClient::new(socket_path),
+        };
         Self {
-            client: Arc::new(LazyClient::new(socket_path)),
+            client: Arc::new(client),
             base_project,
             client_info,
         }
@@ -75,12 +88,16 @@ fn clamp_limit(limit: Option<i32>, default: i32) -> i32 {
 /// `_meta`). rmcp 3 answers `-32602` then aborts `serve()`, so the client's
 /// follow-up `initialize` hits EOF. We bridge stdio and answer meta-less
 /// discover locally so the connection stays open for legacy initialize.
+///
+/// `recover` is optional mid-session daemon repair (probe + respawn). The
+/// CLI passes `EnsureRecovery`; tests may pass `None`.
 pub async fn serve(
     socket_path: PathBuf,
     project: String,
     client_info: String,
+    recover: Option<Arc<dyn crate::client::Recovery>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let server = MemoryServer::new(socket_path, project, client_info);
+    let server = MemoryServer::with_recovery(socket_path, project, client_info, recover);
 
     let (to_server, server_read) = tokio::io::duplex(64 * 1024);
     let (server_write, from_server) = tokio::io::duplex(64 * 1024);
@@ -519,20 +536,9 @@ impl MemoryServer {
         Parameters(args): Parameters<HealthArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let project = resolve_project(&self.base_project, args.project.as_deref())?;
-        let socket = self.client.socket_path();
 
-        if !socket.exists() {
-            return Ok(CallToolResult::structured(json!({
-                "status": "unhealthy",
-                "checks": [{
-                    "key": "socket_missing",
-                    "ok": false,
-                    "remedy": McpError::SocketMissing { path: socket.display().to_string() }.remedy(),
-                    "path": socket.display().to_string(),
-                }],
-            })));
-        }
-
+        // Missing socket is not terminal: `call` runs Recovery first and only
+        // then surfaces `socket_missing` / `daemon_not_running`.
         let status = match self
             .client
             .call(|mut c| async move {

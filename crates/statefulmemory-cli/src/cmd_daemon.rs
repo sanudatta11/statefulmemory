@@ -54,17 +54,24 @@ async fn start(_fmt: Formatter, foreground: bool) -> ExitCode {
         unreachable!("daemon start --foreground is dispatched in main.rs");
     }
     let cfg = default_autospawn_config();
-    if cfg.socket.exists() {
-        // SC-3: already running.
-        eprintln!(
-            "statefulmemory: daemon is already running (socket {} exists)",
-            cfg.socket.display()
-        );
-        return ExitCode::from(exit::ALREADY_IN_STATE);
-    }
-    match autospawn::ensure_running(cfg.clone()).await {
-        Ok(()) => {
-            crate::info!("daemon started (socket {})", cfg.socket.display());
+    match autospawn::ensure_running(&cfg).await {
+        // SC-3: healthy daemon already answering — not "socket file exists".
+        Ok(autospawn::EnsureOutcome::AlreadyRunning) => {
+            eprintln!(
+                "statefulmemory: daemon is already running (socket {})",
+                cfg.socket.display()
+            );
+            ExitCode::from(exit::ALREADY_IN_STATE)
+        }
+        Ok(autospawn::EnsureOutcome::Spawned { was_stale }) => {
+            if was_stale {
+                crate::info!(
+                    "daemon repaired (stale socket cleared; socket {})",
+                    cfg.socket.display()
+                );
+            } else {
+                crate::info!("daemon started (socket {})", cfg.socket.display());
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

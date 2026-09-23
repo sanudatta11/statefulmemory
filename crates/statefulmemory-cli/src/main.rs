@@ -344,15 +344,13 @@ async fn open_client(
     };
     let socket = statefulmemory_core::paths::socket_path();
 
-    // Auto-spawn (FR2): if the socket is missing, try to spawn the daemon
-    // before issuing any RPC. ensure_running takes the flock, double-checks
-    // the socket, then spawns + polls.
-    if !socket.exists() {
-        let cfg = cmd_daemon::default_autospawn_config();
-        if let Err(e) = autospawn::ensure_running(cfg).await {
-            eprintln!("statefulmemory: {e}");
-            return Err(ExitCode::from(e.exit_code()));
-        }
+    // Auto-spawn (FR2): always ensure — probe detects a stale socket left by
+    // a crashed daemon, clears it, and respawns. Costs one local DaemonStatus
+    // RPC when already healthy.
+    let cfg = cmd_daemon::default_autospawn_config();
+    if let Err(e) = autospawn::ensure_running(&cfg).await {
+        eprintln!("statefulmemory: {e}");
+        return Err(ExitCode::from(e.exit_code()));
     }
 
     let channel = match client_channel::connect_uds(&socket) {

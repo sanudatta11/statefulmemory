@@ -8,6 +8,7 @@
 //! still starts so its `memory_health` tool can report the problem.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use crate::{autospawn, cmd_daemon, exit, project_detect};
 
@@ -34,16 +35,16 @@ pub async fn dispatch(project_flag: Option<String>) -> ExitCode {
     };
 
     let socket = statefulmemory_core::paths::socket_path();
+    let cfg = cmd_daemon::default_autospawn_config();
 
-    // Best-effort auto-spawn. If it fails we still start the server so the
-    // agent can call memory_health to diagnose (do not abort).
-    if !socket.exists() {
-        if let Err(e) = autospawn::ensure_running(cmd_daemon::default_autospawn_config()).await {
-            eprintln!(
-                "statefulmemory mcp: daemon auto-spawn failed ({e}); starting anyway — \
-                 use the memory_health tool to diagnose"
-            );
-        }
+    // Always ensure — probe detects/clears a stale socket and respawns.
+    // Best-effort: if it fails we still start the server so the agent can
+    // call memory_health to diagnose (do not abort).
+    if let Err(e) = autospawn::ensure_running(&cfg).await {
+        eprintln!(
+            "statefulmemory mcp: daemon auto-spawn failed ({e}); starting anyway — \
+             use the memory_health tool to diagnose"
+        );
     }
 
     // Fallback client identity used when MCP initialize has not supplied
@@ -51,7 +52,14 @@ pub async fn dispatch(project_flag: Option<String>) -> ExitCode {
     // (name@version) as created_by when available.
     let client_info = format!("statefulmemory-mcp/{}", env!("CARGO_PKG_VERSION"));
 
-    match statefulmemory_mcp::serve(socket, detection.normalized, client_info).await {
+    // Mid-session recovery: LazyClient re-runs ensure on SocketMissing /
+    // Unavailable so a daemon that dies after startup is respawned.
+    let recover: Arc<dyn statefulmemory_mcp::client::Recovery> =
+        Arc::new(statefulmemory_mcp::EnsureRecovery::new(cfg));
+
+    match statefulmemory_mcp::serve(socket, detection.normalized, client_info, Some(recover))
+        .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("statefulmemory mcp: {e}");

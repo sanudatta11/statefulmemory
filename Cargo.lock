@@ -3763,7 +3763,9 @@ dependencies = [
 name = "statefulmemory-client"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "hyper-util",
+ "nix",
  "rustls",
  "statefulmemory-proto",
  "tempfile",
@@ -3900,12 +3902,14 @@ dependencies = [
 name = "statefulmemory-mcp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "rmcp",
  "serde",
  "serde_json",
  "statefulmemory-client",
  "statefulmemory-core",
  "statefulmemory-proto",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tonic",

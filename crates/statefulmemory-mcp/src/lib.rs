@@ -9,17 +9,19 @@
 //! - `error`  — `McpError` + `tonic::Status` mapping
 //! - `scope`  — cwd/base project + per-call override resolution
 //! - `tools`  — typed arg structs for the seven tools
-//! - `client` — lazily-connected, retrying daemon client
+//! - `client` — lazily-connected, retrying daemon client + optional Recovery
 //! - `server` — rmcp stdio server + tool registry + `serve()` entry point
 //! - `render` — `Observation` / `Fact` → structured MCP JSON content
 
 pub mod client;
 pub mod error;
+pub mod recover;
 pub mod render;
 pub mod scope;
 pub mod server;
 pub mod tools;
 
+pub use recover::EnsureRecovery;
 pub use server::serve;
 
 #[cfg(test)]

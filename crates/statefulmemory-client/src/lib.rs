@@ -16,7 +16,12 @@
 //! interceptor via `StatefulMemoryClient::with_interceptor`.
 
 pub mod channel;
+pub mod ensure;
 pub mod interceptor;
+
+pub use ensure::{
+    ensure_running, poll_socket, probe, AutoSpawnConfig, AutoSpawnError, EnsureOutcome,
+};
 
 use std::path::PathBuf;
 use thiserror::Error;

@@ -78,6 +78,44 @@ fn ts3_daemon_start_when_running_exits_3() {
 }
 
 // ---------------------------------------------------------------------------
+// TS-3b — stale socket (file left by a crash, no listener) must be repaired,
+// not reported as "already running". `daemon start` → exit 0 + live daemon.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ts3b_daemon_start_repairs_stale_socket() {
+    let env = CliEnv::new();
+    std::fs::create_dir_all(env.data_path()).unwrap();
+    // Crash leftover: regular file at the socket path, nothing listening.
+    std::fs::write(env.socket_path(), b"").unwrap();
+
+    let out = env
+        .cmd()
+        .args(["daemon", "start"])
+        .output()
+        .expect("daemon start");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stale socket should be cleared and daemon spawned; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // Follow-up start must see a healthy daemon → exit 3 (SC-3).
+    let out2 = env
+        .cmd()
+        .args(["daemon", "start"])
+        .output()
+        .expect("daemon start again");
+    assert_eq!(
+        out2.status.code(),
+        Some(3),
+        "repaired daemon should answer probe → ALREADY_IN_STATE; stderr={}",
+        String::from_utf8_lossy(&out2.stderr),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TS-17 (SC-25) — `logs --lines N` caps output; `logs -f` streams new lines.
 // ---------------------------------------------------------------------------
 

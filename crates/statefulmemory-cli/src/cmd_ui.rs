@@ -56,12 +56,10 @@ pub async fn dispatch(project_flag: Option<String>, args: &UiArgs) -> ExitCode {
     };
 
     let socket = statefulmemory_core::paths::socket_path();
-    if !socket.exists() {
-        let cfg = default_autospawn_config();
-        if let Err(e) = crate::autospawn::ensure_running(cfg).await {
-            eprintln!("statefulmemory: {e}");
-            return ExitCode::from(e.exit_code());
-        }
+    let cfg = default_autospawn_config();
+    if let Err(e) = crate::autospawn::ensure_running(&cfg).await {
+        eprintln!("statefulmemory: {e}");
+        return ExitCode::from(e.exit_code());
     }
     let channel = match channel::connect_uds(&socket) {
         Ok(c) => c,
