@@ -14,7 +14,7 @@ on:
           - full
           - smoke
       judge:
-        description: "Scoring — lexical = retrieval-only (free), llm = agent answer + LLM judge (needs GEMINI_API_KEY secret, hybrid+rerank)"
+        description: "Scoring — lexical = retrieval-only (free), llm = agent answer + LLM judge (needs OPENAI_API_KEY secret, hybrid+rerank)"
         type: choice
         default: lexical
         options:
@@ -61,21 +61,21 @@ jobs:
         if: inputs.dataset != 'smoke'
         run: make eval-locomo-fetch
 
-      - name: Require GEMINI_API_KEY
+      - name: Require OPENAI_API_KEY
         if: inputs.judge == 'llm'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          if [ -z "${GEMINI_API_KEY}" ]; then
-            echo "::error::GEMINI_API_KEY secret not set — run: gh secret set GEMINI_API_KEY"
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "::error::OPENAI_API_KEY secret not set — run: gh secret set OPENAI_API_KEY"
             exit 1
           fi
 
-      - name: Install Gemini CLI
+      - name: Install OpenCode CLI
         if: inputs.judge == 'llm'
         run: |
-          npm install -g @google/gemini-cli@0.60.0
-          gemini --version
+          npm install -g opencode-ai@1.18.32
+          opencode --version
 
       - name: Cache BGE-small model
         if: inputs.dataset != 'smoke'
@@ -90,7 +90,7 @@ jobs:
 
       # facts.db (23 MB, gitignored) — restore keyed on the dataset file so
       # the LLM run uses the same fact-augmented retrieval as local measure
-      # cards; first miss extracts once with the same Gemini key.
+      # cards; first miss extracts once with the same OpenAI key.
       - name: Restore LoCoMo facts.db
         if: inputs.judge == 'llm' && inputs.dataset != 'smoke'
         id: facts-cache
@@ -105,11 +105,10 @@ jobs:
       - name: Extract LoCoMo facts (cache miss)
         if: inputs.judge == 'llm' && inputs.dataset != 'smoke' && steps.facts-cache.outputs.cache-hit != 'true'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_CLI_TRUST_WORKSPACE: "true"
-          STATEFULMEMORY_LLM_PROVIDER: gemini
-          STATEFULMEMORY_LLM_BIN: gemini
-          STATEFULMEMORY_LLM_MODEL: gemini-2.5-flash
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STATEFULMEMORY_LLM_PROVIDER: opencode
+          STATEFULMEMORY_LLM_BIN: opencode
+          STATEFULMEMORY_LLM_MODEL: openai/gpt-4o-mini
         run: make eval-locomo-extract
 
       # Retrieval-level scorecard: --lexical-judge needs no agent CLI / LLM
@@ -144,18 +143,17 @@ jobs:
           cat ./eval/scorecard.json
 
       # LLM path: hybrid + LLM rerank + agent answer + LLM judge, all through
-      # gemini-2.5-flash (explicit STATEFULMEMORY_LLM_MODEL wins over roles —
-      # answer-capable, judge/rerank/extract-fast all pin to flash).
+      # openai/gpt-4o-mini (Engram peer parity; explicit STATEFULMEMORY_LLM_MODEL
+      # wins over roles — answer/judge/rerank/extract all pin to the same model).
       - name: Run benchmark (LLM judge)
         if: inputs.judge == 'llm'
         env:
           STATEFULMEMORY_EVAL_DATA: ${{ github.workspace }}/data
-          STATEFULMEMORY_LLM_PROVIDER: gemini
-          STATEFULMEMORY_LLM_BIN: gemini
-          STATEFULMEMORY_LLM_MODEL: gemini-2.5-flash
+          STATEFULMEMORY_LLM_PROVIDER: opencode
+          STATEFULMEMORY_LLM_BIN: opencode
+          STATEFULMEMORY_LLM_MODEL: openai/gpt-4o-mini
           STATEFULMEMORY_EVAL_CONCURRENCY: "4"
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_CLI_TRUST_WORKSPACE: "true"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
