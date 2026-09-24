@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use statefulmemory_proto::{DaemonStatusRequest, ShutdownRequest};
+use statefulmemory_proto::{DaemonStatusRequest, ExportMemRequest, ShutdownRequest};
 use statefulmemory_tests::{CliEnv, TcpDaemon};
 use serde_json::Value;
 
@@ -208,6 +208,63 @@ async fn ts15c_tcp_non_admin_daemon_stop_permission_denied() {
         tonic::Code::PermissionDenied,
         "expected PERMISSION_DENIED for non-admin Shutdown; got: {err:?}",
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ts15d_tcp_export_rejects_path_outside_roots() {
+    let dir = tempfile::TempDir::new().unwrap();
+    TcpDaemon::pre_seed_token(dir.path(), "admin-1", ADMIN_TOKEN, true);
+    let d = TcpDaemon::spawn(dir);
+    let channel = statefulmemory_client::channel::connect_tcp(&d.endpoint(), &d.ca_pem, "localhost")
+        .await
+        .expect("tcp channel");
+    let interceptor =
+        statefulmemory_client::interceptor::bearer_interceptor(ADMIN_TOKEN.to_string());
+    let mut client =
+        statefulmemory_client::StatefulMemoryClient::with_interceptor(channel, interceptor);
+    let outside = std::env::temp_dir().join(format!(
+        "statefulmemory-outside-{}.mem",
+        uuid::Uuid::new_v4()
+    ));
+    let err = client
+        .export_mem(ExportMemRequest {
+            project_name: "unrelated".into(),
+            file: outside.to_string_lossy().into_owned(),
+            seed_phrase: None,
+        })
+        .await
+        .expect_err("outside export path should be denied");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied, "{err:?}");
+    assert!(!outside.exists());
+}
+
+#[test]
+fn uds_mem_export_allows_local_path_without_auth_setup() {
+    let mut env = CliEnv::new();
+    env.spawn_daemon();
+    let outside = std::env::temp_dir().join(format!(
+        "statefulmemory-local-{}.mem",
+        uuid::Uuid::new_v4()
+    ));
+    let outside_s = outside.to_string_lossy().into_owned();
+    let out = env
+        .cmd()
+        .args([
+            "--output",
+            "json",
+            "mem",
+            "export",
+            "--out",
+            outside_s.as_str(),
+        ])
+        .output()
+        .expect("local mem export");
+    assert!(
+        out.status.success(),
+        "local export failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(outside.exists());
 }
 
 // ---------------------------------------------------------------------------

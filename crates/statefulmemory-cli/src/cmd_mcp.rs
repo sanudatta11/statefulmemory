@@ -26,8 +26,14 @@ pub async fn dispatch(project_flag: Option<String>) -> ExitCode {
         }
     };
 
-    let detection = match project_detect::detect_in(&cwd, env_override, cli_override) {
-        Ok(d) => d,
+    let project = match project_detect::detect_in(&cwd, env_override, cli_override) {
+        Ok(d) => d.normalized,
+        Err(project_detect::DetectError::Ambiguous) => {
+            eprintln!(
+                "statefulmemory mcp: project is ambiguous; using default for health diagnostics; pass --project or STATEFULMEMORY_PROJECT for scoped tools"
+            );
+            "default".to_string()
+        }
         Err(e) => {
             eprintln!("statefulmemory mcp: {e}");
             return ExitCode::from(e.exit_code());
@@ -40,11 +46,19 @@ pub async fn dispatch(project_flag: Option<String>) -> ExitCode {
     // Always ensure — probe detects/clears a stale socket and respawns.
     // Best-effort: if it fails we still start the server so the agent can
     // call memory_health to diagnose (do not abort).
-    if let Err(e) = autospawn::ensure_running(&cfg).await {
-        eprintln!(
-            "statefulmemory mcp: daemon auto-spawn failed ({e}); starting anyway — \
-             use the memory_health tool to diagnose"
-        );
+    match autospawn::ensure_running(&cfg).await {
+        Ok(_) if !autospawn::probe(&socket).await => {
+            eprintln!(
+                "statefulmemory mcp: daemon socket appeared but health probe failed; starting anyway — use memory_health to diagnose"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "statefulmemory mcp: daemon auto-spawn failed ({e}); starting anyway — \
+                 use the memory_health tool to diagnose"
+            );
+        }
     }
 
     // Fallback client identity used when MCP initialize has not supplied
@@ -57,7 +71,7 @@ pub async fn dispatch(project_flag: Option<String>) -> ExitCode {
     let recover: Arc<dyn statefulmemory_mcp::client::Recovery> =
         Arc::new(statefulmemory_mcp::EnsureRecovery::new(cfg));
 
-    match statefulmemory_mcp::serve(socket, detection.normalized, client_info, Some(recover))
+    match statefulmemory_mcp::serve(socket, project, client_info, Some(recover))
         .await
     {
         Ok(()) => ExitCode::SUCCESS,

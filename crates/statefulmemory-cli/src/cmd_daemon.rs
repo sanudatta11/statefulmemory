@@ -31,7 +31,10 @@ pub fn default_autospawn_config() -> AutoSpawnConfig {
     let socket = statefulmemory_core::paths::socket_path();
     let lock = statefulmemory_core::paths::lock_path();
     let log = statefulmemory_core::paths::log_path();
-    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("statefulmemory"));
+    let binary = statefulmemory_core::paths::managed_statefulmemory_path()
+        .filter(|path| path.is_file())
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("statefulmemory"));
     AutoSpawnConfig::defaults(socket, lock, binary, log)
 }
 

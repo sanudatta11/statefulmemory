@@ -87,6 +87,8 @@ pub struct FactsHybridResult {
     /// Number of fact rows considered before scoring (sum of BM25 + ANN +
     /// entity-boosted ids).
     pub candidates_considered: usize,
+    pub candidate_fact_ids: Vec<i64>,
+    pub candidate_observation_ids: Vec<u64>,
     /// Score delta between rank-1 and rank-2 after fusion + quality
     /// modifiers. Used by the runner to gate the LLM rerank call —
     /// when this is large the top hit is unambiguous and rerank is a
@@ -179,6 +181,8 @@ pub async fn retrieve_facts(
             hits: Vec::new(),
             latency: t0.elapsed(),
             candidates_considered: 0,
+            candidate_fact_ids: Vec::new(),
+            candidate_observation_ids: Vec::new(),
             top2_delta: None,
         });
     }
@@ -265,6 +269,14 @@ pub async fn retrieve_facts(
     // 7. Fetch the top-k fact rows preserving rank order.
     let fetched_facts =
         fetch_facts_by_ids(facts_db_path, &top_k_ids).context("fetch facts by id")?;
+    let mut seen_observations = HashSet::new();
+    let candidate_observation_ids = fetched_facts
+        .iter()
+        .filter_map(|(_, _, _, _, _, observation_id)| {
+            let id = *observation_id as u64;
+            seen_observations.insert(id).then_some(id)
+        })
+        .collect::<Vec<_>>();
 
     // 8. Open the storage project DB read-only ONCE for evidence expansion.
     let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
@@ -336,6 +348,8 @@ pub async fn retrieve_facts(
         hits: formatted,
         latency: t0.elapsed(),
         candidates_considered,
+        candidate_fact_ids: top_k_ids.iter().map(|id| *id as i64).collect(),
+        candidate_observation_ids,
         top2_delta,
     })
 }

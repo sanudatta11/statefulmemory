@@ -12,6 +12,7 @@
 //! detect.
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,12 +31,11 @@ use statefulmemory_storage::{
     models::{Observation, Prompt, Session},
     projects_admin, prompts as prompts_q, read as read_q, sessions as sessions_q, stats as stats_q,
     write::{ObservationKey, ObservationPatch, PromptKey, SaveObservationInput, WriteRequest},
-    GlobalDb, ProjectRegistry, ProjectState,
+    GlobalDb, NewJob, ProjectRegistry, ProjectState,
 };
 
 use statefulmemory_embed::Embedder;
 
-use crate::admin_guard;
 use crate::error_map::map;
 use crate::tokens::{TokenMeta, TokenStore};
 
@@ -45,6 +45,7 @@ pub struct DaemonState {
     pub registry: Arc<ProjectRegistry>,
     pub disk_monitor: DiskMonitor,
     pub token_store: Option<Arc<TokenStore>>,
+    pub auth_required: bool,
     /// Counted once per RPC entry, decremented on exit.
     pub in_flight: Arc<AtomicU64>,
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -105,6 +106,286 @@ pub struct DaemonState {
     pub laya: Option<std::sync::Arc<crate::laya::LayaClient>>,
 }
 
+impl DaemonState {
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn resolve_user_path(
+        &self,
+        project: &ProjectState,
+        raw: &str,
+        must_exist: bool,
+    ) -> Result<PathBuf, Status> {
+        if raw.trim().is_empty() {
+            return Err(Status::invalid_argument("path is required"));
+        }
+        let requested = PathBuf::from(raw);
+        if !self.auth_required {
+            return Ok(requested);
+        }
+        let candidate = canonicalize_candidate(&requested).map_err(|e| {
+            Status::invalid_argument(format!("invalid path '{}': {e}", requested.display()))
+        })?;
+        if must_exist {
+            if !candidate.is_file() {
+                return Err(Status::invalid_argument(format!(
+                    "path '{}' is not a file",
+                    candidate.display()
+                )));
+            }
+        } else if candidate.is_dir() {
+            return Err(Status::invalid_argument(format!(
+                "path '{}' is a directory",
+                candidate.display()
+            )));
+        }
+
+        let mut roots = vec![statefulmemory_core::paths::data_dir()];
+        if let Some(repo) = self
+            .registry
+            .get_repo_path(&project.display_name)
+            .map_err(crate::error_map::to_status)?
+        {
+            roots.push(repo);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            if statefulmemory_core::git::is_repo(&cwd) {
+                roots.push(cwd);
+            }
+        }
+        for root in roots {
+            let Ok(root) = root.canonicalize() else {
+                continue;
+            };
+            if candidate == root || candidate.starts_with(&root) {
+                return Ok(candidate);
+            }
+        }
+        Err(Status::permission_denied(format!(
+            "path '{}' is outside approved export/import roots",
+            candidate.display()
+        )))
+    }
+
+    pub(crate) async fn refresh_observation_projections(
+        &self,
+        project: &Arc<ProjectState>,
+        obs: &Observation,
+        reextract: bool,
+        reindex_graph: bool,
+    ) {
+        self.search_cache.invalidate_project(&project.display_name);
+        if let Some(anchor) = obs
+            .code_anchor
+            .as_deref()
+            .filter(|anchor| !anchor.trim().is_empty())
+        {
+            let repo = self
+                .registry
+                .get_repo_path(&project.display_name)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    let cwd = std::env::current_dir().ok()?;
+                    statefulmemory_core::git::is_repo(&cwd).then_some(cwd)
+                });
+            if let Err(e) = stamp_observation_anchors(
+                project,
+                repo.as_deref(),
+                obs.id,
+                &[anchor.to_string()],
+            )
+            .await
+            {
+                tracing::warn!(error = %e, obs_id = obs.id, "anchor refresh failed");
+            }
+        }
+        if let Some(global) = &self.global_db {
+            let mut guard = global.lock();
+            if let Err(e) = guard.upsert_observation(&project.display_name, obs) {
+                tracing::warn!(
+                    error = %e,
+                    project = %project.display_name,
+                    obs_id = obs.id,
+                    "global mirror refresh failed"
+                );
+            }
+        }
+        let embed_pool = self.embed_pool.read().clone();
+        if let Some(pool) = embed_pool.as_ref() {
+            let task = crate::embed_worker::EmbedTask {
+                project_name: project.display_name.clone(),
+                obs_id: obs.id,
+                title: obs.title.clone(),
+                content: obs.content.clone(),
+            };
+            let queued = pool.try_queue(task.clone());
+            if !matches!(queued, crate::embed_worker::QueueResult::Queued) {
+                let payload = serde_json::to_string(&serde_json::json!({
+                    "project_name": task.project_name,
+                    "obs_id": task.obs_id,
+                    "title": task.title,
+                    "content": task.content,
+                }))
+                .unwrap_or_else(|_| "{}".into());
+                self.persist_job(
+                    project,
+                    "embed",
+                    Some(task.obs_id),
+                    format!("embed:{}", task.obs_id),
+                    payload,
+                );
+            }
+        }
+        if reextract {
+            if let Some(pool) = &self.extract_pool {
+                if crate::extract_worker::resolved_model_for(&project.display_name).is_some() {
+                    let task = crate::extract_worker::ExtractTask {
+                        project_name: project.display_name.clone(),
+                        obs_id: obs.id,
+                        title: obs.title.clone(),
+                        content: obs.content.clone(),
+                        session_id: Some(obs.session_id.clone()),
+                    };
+                    let queued = pool.try_queue(task.clone());
+                    if !matches!(queued, crate::extract_worker::QueueResult::Queued) {
+                        let payload = serde_json::to_string(&serde_json::json!({
+                            "project_name": task.project_name,
+                            "obs_id": task.obs_id,
+                            "title": task.title,
+                            "content": task.content,
+                            "session_id": task.session_id,
+                        }))
+                        .unwrap_or_else(|_| "{}".into());
+                        self.persist_job(
+                            project,
+                            "extract",
+                            Some(task.obs_id),
+                            format!("extract:{}", task.obs_id),
+                            payload,
+                        );
+                    }
+                }
+            }
+        }
+        if reindex_graph
+            && statefulmemory_core::config::load_resolved(Some(&project.display_name))
+                .graph
+                .enabled
+        {
+            let anchors = obs
+                .code_anchor
+                .as_deref()
+                .filter(|anchor| !anchor.trim().is_empty())
+                .map(|anchor| vec![anchor.to_string()])
+                .unwrap_or_default();
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            if let Err(e) = project.write.send(WriteRequest::IndexGraph {
+                observation_id: obs.id,
+                title: obs.title.clone(),
+                content: obs.content.clone(),
+                anchors,
+                created_at_epoch: created_at_epoch(&obs.created_at),
+                reply: reply_tx,
+            }) {
+                tracing::warn!(error = %e, obs_id = obs.id, "graph refresh enqueue failed");
+            } else if reply_rx.await.ok().and_then(Result::ok).is_none() {
+                tracing::warn!(obs_id = obs.id, "graph refresh write failed");
+            }
+        }
+    }
+
+    pub(crate) fn forget_observation(&self, project: &ProjectState, source_id: i64) {
+        self.search_cache.invalidate_project(&project.display_name);
+        if let Some(global) = &self.global_db {
+            let mut guard = global.lock();
+            if let Err(e) = guard.delete_observation(&project.display_name, source_id) {
+                tracing::warn!(
+                    error = %e,
+                    project = %project.display_name,
+                    obs_id = source_id,
+                    "global mirror delete failed"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn persist_job(
+        &self,
+        project: &ProjectState,
+        kind: &'static str,
+        observation_id: Option<i64>,
+        dedupe_key: String,
+        payload: String,
+    ) {
+        let write = project.write.clone();
+        let project_name = project.display_name.clone();
+        let job = NewJob {
+            kind: kind.to_string(),
+            project_name,
+            observation_id,
+            dedupe_key: Some(dedupe_key),
+            payload,
+            max_attempts: 5,
+        };
+        tokio::task::spawn_blocking(move || {
+            let (reply, receiver) = tokio::sync::oneshot::channel();
+            if let Err(error) = write.send(WriteRequest::EnqueueJob { job, reply }) {
+                tracing::warn!(error = %error, kind, "durable job enqueue failed");
+                return;
+            }
+            match receiver.blocking_recv() {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => tracing::warn!(error = %error, kind, "durable job write failed"),
+                Err(_) => tracing::warn!(kind, "durable job reply dropped"),
+            }
+        });
+    }
+}
+
+fn canonicalize_candidate(path: &Path) -> std::io::Result<PathBuf> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "parent path segments are not allowed",
+        ));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut missing = Vec::new();
+    let mut existing = absolute.as_path();
+    loop {
+        match existing.canonicalize() {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "path has no file name",
+                    )
+                })?;
+                missing.push(name.to_os_string());
+                existing = existing.parent().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "path has no parent",
+                    )
+                })?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StatefulMemoryService {
     pub state: Arc<DaemonState>,
@@ -142,30 +423,82 @@ impl StatefulMemoryService {
         project: &str,
         need_write: bool,
     ) -> Result<()> {
-        let Some(store) = &self.state.token_store else {
+        if !self.state.auth_required {
             return Ok(());
+        }
+        let Some(store) = &self.state.token_store else {
+            return Err(Error::internal("TCP auth mode requires token store"));
         };
-        if !store.project_is_gated(project)? {
+        let normalized = statefulmemory_core::project::normalize(project)?;
+        if !store.project_is_gated(&normalized)? {
             return Ok(());
         }
         let Some(auth) = auth else {
-            return Ok(());
+            return Err(Error::PermissionDenied(format!(
+                "project '{normalized}' requires an authenticated principal"
+            )));
         };
         if auth.is_admin {
             return Ok(());
         }
-        let role = store.grant_role(project, &auth.token_name)?;
+        let role = store.grant_role(&normalized, &auth.token_name)?;
         match role.as_deref() {
             Some("write") => Ok(()),
             Some("read") if !need_write => Ok(()),
             Some(_) => Err(Error::PermissionDenied(format!(
-                "principal '{}' has no write grant on project '{project}'",
+                "principal '{}' has no write grant on project '{normalized}'",
                 auth.token_name
             ))),
             None => Err(Error::PermissionDenied(format!(
-                "principal '{}' is not granted access to project '{project}'",
+                "principal '{}' is not granted access to project '{normalized}'",
                 auth.token_name
             ))),
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn authorize_project(
+        &self,
+        auth: Option<&crate::auth::AuthCtx>,
+        project: &str,
+        need_write: bool,
+    ) -> Result<(), Status> {
+        map(self.enforce_grant(auth, project, need_write))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn authorize_all_projects(
+        &self,
+        auth: Option<&crate::auth::AuthCtx>,
+        requested_project: &str,
+    ) -> Result<(), Status> {
+        self.authorize_project(auth, requested_project, false)?;
+        if !self.state.auth_required
+            || self.state.token_store.is_none()
+            || auth.is_some_and(|ctx| ctx.is_admin)
+        {
+            return Ok(());
+        }
+        let projects = map(ProjectRegistry::list_known_on_disk())?;
+        for (project, _) in projects {
+            self.authorize_project(auth, &project, false)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn authorize_admin<T>(&self, req: &Request<T>) -> Result<(), Status> {
+        if !self.state.auth_required {
+            return Ok(());
+        }
+        match req.extensions().get::<crate::auth::AuthCtx>() {
+            Some(ctx) if ctx.is_admin => Ok(()),
+            Some(_) => Err(Status::permission_denied(
+                "this RPC requires an admin bearer token",
+            )),
+            None => Err(Status::unauthenticated(
+                "this RPC requires authentication",
+            )),
         }
     }
 
@@ -267,8 +600,8 @@ impl StatefulMemoryService {
         project_name: &str,
         tier: crate::query_router::QueryTier,
     ) -> Result<Vec<Observation>> {
-        const RRF_DEPTH: i32 = 30;
-        const RRF_K: u32 = 60;
+        const RRF_DEPTH: i32 = statefulmemory_retrieval::hybrid::DEFAULT_CANDIDATE_DEPTH;
+        const RRF_K: u32 = statefulmemory_retrieval::hybrid::DEFAULT_RRF_K;
 
         let cfg = statefulmemory_core::config::load_resolved(Some(project_name));
         let decay_lambda = cfg.search.decay_lambda;
@@ -354,9 +687,8 @@ impl StatefulMemoryService {
 
         let bm25_ids: Vec<u64> = bm25_hits.iter().map(|o| o.id as u64).collect();
         let dense_ids: Vec<u64> = dense_hits.iter().map(|o| o.id as u64).collect();
-        let fused = statefulmemory_retrieval::facts_fuse::fuse_observation_lists_scored(
-            &[bm25_ids, dense_ids, fact_ids],
-            RRF_K,
+        let fused = statefulmemory_retrieval::hybrid::fuse_candidate_trace(
+            &bm25_ids, &dense_ids, &fact_ids, RRF_K,
         );
 
         let mut by_id: std::collections::HashMap<i64, Observation> =
@@ -366,15 +698,16 @@ impl StatefulMemoryService {
         }
 
         let mut scored: Vec<(Observation, f64)> = fused
+            .candidates
             .into_iter()
-            .filter_map(|(id, score)| {
-                let oid = id as i64;
+            .filter_map(|candidate| {
+                let oid = candidate.id as i64;
                 let o = if let Some(o) = by_id.remove(&oid) {
                     o
                 } else {
                     read_q::get(conn, &ObservationKey::Id(oid)).ok()?
                 };
-                Some((o, score))
+                Some((o, candidate.rrf_score))
             })
             .collect();
 
@@ -462,10 +795,6 @@ impl StatefulMemoryService {
         }
         let cfg = statefulmemory_core::config::load_resolved(None);
         let timeout = std::time::Duration::from_secs(cfg.rerank.timeout_secs.max(1));
-        let reranker = statefulmemory_retrieval::rerank::ClaudeReranker::with_model_id(
-            self.state.claude_client.clone(),
-            model_id,
-        );
         let candidates: Vec<String> = hits
             .iter()
             .map(|o| {
@@ -478,25 +807,21 @@ impl StatefulMemoryService {
             })
             .collect();
 
-        let top_k = hits.len();
-        let fut = async {
-            use statefulmemory_retrieval::rerank::Reranker;
-            reranker.rerank(&candidates, query, top_k).await
-        };
-
-        let rerank_result = tokio::time::timeout(timeout, fut).await;
-
-        let reordered: Vec<String> = match rerank_result {
-            Ok(Ok((reranked, _dur))) => reranked,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, model, "rerank failed — returning hybrid order");
-                return hits;
-            }
-            Err(_) => {
-                tracing::warn!(model, "rerank timed out — returning hybrid order");
-                return hits;
-            }
-        };
+        let top_k = cfg.rerank.top_n.max(1) as usize;
+        let bounded = statefulmemory_retrieval::rerank::rerank_with_budget_model(
+            self.state.claude_client.clone(),
+            &candidates,
+            query,
+            top_k,
+            model_id,
+            timeout,
+            top_k,
+        )
+        .await;
+        if bounded.timed_out {
+            tracing::warn!(model, "rerank timed out — returning hybrid order");
+        }
+        let reordered = bounded.hits;
 
         let mut idx: std::collections::HashMap<String, usize> =
             std::collections::HashMap::with_capacity(candidates.len());
@@ -1153,23 +1478,8 @@ fn prompt_to_proto(p: Prompt) -> statefulmemory_proto::Prompt {
 }
 
 fn fact_parent_ids(conn: &rusqlite::Connection, query: &str, limit: i64) -> Vec<u64> {
-    let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM facts", [], |r| r.get(0))
-        .unwrap_or(0);
-    if n == 0 {
-        return Vec::new();
-    }
-    match facts_q::search_facts(conn, query, limit) {
-        Ok(facts) => {
-            let mut ids = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for f in facts {
-                if seen.insert(f.obs_id) {
-                    ids.push(f.obs_id as u64);
-                }
-            }
-            ids
-        }
+    match facts_q::search_observation_ids(conn, query, limit) {
+        Ok(ids) => ids,
         Err(e) => {
             tracing::debug!(error = %e, "facts search skipped");
             Vec::new()
@@ -1198,7 +1508,9 @@ impl StatefulMemory for StatefulMemoryService {
         &self,
         req: Request<statefulmemory_proto::ListEntitiesRequest>,
     ) -> Result<Response<statefulmemory_proto::ListEntitiesResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let mut entities =
@@ -1221,7 +1533,9 @@ impl StatefulMemory for StatefulMemoryService {
         &self,
         req: Request<statefulmemory_proto::GetEntityRequest>,
     ) -> Result<Response<statefulmemory_proto::GetEntityResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let entity = map(graph_q::get_entity_by_id(&conn, r.id))?;
@@ -1234,7 +1548,9 @@ impl StatefulMemory for StatefulMemoryService {
         &self,
         req: Request<statefulmemory_proto::GraphQueryRequest>,
     ) -> Result<Response<statefulmemory_proto::GraphQueryResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let hops = r.hops.clamp(1, 2) as u8;
@@ -1285,8 +1601,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let scope = if r.scope.is_empty() {
             "project".into()
         } else {
@@ -1381,22 +1697,59 @@ impl StatefulMemory for StatefulMemoryService {
                 );
             }
         }
+        for old_id in &obs.superseded_ids {
+            self.state.forget_observation(&project, *old_id);
+        }
 
         // Queue async embed (and extract, if enabled) work after the
         // synchronous save commits — never on the critical path (SC-1).
         // Both pools `try_send`; full queue / disconnected pool drops the
         // task silently and logs.
         let mut warnings: Vec<String> = warnings_pending;
-        if let Some(pool) = self.state.embed_pool.read().as_ref() {
-            match pool.try_queue(crate::embed_worker::EmbedTask {
+        let embed_pool = self.state.embed_pool.read().clone();
+        if let Some(pool) = embed_pool.as_ref() {
+            let task = crate::embed_worker::EmbedTask {
                 project_name: r.project_name.clone(),
                 obs_id: obs.id,
                 title: obs.title.clone(),
                 content: obs.content.clone(),
-            }) {
-                crate::embed_worker::QueueResult::Dropped => warnings.push("embed_dropped".into()),
+            };
+            match pool.try_queue(task.clone()) {
+                crate::embed_worker::QueueResult::Dropped => {
+                    warnings.push("embed_dropped".into());
+                    let payload = serde_json::to_string(&serde_json::json!({
+                        "project_name": task.project_name,
+                        "obs_id": task.obs_id,
+                        "title": task.title,
+                        "content": task.content,
+                    }))
+                    .unwrap_or_else(|_| "{}".into());
+                    self.state
+                        .persist_job(
+                            &project,
+                            "embed",
+                            Some(task.obs_id),
+                            format!("embed:{}", task.obs_id),
+                            payload,
+                        );
+                }
                 crate::embed_worker::QueueResult::Disconnected => {
-                    warnings.push("embed_dropped".into())
+                    warnings.push("embed_dropped".into());
+                    let payload = serde_json::to_string(&serde_json::json!({
+                        "project_name": task.project_name,
+                        "obs_id": task.obs_id,
+                        "title": task.title,
+                        "content": task.content,
+                    }))
+                    .unwrap_or_else(|_| "{}".into());
+                    self.state
+                        .persist_job(
+                            &project,
+                            "embed",
+                            Some(task.obs_id),
+                            format!("embed:{}", task.obs_id),
+                            payload,
+                        );
                 }
                 crate::embed_worker::QueueResult::Queued => {}
             }
@@ -1404,25 +1757,39 @@ impl StatefulMemory for StatefulMemoryService {
         // Extract is opt-in: only queue when this project's resolved
         // config has extract.enabled = true. SC-7 guarantees zero LLM
         // calls otherwise.
-        if let Some(pool) = &self.state.extract_pool {
-            if crate::extract_worker::resolved_model_for(&r.project_name).is_some() {
-                match pool.try_queue(crate::extract_worker::ExtractTask {
-                    project_name: r.project_name.clone(),
-                    obs_id: obs.id,
-                    title: obs.title.clone(),
-                    content: obs.content.clone(),
-                    session_id: Some(obs.session_id.clone()),
-                }) {
-                    crate::extract_worker::QueueResult::Dropped => {
-                        warnings.push("extract_dropped".into())
+            if let Some(pool) = &self.state.extract_pool {
+                if crate::extract_worker::resolved_model_for(&r.project_name).is_some() {
+                    let task = crate::extract_worker::ExtractTask {
+                        project_name: r.project_name.clone(),
+                        obs_id: obs.id,
+                        title: obs.title.clone(),
+                        content: obs.content.clone(),
+                        session_id: Some(obs.session_id.clone()),
+                    };
+                    let queued = pool.try_queue(task.clone());
+                    if !matches!(queued, crate::extract_worker::QueueResult::Queued) {
+                        warnings.push("extract_dropped".into());
+                        let payload = serde_json::to_string(&serde_json::json!({
+                            "project_name": task.project_name,
+                            "obs_id": task.obs_id,
+                            "title": task.title,
+                            "content": task.content,
+                            "session_id": task.session_id,
+                        }))
+                        .unwrap_or_else(|_| "{}".into());
+                        self.state
+                            .persist_job(
+                                &project,
+                                "extract",
+                                Some(task.obs_id),
+                                format!("extract:{}", task.obs_id),
+                            payload,
+                        );
+
                     }
-                    crate::extract_worker::QueueResult::Disconnected => {
-                        warnings.push("extract_dropped".into())
-                    }
-                    crate::extract_worker::QueueResult::Queued => {}
                 }
             }
-        }
+
 
         if let Some(pool) = &self.state.resolve_pool {
             if let Ok(conn) = project.open_read_conn() {
@@ -1436,11 +1803,28 @@ impl StatefulMemory for StatefulMemoryService {
                         } else {
                             rel.source_id
                         };
-                        let _ = pool.try_queue(crate::resolve_worker::ResolveJob {
+                        let job = crate::resolve_worker::ResolveJob {
                             project: r.project_name.clone(),
                             old_id,
                             new_id: obs.id,
-                        });
+                        };
+                        let queued = pool.try_queue(job.clone());
+                        if !matches!(queued, crate::extract_worker::QueueResult::Queued) {
+                            let payload = serde_json::to_string(&serde_json::json!({
+                                "project": job.project,
+                                "old_id": job.old_id,
+                                "new_id": job.new_id,
+                            }))
+                            .unwrap_or_else(|_| "{}".into());
+                            self.state
+                                .persist_job(
+                                    &project,
+                                    "resolve",
+                                    Some(job.new_id),
+                                    format!("resolve:{}:{}", job.old_id, job.new_id),
+                                    payload,
+                                );
+                        }
                     }
                 }
             }
@@ -1499,7 +1883,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<GetObservationRequest>,
     ) -> Result<Response<GetObservationResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let key = match r.key {
             Some(get_observation_request::Key::Id(id)) => ObservationKey::Id(id),
@@ -1522,8 +1908,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let key = match r.key {
             Some(update_observation_request::Key::Id(id)) => ObservationKey::Id(id),
             Some(update_observation_request::Key::SyncId(s)) => ObservationKey::SyncId(s),
@@ -1544,6 +1930,9 @@ impl StatefulMemory for StatefulMemoryService {
             reply: tx,
         }))?;
         let obs = await_write_reply(rx).await?;
+        self.state
+            .refresh_observation_projections(&project, &obs, true, true)
+            .await;
         Ok(Response::new(UpdateObservationResponse {
             observation: Some(obs_to_proto(obs)),
         }))
@@ -1558,12 +1947,24 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let key = match r.key {
             Some(delete_observation_request::Key::Id(id)) => ObservationKey::Id(id),
             Some(delete_observation_request::Key::SyncId(s)) => ObservationKey::SyncId(s),
             None => return Err(Status::invalid_argument("missing observation key")),
+        };
+        let deleted_id = match &key {
+            ObservationKey::Id(id) => *id,
+            ObservationKey::SyncId(sync_id) => {
+                let conn = map(project.open_read_conn())?;
+                conn.query_row(
+                    "SELECT id FROM observations WHERE sync_id = ?1",
+                    rusqlite::params![sync_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| Status::not_found(format!("observation: {e}")))?
+            }
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let req = if r.hard {
@@ -1573,7 +1974,7 @@ impl StatefulMemory for StatefulMemoryService {
         };
         map(project.write.send(req))?;
         await_write_reply(rx).await?;
-        self.state.search_cache.invalidate_project(&r.project_name);
+        self.state.forget_observation(&project, deleted_id);
         Ok(Response::new(DeleteObservationResponse {}))
     }
 
@@ -1583,7 +1984,13 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<SearchObservationsRequest>,
     ) -> Result<Response<SearchObservationsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        if r.all_projects {
+            self.authorize_all_projects(auth_ctx.as_ref(), &r.project_name)?;
+        } else {
+            self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
+        }
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.limit == 0 {
             read_q::DEFAULT_LIMIT
@@ -1883,7 +2290,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<ListObservationsRequest>,
     ) -> Result<Response<ListObservationsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let cur = map(parse_cursor(&r.cursor))?;
         let limit = if r.limit == 0 {
@@ -1918,7 +2327,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<RecentObservationsRequest>,
     ) -> Result<Response<RecentObservationsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.limit == 0 {
             read_q::DEFAULT_LIMIT
@@ -1941,7 +2352,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<ContextRequest>,
     ) -> Result<Response<ContextResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.recent_limit <= 0 {
             10
@@ -2076,7 +2489,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<TimelineRequest>,
     ) -> Result<Response<TimelineResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let key = match r.anchor {
             Some(timeline_request::Anchor::Id(id)) => ObservationKey::Id(id),
@@ -2098,7 +2513,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<SuggestTopicKeyRequest>,
     ) -> Result<Response<SuggestTopicKeyResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let scope = if r.scope.is_empty() {
             "project".to_string()
@@ -2118,7 +2535,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<CapturePassiveRequest>,
     ) -> Result<Response<CapturePassiveResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         // CapturePassive is pure markdown parsing — no project DB access
         // needed, but we still validate the project name to give consistent
         // error shape across the surface.
@@ -2134,7 +2553,9 @@ impl StatefulMemory for StatefulMemoryService {
     ) -> Result<Response<DecideResponse>, Status> {
         let _g = self.enter_rpc();
         map(self.check_writeable())?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let inner = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &inner.project_name, true)?;
         let resp = crate::decide::handle(self, inner).await?;
         Ok(Response::new(resp))
     }
@@ -2145,7 +2566,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<GetFactsRequest>,
     ) -> Result<Response<GetFactsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let rows = map(facts_q::facts_for_obs(&conn, r.observation_id))?;
@@ -2159,7 +2582,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<GetObservationHistoryRequest>,
     ) -> Result<Response<GetObservationHistoryResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let entries = map(read_q::history_chain(&conn, r.observation_id))?;
@@ -2182,7 +2607,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<ReextractObservationsRequest>,
     ) -> Result<Response<ReextractObservationsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
 
         // Guard: extract must be enabled for this project.
@@ -2272,7 +2699,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<ReindexObservationsRequest>,
     ) -> Result<Response<ReindexObservationsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
 
         let embed_pool = {
@@ -2362,8 +2791,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
 
         let repo = map(self.state.registry.get_repo_path(&r.project_name))?
             .filter(|p| statefulmemory_core::git::is_repo(p))
@@ -2449,8 +2878,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         if r.id.trim().is_empty() {
             return Err(Status::invalid_argument("session id is required"));
         }
@@ -2493,8 +2922,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::EndSession {
             id: r.id,
@@ -2516,8 +2945,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         map(project.write.send(WriteRequest::SaveSessionSummary {
             id: r.id,
@@ -2536,7 +2965,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<GetSessionRequest>,
     ) -> Result<Response<GetSessionResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let s = map(sessions_q::get(&conn, &r.id))?;
@@ -2550,7 +2981,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<ListSessionsRequest>,
     ) -> Result<Response<ListSessionsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let cur = map(parse_cursor(&r.cursor))?;
         let limit = if r.limit == 0 { 10 } else { r.limit };
@@ -2574,8 +3007,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         // FR12.8: refuse if any active observation references the session.
         let conn = map(project.open_read_conn())?;
         if map(sessions_q::has_observations(&conn, &r.id))? {
@@ -2619,8 +3052,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let sync_id = r
             .sync_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -2643,7 +3076,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<SearchPromptsRequest>,
     ) -> Result<Response<SearchPromptsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.limit == 0 { 10 } else { r.limit };
         let conn = map(project.open_read_conn())?;
@@ -2659,7 +3094,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<RecentPromptsRequest>,
     ) -> Result<Response<RecentPromptsResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.limit == 0 { 10 } else { r.limit };
         let conn = map(project.open_read_conn())?;
@@ -2677,8 +3114,8 @@ impl StatefulMemory for StatefulMemoryService {
         map(self.check_writeable())?;
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
-        map(self.enforce_grant(auth_ctx.as_ref(), &r.project_name, true))?;
         let key = match r.key {
             Some(delete_prompt_request::Key::Id(id)) => PromptKey::Id(id),
             Some(delete_prompt_request::Key::SyncId(s)) => PromptKey::SyncId(s),
@@ -2696,9 +3133,10 @@ impl StatefulMemory for StatefulMemoryService {
 
     async fn list_projects(
         &self,
-        _req: Request<ListProjectsRequest>,
+        req: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
         let _g = self.enter_rpc();
+        self.authorize_admin(&req)?;
         let counts = map(projects_admin::list_projects_with_counts())?;
         let projects = counts
             .into_iter()
@@ -2749,6 +3187,7 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<MergeProjectsRequest>,
     ) -> Result<Response<MergeProjectsResponse>, Status> {
         let _g = self.enter_rpc();
+        self.authorize_admin(&req)?;
         map(self.check_writeable())?;
         let r = req.into_inner();
         if r.from == r.to {
@@ -2818,21 +3257,17 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<DeleteProjectRequest>,
     ) -> Result<Response<DeleteProjectResponse>, Status> {
         let _g = self.enter_rpc();
+        self.authorize_admin(&req)?;
         map(self.check_writeable())?;
-        // FR12.13: `--hard` is admin-only in TCP mode (FR7, EH-7).
-        // Capture auth context before consuming the request body.
-        let auth = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let inner = req.into_inner();
-        if inner.hard {
-            if let Some(ctx) = auth {
-                if !ctx.is_admin {
-                    return Err(Status::permission_denied(
-                        "DeleteProject --hard requires an admin bearer token",
-                    ));
-                }
+        let normalized = map(statefulmemory_core::project::normalize(&inner.project_name))?;
+        self.state.search_cache.invalidate_project(&normalized);
+        if let Some(global) = &self.state.global_db {
+            let mut guard = global.lock();
+            if let Err(e) = guard.clear_project(&normalized) {
+                tracing::warn!(error = %e, project = %normalized, "global mirror clear failed");
             }
         }
-        let normalized = map(statefulmemory_core::project::normalize(&inner.project_name))?;
         if inner.hard {
             map(projects_admin::hard_delete_project(&normalized))?;
         } else {
@@ -2844,9 +3279,10 @@ impl StatefulMemory for StatefulMemoryService {
 
     async fn consolidate_projects(
         &self,
-        _req: Request<ConsolidateProjectsRequest>,
+        req: Request<ConsolidateProjectsRequest>,
     ) -> Result<Response<ConsolidateProjectsResponse>, Status> {
         let _g = self.enter_rpc();
+        self.authorize_admin(&req)?;
         let pairs = map(projects_admin::consolidate_candidates(0.85))?;
         let candidates = pairs
             .into_iter()
@@ -2861,9 +3297,10 @@ impl StatefulMemory for StatefulMemoryService {
 
     async fn prune_projects(
         &self,
-        _req: Request<PruneProjectsRequest>,
+        req: Request<PruneProjectsRequest>,
     ) -> Result<Response<PruneProjectsResponse>, Status> {
         let _g = self.enter_rpc();
+        self.authorize_admin(&req)?;
         let names = map(projects_admin::prune_candidates())?;
         Ok(Response::new(PruneProjectsResponse {
             would_remove: names,
@@ -2877,7 +3314,7 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<CreateTokenRequest>,
     ) -> Result<Response<CreateTokenResponse>, Status> {
         let _g = self.enter_rpc();
-        admin_guard::require_admin(&req)?;
+        self.authorize_admin(&req)?;
         let r = req.into_inner();
         let store = self
             .state
@@ -2893,7 +3330,7 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<ListTokensRequest>,
     ) -> Result<Response<ListTokensResponse>, Status> {
         let _g = self.enter_rpc();
-        admin_guard::require_admin(&req)?;
+        self.authorize_admin(&req)?;
         let store = self
             .state
             .token_store
@@ -2916,7 +3353,7 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<RevokeTokenRequest>,
     ) -> Result<Response<RevokeTokenResponse>, Status> {
         let _g = self.enter_rpc();
-        admin_guard::require_admin(&req)?;
+        self.authorize_admin(&req)?;
         let r = req.into_inner();
         let store = self
             .state
@@ -2932,7 +3369,7 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<statefulmemory_proto::GrantProjectRequest>,
     ) -> Result<Response<statefulmemory_proto::GrantProjectResponse>, Status> {
         let _g = self.enter_rpc();
-        admin_guard::require_admin(&req)?;
+        self.authorize_admin(&req)?;
         let r = req.into_inner();
         if r.project.trim().is_empty() || r.principal.trim().is_empty() {
             return Err(Status::invalid_argument(
@@ -2944,7 +3381,8 @@ impl StatefulMemory for StatefulMemoryService {
             .token_store
             .as_ref()
             .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
-        map(store.grant(&r.project, &r.principal, &r.role))?;
+        let project = map(statefulmemory_core::project::normalize(&r.project))?;
+        map(store.grant(&project, &r.principal, &r.role))?;
         Ok(Response::new(statefulmemory_proto::GrantProjectResponse {}))
     }
 
@@ -2953,14 +3391,15 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<statefulmemory_proto::RevokeProjectGrantRequest>,
     ) -> Result<Response<statefulmemory_proto::RevokeProjectGrantResponse>, Status> {
         let _g = self.enter_rpc();
-        admin_guard::require_admin(&req)?;
+        self.authorize_admin(&req)?;
         let r = req.into_inner();
         let store = self
             .state
             .token_store
             .as_ref()
             .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
-        map(store.revoke_grant(&r.project, &r.principal))?;
+        let project = map(statefulmemory_core::project::normalize(&r.project))?;
+        map(store.revoke_grant(&project, &r.principal))?;
         Ok(Response::new(statefulmemory_proto::RevokeProjectGrantResponse {}))
     }
 
@@ -2969,7 +3408,7 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<statefulmemory_proto::ListProjectGrantsRequest>,
     ) -> Result<Response<statefulmemory_proto::ListProjectGrantsResponse>, Status> {
         let _g = self.enter_rpc();
-        admin_guard::require_admin(&req)?;
+        self.authorize_admin(&req)?;
         let store = self
             .state
             .token_store
@@ -3010,7 +3449,14 @@ impl StatefulMemory for StatefulMemoryService {
 
     async fn stats(&self, req: Request<StatsRequest>) -> Result<Response<StatsResponse>, Status> {
         let _g = self.enter_rpc();
+        if req.get_ref().project_name.is_none() {
+            self.authorize_admin(&req)?;
+        }
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        if let Some(project) = r.project_name.as_deref() {
+            self.authorize_project(auth_ctx.as_ref(), project, false)?;
+        }
         let mut out = Vec::new();
         let projects: Vec<String> = match r.project_name {
             Some(p) => vec![p],
@@ -3038,14 +3484,7 @@ impl StatefulMemory for StatefulMemoryService {
         &self,
         req: Request<ShutdownRequest>,
     ) -> Result<Response<ShutdownResponse>, Status> {
-        // Admin guard (FR2.3, EH-7) — checked by the auth interceptor for TCP.
-        // For UDS, no auth is required (already privileged by file mode 0600).
-        let auth = req.extensions().get::<crate::auth::AuthCtx>().cloned();
-        if let Some(ctx) = auth {
-            if !ctx.is_admin {
-                return Err(Status::permission_denied("Shutdown requires admin token"));
-            }
-        }
+        self.authorize_admin(&req)?;
         debug!("Shutdown RPC received; signalling event loop");
         let _ = self.state.shutdown_tx.send(true);
         Ok(Response::new(ShutdownResponse {}))
@@ -3058,8 +3497,10 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<SyncStatusRequest>,
     ) -> Result<Response<SyncStatusResponse>, Status> {
         let _guard = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         let project_name = r.project_name.as_deref().unwrap_or("default");
+        self.authorize_project(auth_ctx.as_ref(), project_name, false)?;
         let project = map(self.open_project(project_name))?;
         let resp = crate::sync_status::compute(&self.state, &project, &r).await?;
         Ok(Response::new(resp))
@@ -3070,43 +3511,61 @@ impl StatefulMemory for StatefulMemoryService {
     ) -> Result<Response<SyncExportResponse>, Status> {
         let _guard = self.enter_rpc();
         map(self.check_writeable())?;
-        let resp = crate::sync_export::handle(&self.state, req.into_inner()).await?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
+        let resp = crate::sync_export::handle(&self.state, r).await?;
         Ok(Response::new(resp))
     }
     async fn sync_import(
         &self,
-        _req: Request<SyncImportRequest>,
+        req: Request<SyncImportRequest>,
     ) -> Result<Response<SyncImportResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         Err(Status::unimplemented(
             "SyncImport: implemented in spec-task-5",
         ))
     }
     async fn sync_export_json(
         &self,
-        _req: Request<SyncExportJsonRequest>,
+        req: Request<SyncExportJsonRequest>,
     ) -> Result<Response<SyncExportJsonResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         Err(Status::unimplemented(
             "SyncExportJson: implemented in Spec 3",
         ))
     }
     async fn sync_import_json(
         &self,
-        _req: Request<SyncImportJsonRequest>,
+        req: Request<SyncImportJsonRequest>,
     ) -> Result<Response<SyncImportJsonResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         Err(Status::unimplemented(
             "SyncImportJson: implemented in Spec 3",
         ))
     }
     async fn sync_export_md(
         &self,
-        _req: Request<SyncExportMdRequest>,
+        req: Request<SyncExportMdRequest>,
     ) -> Result<Response<SyncExportMdResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         Err(Status::unimplemented("SyncExportMd: implemented in Spec 3"))
     }
     async fn sync_import_md(
         &self,
-        _req: Request<SyncImportMdRequest>,
+        req: Request<SyncImportMdRequest>,
     ) -> Result<Response<SyncImportMdResponse>, Status> {
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         Err(Status::unimplemented("SyncImportMd: implemented in Spec 3"))
     }
 
@@ -3116,7 +3575,10 @@ impl StatefulMemory for StatefulMemoryService {
     ) -> Result<Response<ExportMemResponse>, Status> {
         let _guard = self.enter_rpc();
         map(self.check_writeable())?;
-        let resp = crate::mem_export::handle(&self.state, req.into_inner()).await?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
+        let resp = crate::mem_export::handle(&self.state, r).await?;
         Ok(Response::new(resp))
     }
 
@@ -3126,7 +3588,10 @@ impl StatefulMemory for StatefulMemoryService {
     ) -> Result<Response<ImportMemResponse>, Status> {
         let _guard = self.enter_rpc();
         map(self.check_writeable())?;
-        let resp = crate::mem_import::handle(&self.state, req.into_inner()).await?;
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
+        let resp = crate::mem_import::handle(&self.state, r).await?;
         Ok(Response::new(resp))
     }
 
@@ -3135,7 +3600,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<GetObservationRelationsRequest>,
     ) -> Result<Response<GetObservationRelationsResponse>, Status> {
         let _guard = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let inner = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &inner.project_name, false)?;
         let project = map(self.open_project(&inner.project_name))?;
         let conn = map(project.open_read_conn())?;
         let rels = map(statefulmemory_storage::relations::get_relations_for_observation(
@@ -3162,8 +3629,16 @@ impl StatefulMemory for StatefulMemoryService {
 
     async fn doctor(
         &self,
-        _req: Request<DoctorRequest>,
+        req: Request<DoctorRequest>,
     ) -> Result<Response<DoctorResponse>, Status> {
+        if req.get_ref().project_name.is_none() {
+            self.authorize_admin(&req)?;
+        }
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
+        let r = req.into_inner();
+        if let Some(project) = r.project_name.as_deref() {
+            self.authorize_project(auth_ctx.as_ref(), project, r.auto_repair)?;
+        }
         Err(Status::unimplemented("Doctor: implemented in Spec 4"))
     }
 
@@ -3172,7 +3647,9 @@ impl StatefulMemory for StatefulMemoryService {
         req: Request<statefulmemory_proto::DreamScanRequest>,
     ) -> Result<Response<statefulmemory_proto::DreamScanResponse>, Status> {
         let _g = self.enter_rpc();
+        let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
+        self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let conn = map(project.open_read_conn())?;
         let scanned_len = {
@@ -3258,6 +3735,82 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+
+    fn auth_test_service(
+        dir: &std::path::Path,
+        auth_required: bool,
+    ) -> (StatefulMemoryService, Arc<TokenStore>) {
+        let store = Arc::new(TokenStore::open(dir.join("tokens.db")).unwrap());
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+        let state = Arc::new(DaemonState {
+            registry: Arc::new(ProjectRegistry::new(8, 32, Duration::from_millis(1))),
+            disk_monitor: DiskMonitor::new(),
+            token_store: Some(store.clone()),
+            auth_required,
+            in_flight: Arc::new(AtomicU64::new(0)),
+            started_at: chrono::Utc::now(),
+            shutdown_tx,
+            max_content_chars: 1_000_000,
+            dedupe_window: Duration::from_secs(60),
+            export_mutexes: Arc::new(Mutex::new(HashMap::new())),
+            last_sync_errors: Arc::new(Mutex::new(HashMap::new())),
+            last_export_at: Arc::new(Mutex::new(HashMap::new())),
+            global_db: None,
+            embed_pool: Arc::new(parking_lot::RwLock::new(None)),
+            query_embedder: Arc::new(parking_lot::RwLock::new(None)),
+            extract_pool: None,
+            claude_client: Arc::new(statefulmemory_extract::claude_cli::ClaudeCliClient::new()),
+            resolve_pool: None,
+            verify_pool: None,
+            search_cache: Arc::new(crate::search_cache::SearchCache::default()),
+            query_vec_cache: Arc::new(Mutex::new(HashMap::new())),
+            laya: None,
+        });
+        (StatefulMemoryService::new(state), store)
+    }
+
+    #[test]
+    fn uds_auth_bypass_preserves_gated_project_access() {
+        let dir = TempDir::new().unwrap();
+        let (service, store) = auth_test_service(dir.path(), false);
+        store.grant("proj", "alice", "read").unwrap();
+        let auth = crate::auth::AuthCtx {
+            token_name: "alice".into(),
+            is_admin: false,
+        };
+        assert!(service.enforce_grant(Some(&auth), "PROJ", false).is_ok());
+        assert!(service.enforce_grant(None, "proj", true).is_ok());
+    }
+
+    #[test]
+    fn tcp_gated_project_requires_matching_principal() {
+        let dir = TempDir::new().unwrap();
+        let (service, store) = auth_test_service(dir.path(), true);
+        store.grant("proj", "alice", "read").unwrap();
+        let alice = crate::auth::AuthCtx {
+            token_name: "alice".into(),
+            is_admin: false,
+        };
+        let bob = crate::auth::AuthCtx {
+            token_name: "bob".into(),
+            is_admin: false,
+        };
+        let admin = crate::auth::AuthCtx {
+            token_name: "root".into(),
+            is_admin: true,
+        };
+        assert!(service.enforce_grant(Some(&alice), "PROJ", false).is_ok());
+        assert!(matches!(
+            service.enforce_grant(Some(&alice), "proj", true),
+            Err(Error::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            service.enforce_grant(Some(&bob), "proj", false),
+            Err(Error::PermissionDenied(_))
+        ));
+        assert!(service.enforce_grant(None, "proj", false).is_err());
+        assert!(service.enforce_grant(Some(&admin), "proj", true).is_ok());
+    }
 
     #[test]
     fn create_token_returns_distinct_hash() {

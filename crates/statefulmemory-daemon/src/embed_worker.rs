@@ -18,7 +18,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 use tokio::sync::oneshot;
 
 use statefulmemory_embed::{BgeSmallEmbedder, Embedder};
@@ -29,7 +29,7 @@ use statefulmemory_storage::ProjectRegistry;
 /// One unit of embed work queued by `service::save_observation` after the
 /// synchronous save commits. Owns the title + content text so workers don't
 /// hold any borrows on the request lifetime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmbedTask {
     pub project_name: String,
     pub obs_id: i64,
@@ -101,24 +101,98 @@ fn run_loop(
     embedder: Arc<BgeSmallEmbedder>,
     registry: Arc<ProjectRegistry>,
 ) {
-    while let Ok(task) = rx.recv() {
-        match process_with_retry(&task, &embedder, &registry, &RETRY_BACKOFFS) {
-            Ok(()) => {
-                tracing::trace!(obs_id = task.obs_id, project = %task.project_name, "embed landed");
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(task) => process_queued_task(&task, &embedder, &registry),
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(error) = recover_one(&embedder, &registry) {
+                    tracing::debug!(error = %error, "durable embed recovery poll failed");
+                }
             }
-            Err(e) => {
-                // SC-11: embed failures must not surface to the save call;
-                // log and drop after exhausting the retry budget.
-                tracing::warn!(
-                    obs_id = task.obs_id,
-                    project = %task.project_name,
-                    error = %e,
-                    "embed task failed after {} retries; observation searchable via BM25 only",
-                    RETRY_BACKOFFS.len(),
-                );
-            }
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+fn process_queued_task(
+    task: &EmbedTask,
+    embedder: &BgeSmallEmbedder,
+    registry: &ProjectRegistry,
+) {
+    match process_with_retry(task, embedder, registry, &RETRY_BACKOFFS) {
+        Ok(()) => {
+            tracing::trace!(obs_id = task.obs_id, project = %task.project_name, "embed landed");
+        }
+        Err(error) => {
+            tracing::warn!(
+                obs_id = task.obs_id,
+                project = %task.project_name,
+                error = %error,
+                "embed task failed after {} retries; observation searchable via BM25 only",
+                RETRY_BACKOFFS.len(),
+            );
+        }
+    }
+}
+
+fn recover_one(
+    embedder: &BgeSmallEmbedder,
+    registry: &ProjectRegistry,
+) -> anyhow::Result<()> {
+    let projects = ProjectRegistry::list_known_on_disk()?;
+    for (_name, config) in projects {
+        let project = registry.get_or_open(&config.project_display_name)?;
+        let (reply, receiver) = oneshot::channel();
+        project.write.send(WriteRequest::ClaimJob {
+            kind: "embed".into(),
+            reply,
+        })?;
+        let Some(job) = receiver.blocking_recv()?? else {
+            continue;
+        };
+        let task = match serde_json::from_str::<EmbedTask>(&job.payload) {
+            Ok(task) => task,
+            Err(error) => {
+                fail_job(registry, &job.project_name, job.id, &error.to_string())?;
+                continue;
+            }
+        };
+        match process_with_retry(&task, embedder, registry, &RETRY_BACKOFFS) {
+            Ok(()) => complete_job(registry, &job.project_name, job.id)?,
+            Err(error) => fail_job(registry, &job.project_name, job.id, &error.to_string())?,
+        }
+    }
+    Ok(())
+}
+
+fn complete_job(
+    registry: &ProjectRegistry,
+    project_name: &str,
+    id: i64,
+) -> anyhow::Result<()> {
+    let project = registry.get_or_open(project_name)?;
+    let (reply, receiver) = oneshot::channel();
+    project.write.send(WriteRequest::CompleteJob { id, reply })?;
+    receiver.blocking_recv()??;
+    Ok(())
+}
+
+fn fail_job(
+    registry: &ProjectRegistry,
+    project_name: &str,
+    id: i64,
+    error: &str,
+) -> anyhow::Result<()> {
+    let project = registry.get_or_open(project_name)?;
+    let (reply, receiver) = oneshot::channel();
+    project.write.send(WriteRequest::FailJob {
+        id,
+        error: error.to_string(),
+        retry_delay_secs: 30,
+        reply,
+    })?;
+    receiver.blocking_recv()??;
+    Ok(())
 }
 
 /// Exponential backoff schedule for transient embed failures. Three retries

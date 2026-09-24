@@ -269,6 +269,15 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     let selected = &selection.selected;
     let mut installed: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut mcp_failed = false;
+
+    match crate::mcp_install::ensure_managed_launcher() {
+        Ok(path) => installed.push(format!("MCP launcher          {}", path.display())),
+        Err(e) => {
+            mcp_failed = true;
+            eprintln!("  warn: managed MCP launcher unavailable: {e}");
+        }
+    }
 
     // ── /usr/local/bin symlink ──────────────────────────────────────────────
     // GUI apps (Windsurf, Cursor, etc.) don't inherit ~/.zshrc PATH so
@@ -427,6 +436,7 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
                 skipped.push(format!("{:<24} (unchanged)", action.label));
             }
             Err((label, path, err)) => {
+                mcp_failed = true;
                 eprintln!(
                     "  warn: {label} MCP patch failed ({}): {err}",
                     path.display()
@@ -515,7 +525,7 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     let socket = statefulmemory_core::paths::socket_path();
     if socket.exists() {
         let mut stop = std::process::Command::new(
-            std::env::current_exe().unwrap_or_else(|_| "statefulmemory".into()),
+            crate::mcp_install::resolve_statefulmemory_command(),
         );
         stop.args(["daemon", "stop"]);
         match statefulmemory_core::process::output_with_timeout(
@@ -532,6 +542,9 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
         }
     }
 
+    if mcp_failed {
+        return ExitCode::from(1);
+    }
     ExitCode::SUCCESS
 }
 
@@ -845,17 +858,18 @@ fn install_usr_local_bin_symlink() -> std::io::Result<bool> {
         return Ok(false);
     }
 
-    // Already points at the right place — skip.
-    if target.exists() {
-        if let Ok(existing) = std::fs::read_link(target) {
-            if existing == current_exe {
-                return Ok(false);
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if let Ok(existing) = std::fs::read_link(target) {
+                if existing == current_exe {
+                    return Ok(false);
+                }
             }
-        } else {
-            // Not a symlink (real binary installed there) — leave it alone.
-            return Ok(false);
+            std::fs::remove_file(target)?;
         }
-        std::fs::remove_file(target)?;
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
 
     if let Some(parent) = target.parent() {

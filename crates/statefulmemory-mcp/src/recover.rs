@@ -25,7 +25,9 @@ impl Recovery for EnsureRecovery {
         ensure_running(&self.cfg)
             .await
             .map(|_| ())
-            .map_err(|_| McpError::DaemonNotRunning)
+            .map_err(|e| McpError::Recovery {
+                message: e.to_string(),
+            })
     }
 }
 
@@ -56,8 +58,8 @@ mod tests {
 
         let rec = EnsureRecovery::new(cfg);
         let err = rec.recover().await.expect_err("spawn must fail");
-        assert!(matches!(err, McpError::DaemonNotRunning), "{err:?}");
-        assert_eq!(err.key(), "daemon_not_running");
+        assert!(matches!(err, McpError::Recovery { .. }), "{err:?}");
+        assert_eq!(err.key(), "daemon_recovery_failed");
     }
 
     #[tokio::test]

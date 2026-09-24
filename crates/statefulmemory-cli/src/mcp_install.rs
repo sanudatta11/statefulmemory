@@ -13,6 +13,7 @@
 //! the caller passes `--all` / `--agent`.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -252,25 +253,126 @@ pub struct McpAction {
     pub changed: bool,
 }
 
-/// Resolve a durable absolute path for GUI agents that lack shell PATH.
+fn executable(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn ensure_launcher_alias(target: &Path, alias: &Path) -> io::Result<()> {
+    if alias == target {
+        return Ok(());
+    }
+    match fs::symlink_metadata(alias) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if fs::read_link(alias).ok().as_deref() == Some(target) {
+                return Ok(());
+            }
+            fs::remove_file(alias)?;
+        }
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    if let Some(parent) = alias.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, alias)?;
+    #[cfg(not(unix))]
+    fs::copy(target, alias)?;
+    Ok(())
+}
+
+fn install_managed_launcher(source: &Path, target: &Path) -> io::Result<()> {
+    if source == target && executable(target) {
+        let parent = target.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "managed launcher has no parent")
+        })?;
+        ensure_launcher_alias(target, &parent.join("smem"))?;
+        ensure_launcher_alias(target, &parent.join("sm"))?;
+        return Ok(());
+    }
+    let parent = target.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "managed launcher has no parent")
+    })?;
+    fs::create_dir_all(parent)?;
+    let tmp = target.with_extension("launcher.tmp");
+    fs::copy(source, &tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&tmp)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&tmp, permissions)?;
+    }
+    if target.exists() {
+        fs::remove_file(target)?;
+    }
+    if let Err(e) = fs::rename(&tmp, target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if !executable(target) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("managed launcher is not executable: {}", target.display()),
+        ));
+    }
+    let parent = target.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "managed launcher has no parent")
+    })?;
+    ensure_launcher_alias(target, &parent.join("smem"))?;
+    ensure_launcher_alias(target, &parent.join("sm"))?;
+    Ok(())
+}
+
+pub fn ensure_managed_launcher() -> io::Result<PathBuf> {
+    let target = statefulmemory_core::paths::managed_statefulmemory_path().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "home directory is unavailable")
+    })?;
+    let source = std::env::current_exe()?;
+    install_managed_launcher(&source, &target)?;
+    Ok(target)
+}
+
 pub fn resolve_statefulmemory_command() -> String {
+    if let Some(managed) = statefulmemory_core::paths::managed_statefulmemory_path() {
+        if executable(&managed) {
+            return managed.display().to_string();
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
-        if exe.is_file() {
+        if executable(&exe) {
             return exe.display().to_string();
         }
     }
     let home = dirs::home_dir().unwrap_or_default();
     for candidate in [
-        format!("{}/.local/bin/smem", home.display()),
-        format!("{}/.local/bin/statefulmemory", home.display()),
-        "/usr/local/bin/smem".to_string(),
-        "/usr/local/bin/statefulmemory".to_string(),
+        home.join(".local/bin/smem"),
+        home.join(".local/bin/statefulmemory"),
+        PathBuf::from("/opt/homebrew/bin/statefulmemory"),
+        PathBuf::from("/opt/homebrew/bin/smem"),
+        PathBuf::from("/usr/local/bin/smem"),
+        PathBuf::from("/usr/local/bin/statefulmemory"),
     ] {
-        if Path::new(&candidate).is_file() {
-            return candidate;
+        if executable(&candidate) {
+            return candidate.display().to_string();
         }
     }
-    "smem".to_string()
+    "statefulmemory".to_string()
 }
 
 fn join_rel(base: &Path, rel: &[&str]) -> PathBuf {
@@ -282,10 +384,17 @@ fn join_rel(base: &Path, rel: &[&str]) -> PathBuf {
 }
 
 fn target_path(t: &Target, home: &Path, cwd: &Path) -> PathBuf {
-    match t.root {
+    let path = match t.root {
         Root::Home => join_rel(home, t.rel),
         Root::Cwd => join_rel(cwd, t.rel),
+    };
+    if matches!(t.schema, Schema::OpenCodeMcp) {
+        let jsonc = path.with_extension("jsonc");
+        if jsonc.is_file() {
+            return jsonc;
+        }
     }
+    path
 }
 
 fn should_skip(t: &Target, path: &Path) -> bool {
@@ -315,6 +424,7 @@ fn opencode_entry(command: &str) -> Value {
         "type": "local",
         "command": [command, "mcp"],
         "enabled": true,
+        "timeout": 30000,
     })
 }
 
@@ -417,7 +527,7 @@ fn has_statefulmemory_entry(path: &Path, schema: Schema) -> bool {
             let Ok(text) = fs::read_to_string(path) else {
                 return false;
             };
-            let Ok(root) = serde_json::from_str::<Value>(&text) else {
+            let Ok(root) = parse_json_text(&text, path) else {
                 return false;
             };
             match schema {
@@ -442,6 +552,111 @@ fn has_statefulmemory_entry(path: &Path, schema: Schema) -> bool {
     }
 }
 
+fn strip_json_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut previous = '\0';
+                    for next in chars.by_ref() {
+                        if previous == '*' && next == '/' {
+                            break;
+                        }
+                        previous = next;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn strip_trailing_commas(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            index += 1;
+            continue;
+        }
+        if c == ',' {
+            let mut next = index + 1;
+            while next < chars.len() && chars[next].is_whitespace() {
+                next += 1;
+            }
+            if next < chars.len() && (chars[next] == '}' || chars[next] == ']') {
+                index += 1;
+                continue;
+            }
+        }
+        out.push(c);
+        index += 1;
+    }
+    out
+}
+
+fn parse_json_text(text: &str, path: &Path) -> std::io::Result<Value> {
+    let normalized = strip_trailing_commas(&strip_json_comments(text));
+    serde_json::from_str(&normalized).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: invalid JSON: {e}", path.display()),
+        )
+    })
+}
+
 fn read_json_object(path: &Path) -> std::io::Result<Value> {
     if !path.exists() {
         return Ok(json!({}));
@@ -450,13 +665,16 @@ fn read_json_object(path: &Path) -> std::io::Result<Value> {
     if text.trim().is_empty() {
         return Ok(json!({}));
     }
-    match serde_json::from_str(&text) {
+    match parse_json_text(&text, path) {
         Ok(Value::Object(map)) => Ok(Value::Object(map)),
         Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("{}: root JSON value must be an object", path.display()),
         )),
-        Err(_) => Ok(json!({})),
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: invalid JSON: {e}", path.display()),
+        )),
     }
 }
 
@@ -465,7 +683,19 @@ fn write_json(path: &Path, root: &Value) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let new_text = serde_json::to_string_pretty(root).map_err(std::io::Error::other)?;
-    fs::write(path, new_text + "\n")?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, new_text + "\n")?;
+    #[cfg(unix)]
+    if let Ok(metadata) = fs::metadata(path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() & 0o777);
+        fs::set_permissions(&tmp, permissions)?;
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -480,12 +710,25 @@ fn upsert_map_entry(map: &mut Value, name: &str, entry: Value) -> std::io::Resul
     let obj = map.as_object_mut().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object map")
     })?;
-    match obj.get(name) {
-        Some(existing) if existing == &entry => Ok(false),
-        _ => {
-            obj.insert(name.to_string(), entry);
-            Ok(true)
+    let merged = match (obj.get(name), entry.as_object()) {
+        (Some(Value::Object(existing)), Some(desired)) => {
+            let mut merged = existing.clone();
+            for (key, value) in desired {
+                if key == "enabled" && merged.contains_key(key) {
+                    continue;
+                }
+                merged.insert(key.clone(), value.clone());
+            }
+            Value::Object(merged)
         }
+        (Some(existing), _) if existing == &entry => existing.clone(),
+        _ => entry,
+    };
+    if obj.get(name) == Some(&merged) {
+        Ok(false)
+    } else {
+        obj.insert(name.to_string(), merged);
+        Ok(true)
     }
 }
 
@@ -547,6 +790,19 @@ fn upsert_target(path: &Path, schema: Schema, command: &str) -> std::io::Result<
     }
 }
 
+fn write_toml(path: &Path, table: &toml::Table) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    fs::write(&tmp, format!("{}\n", table))?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 fn upsert_codex_toml(path: &Path, command: &str) -> std::io::Result<bool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -556,7 +812,12 @@ fn upsert_codex_toml(path: &Path, command: &str) -> std::io::Result<bool> {
         if text.trim().is_empty() {
             toml::Table::new()
         } else {
-            text.parse().unwrap_or_default()
+            text.parse().map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{}: invalid TOML: {e}", path.display()),
+                )
+            })?
         }
     } else {
         toml::Table::new()
@@ -578,19 +839,28 @@ fn upsert_codex_toml(path: &Path, command: &str) -> std::io::Result<bool> {
         "args".into(),
         toml::Value::Array(vec![toml::Value::String("mcp".into())]),
     );
-    let entry_val = toml::Value::Table(entry);
-
-    let changed = match servers_tbl.get(MCP_SERVER_NAME) {
-        Some(existing) if existing == &entry_val => false,
-        _ => {
-            servers_tbl.insert(MCP_SERVER_NAME.into(), entry_val);
-            true
+    let entry_val = match servers_tbl.get(MCP_SERVER_NAME) {
+        Some(toml::Value::Table(existing)) => {
+            let mut merged = existing.clone();
+            merged.insert("command".into(), toml::Value::String(command.into()));
+            merged.insert(
+                "args".into(),
+                toml::Value::Array(vec![toml::Value::String("mcp".into())]),
+            );
+            toml::Value::Table(merged)
         }
+        Some(existing) if existing == &toml::Value::Table(entry.clone()) => {
+            toml::Value::Table(entry)
+        }
+        _ => toml::Value::Table(entry),
     };
+
+    let changed = servers_tbl.get(MCP_SERVER_NAME) != Some(&entry_val);
     if !changed {
         return Ok(false);
     }
-    fs::write(path, format!("{}\n", table))?;
+    servers_tbl.insert(MCP_SERVER_NAME.into(), entry_val);
+    write_toml(path, &table)?;
     Ok(true)
 }
 
@@ -715,7 +985,7 @@ fn remove_codex_toml(path: &Path) -> std::io::Result<bool> {
         // Don't delete Codex's whole config.toml — leave an empty-ish file only
         // if it had nothing else; still write remaining content.
     }
-    fs::write(path, format!("{}\n", table))?;
+    write_toml(path, &table)?;
     Ok(true)
 }
 
@@ -734,6 +1004,31 @@ mod tests {
         assert!(!upsert_target(&path, Schema::McpServers, "/bin/statefulmemory").unwrap());
         assert!(remove_target(&path, Schema::McpServers).unwrap());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn opencode_jsonc_is_accepted_and_preserves_other_keys() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("opencode.jsonc");
+        fs::write(
+            &path,
+            "{\n  // keep this setting\n  \"theme\": \"dark\",\n  \"mcp\": {\"other\": {}},\n}\n",
+        )
+        .unwrap();
+        assert!(upsert_target(&path, Schema::OpenCodeMcp, "statefulmemory").unwrap());
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["theme"], "dark");
+        assert_eq!(v["mcp"]["statefulmemory"]["command"][1], "mcp");
+    }
+
+    #[test]
+    fn malformed_json_is_not_replaced() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        let original = "{ this is not valid json";
+        fs::write(&path, original).unwrap();
+        assert!(upsert_target(&path, Schema::McpServers, "statefulmemory").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
@@ -788,6 +1083,34 @@ mod tests {
         assert!(remove_target(&path, Schema::CodexToml).unwrap());
         let after = fs::read_to_string(&path).unwrap();
         assert!(!after.contains("statefulmemory"));
+    }
+
+    #[test]
+    fn managed_launcher_is_atomic_and_executable() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("bin").join("statefulmemory");
+        fs::write(&source, b"binary").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&source).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&source, permissions).unwrap();
+        }
+        install_managed_launcher(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"binary");
+        assert!(executable(&target));
+        #[cfg(unix)]
+        {
+            let smem = dir.path().join("bin").join("smem");
+            let sm = dir.path().join("bin").join("sm");
+            assert_eq!(fs::read_link(&smem).unwrap(), target);
+            assert_eq!(fs::read_link(&sm).unwrap(), target);
+        }
+        fs::write(&source, b"new-binary").unwrap();
+        install_managed_launcher(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new-binary");
     }
 
     #[test]

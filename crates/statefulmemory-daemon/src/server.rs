@@ -64,8 +64,7 @@ pub async fn run(cfg: Config) -> Result<()> {
     // clients (the typical bootstrap flow). The TCP auth interceptor is
     // wired below only when binding TCP, so UDS callers reach the
     // admin-only RPCs (CreateToken/ListTokens/RevokeToken) without an
-    // AuthCtx — admin_guard::require_admin pass-through covers that case
-    // (filesystem permissions are the UDS trust boundary).
+    // AuthCtx; filesystem permissions are the UDS trust boundary.
     let token_store = Some(Arc::new(TokenStore::open(paths::tokens_db_path())?));
 
     // Cross-project global mirror DB. We only fail-soft: if the global DB
@@ -166,6 +165,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         registry: registry.clone(),
         disk_monitor: dm.clone(),
         token_store: token_store.clone(),
+        auth_required: cfg.is_tcp_mode(),
         in_flight: in_flight.clone(),
         started_at: chrono::Utc::now(),
         shutdown_tx: shutdown_tx.clone(),

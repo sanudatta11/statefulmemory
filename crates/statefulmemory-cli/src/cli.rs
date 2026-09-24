@@ -299,6 +299,9 @@ pub struct EvalArgs {
     #[arg(long)]
     pub save_scorecard: Option<std::path::PathBuf>,
 
+    #[arg(long, default_value_t = false)]
+    pub production_profile: bool,
+
     /// Ingest without supersession (staleness baseline arm).
     #[arg(long)]
     pub no_supersede: bool,

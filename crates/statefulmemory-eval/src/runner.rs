@@ -2,7 +2,7 @@
 //! Benchmark runner: ingest → retrieve → answer → judge → report.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,9 @@ fn pct_bar(done: usize, total: usize, width: usize) -> String {
 /// (threshold ignored only for multi-hop) so multi-hop
 /// candidates are not left in BM25/ANN order when facts look "clear".
 const RERANK_AMBIGUITY_THRESHOLD: f32 = 0.15;
+const RERANK_BUDGET: Duration = statefulmemory_retrieval::rerank::DEFAULT_RERANK_BUDGET;
+const RERANK_CANDIDATE_LIMIT: usize =
+    statefulmemory_retrieval::rerank::DEFAULT_RERANK_CANDIDATE_LIMIT;
 
 /// LoCoMo multi-hop (JSON cat 1 → `multi_hop`): always rerank + wider pool (k*5).
 fn is_locomo_multihop(category: Option<&str>) -> bool {
@@ -217,6 +220,18 @@ pub struct QueryResult {
     /// disabled for the run; spec-task-23 / SC-7.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_us: Option<u64>,
+    #[serde(default)]
+    pub answer_us: u64,
+    #[serde(default)]
+    pub judge_us: u64,
+    #[serde(default)]
+    pub rerank_timed_out: bool,
+    #[serde(default)]
+    pub candidate_profile: String,
+    #[serde(default)]
+    pub candidate_ids_pre_rerank: Vec<u64>,
+    #[serde(default)]
+    pub fact_candidate_ids: Vec<i64>,
     /// Benchmark-provided category label, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
@@ -290,7 +305,16 @@ pub struct RunReport {
     pub rerank_p50_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_p95_ms: Option<f64>,
-    /// Queries the run was asked to evaluate (after limit / stratified sample).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_p50_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_p95_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_p50_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_p95_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_timeout_pct: Option<f64>,
     /// `total_queries` counts only completed results; a gap means skips.
     #[serde(default)]
     pub queries_requested: usize,
@@ -352,6 +376,21 @@ impl RunReport {
         if let Some(p95) = self.rerank_p95_ms {
             md.push_str(&format!("| Rerank p95 | {:.2}ms |\n", p95));
         }
+        if let Some(p50) = self.answer_p50_ms {
+            md.push_str(&format!("| Answer p50 | {:.2}ms |\n", p50));
+        }
+        if let Some(p95) = self.answer_p95_ms {
+            md.push_str(&format!("| Answer p95 | {:.2}ms |\n", p95));
+        }
+        if let Some(p50) = self.judge_p50_ms {
+            md.push_str(&format!("| Judge p50 | {:.2}ms |\n", p50));
+        }
+        if let Some(p95) = self.judge_p95_ms {
+            md.push_str(&format!("| Judge p95 | {:.2}ms |\n", p95));
+        }
+        if let Some(pct) = self.rerank_timeout_pct {
+            md.push_str(&format!("| Rerank timeouts | {:.1}% |\n", pct));
+        }
         if let Some(pct) = self.superseded_served_pct {
             md.push_str(&format!("| Superseded served | {:.1}% |\n", pct));
         }
@@ -376,13 +415,18 @@ impl RunReport {
         }
         md.push('\n');
         md.push_str("## Per-query results\n\n");
-        md.push_str("| id | correct | ret_ms | e2e_ms | tokens |\n|---|---|---|---|---|\n");
+        md.push_str("| id | correct | ret_ms | rerank_ms | answer_ms | judge_ms | e2e_ms | tokens |\n|---|---|---:|---:|---:|---:|---:|---:|\n");
         for q in &self.query_results {
             md.push_str(&format!(
-                "| {} | {} | {:.1} | {:.1} | {} |\n",
+                "| {} | {} | {:.1} | {} | {:.1} | {:.1} | {:.1} | {} |\n",
                 q.id,
                 if q.correct { "✓" } else { "✗" },
                 q.retrieval_us as f64 / 1000.0,
+                q.rerank_us
+                    .map(|value| format!("{:.1}", value as f64 / 1000.0))
+                    .unwrap_or_else(|| "-".into()),
+                q.answer_us as f64 / 1000.0,
+                q.judge_us as f64 / 1000.0,
                 q.end_to_end_us as f64 / 1000.0,
                 q.prompt_tokens,
             ));
@@ -446,10 +490,14 @@ pub async fn run(
     let queries_to_run = crate::apply_query_limit(queries, cfg.limit, stratified);
 
     info!(count = queries_to_run.len(), k = cfg.k, "running queries");
-    let mode_label = match cfg.retrieval.mode {
-        RetrievalMode::Bm25 => "bm25",
-        RetrievalMode::Hybrid => "hybrid",
-        RetrievalMode::HybridRerank => "hybrid-rerank",
+    let mode_label = if cfg.retrieval.production_profile {
+        "production-hybrid"
+    } else {
+        match cfg.retrieval.mode {
+            RetrievalMode::Bm25 => "bm25",
+            RetrievalMode::Hybrid => "hybrid",
+            RetrievalMode::HybridRerank => "hybrid-rerank",
+        }
     };
     ui.note(format!(
         "running {} queries (mode={mode_label}, k={})",
@@ -504,19 +552,35 @@ pub async fn run(
         projects.sort();
         projects.dedup();
         if !projects.is_empty() {
-            ui.status(format!(
-                "prewarming vec indexes for {} project(s) …",
-                projects.len()
-            ));
-            crate::retrieve_hybrid::prewarm_vec_indexes(
-                &cfg.data_dir,
-                &projects,
-                embedder.clone(),
-                cache.clone(),
-            )
-            .await
-            .context("prewarm hybrid vec indexes")?;
-            ui.note(format!("vec indexes ready ({})", projects.len()));
+            if cfg.retrieval.production_profile {
+                ui.status(format!(
+                    "prewarming project vectors for {} project(s) …",
+                    projects.len()
+                ));
+                crate::retrieve_hybrid::prewarm_project_embeddings(
+                    &cfg.data_dir,
+                    &projects,
+                    embedder.clone(),
+                    cache.clone(),
+                )
+                .await
+                .context("prewarm project vectors")?;
+                ui.note(format!("project vectors ready ({})", projects.len()));
+            } else {
+                ui.status(format!(
+                    "prewarming vec indexes for {} project(s) …",
+                    projects.len()
+                ));
+                crate::retrieve_hybrid::prewarm_vec_indexes(
+                    &cfg.data_dir,
+                    &projects,
+                    embedder.clone(),
+                    cache.clone(),
+                )
+                .await
+                .context("prewarm hybrid vec indexes")?;
+                ui.note(format!("vec indexes ready ({})", projects.len()));
+            }
         }
     }
 
@@ -724,10 +788,14 @@ pub async fn run(
     }
 
     let aborted = abort_flag.load(std::sync::atomic::Ordering::Relaxed);
-    let mode_tag = match cfg.retrieval.mode {
-        RetrievalMode::Bm25 => "bm25",
-        RetrievalMode::Hybrid => "hybrid",
-        RetrievalMode::HybridRerank => "hybrid-rerank",
+    let mode_tag = if cfg.retrieval.production_profile {
+        "production-hybrid"
+    } else {
+        match cfg.retrieval.mode {
+            RetrievalMode::Bm25 => "bm25",
+            RetrievalMode::Hybrid => "hybrid",
+            RetrievalMode::HybridRerank => "hybrid-rerank",
+        }
     };
     let report = build_report(
         cfg.benchmark,
@@ -837,6 +905,14 @@ async fn eval_one_query(
     };
 
     let mut rerank_skipped = false;
+    let mut rerank_timed_out = false;
+    let mut candidate_profile = match retrieval.mode {
+        RetrievalMode::Bm25 => "bm25",
+        RetrievalMode::Hybrid | RetrievalMode::HybridRerank => "observation-hybrid",
+    }
+    .to_string();
+    let mut candidate_ids_pre_rerank = Vec::new();
+    let mut fact_candidate_ids = Vec::new();
     let (hits, retrieval_us, rerank_us) = match retrieval.mode {
         RetrievalMode::Bm25 => {
             let ret = retrieve(data_dir, &project, &q.question, k)
@@ -861,7 +937,21 @@ async fn eval_one_query(
             // failure mode). Other queries: ambiguity gate (top1−top2 < 0.15).
             let force_rerank = retrieval.rerank && multihop;
             let mut rerank_ambiguous = true;
-            let (raw_hits, raw_retrieval_us) = if facts_db_path.exists() {
+            let (raw_hits, raw_retrieval_us) = if retrieval.production_profile {
+                let ret = crate::retrieve_hybrid::retrieve_hybrid_production_profile(
+                    data_dir,
+                    &project,
+                    &q.question,
+                    retrieve_k,
+                    embedder.clone(),
+                    cache.clone(),
+                )
+                .await
+                .with_context(|| format!("production-profile retrieve for query '{}'", q.id))?;
+                candidate_profile = "production-hybrid".into();
+                candidate_ids_pre_rerank = ret.candidates.ids();
+                (ret.hits, ret.latency.as_micros() as u64)
+            } else if facts_db_path.exists() {
                 let ret = crate::retrieve_facts::retrieve_facts(
                     data_dir,
                     &facts_db_path,
@@ -875,6 +965,9 @@ async fn eval_one_query(
                 )
                 .await
                 .with_context(|| format!("facts retrieve for query '{}'", q.id))?;
+                candidate_profile = "facts-hybrid".into();
+                fact_candidate_ids = ret.candidate_fact_ids.clone();
+                candidate_ids_pre_rerank = ret.candidate_observation_ids.clone();
                 if !force_rerank {
                     rerank_ambiguous = ret
                         .top2_delta
@@ -897,6 +990,8 @@ async fn eval_one_query(
                     )
                     .await
                     .with_context(|| format!("hybrid fallback for query '{}'", q.id))?;
+                    candidate_profile = "observation-hybrid-fallback".into();
+                    candidate_ids_pre_rerank = fallback.candidate_ids.clone();
                     rerank_ambiguous = true;
                     (
                         fallback.hits,
@@ -915,6 +1010,11 @@ async fn eval_one_query(
                     )
                     .await
                     .with_context(|| format!("obs hybrid fuse for query '{}'", q.id))?;
+                    for id in obs.candidate_ids {
+                        if !candidate_ids_pre_rerank.contains(&id) {
+                            candidate_ids_pre_rerank.push(id);
+                        }
+                    }
                     let fused = fuse_hit_lists(&ret.hits, &obs.hits, retrieve_k as usize);
                     (fused, (ret.latency + obs.latency).as_micros() as u64)
                 } else {
@@ -931,19 +1031,33 @@ async fn eval_one_query(
                 )
                 .await
                 .with_context(|| format!("hybrid retrieve for query '{}'", q.id))?;
+                candidate_ids_pre_rerank = ret.candidate_ids;
                 (ret.hits, ret.latency.as_micros() as u64)
             };
 
             if let Some(claude) = rerank_claude {
                 if force_rerank || rerank_ambiguous {
-                    let (reranked, rerank_dur) =
-                        crate::rerank::rerank(claude.clone(), &raw_hits, &q.question, k as usize)
-                            .await
-                            .with_context(|| format!("rerank for query '{}'", q.id))?;
+                    let bounded = crate::rerank::rerank_with_budget(
+                        claude.clone(),
+                        &raw_hits,
+                        &q.question,
+                        k as usize,
+                        RERANK_BUDGET,
+                        RERANK_CANDIDATE_LIMIT,
+                    )
+                    .await;
+                    if bounded.timed_out {
+                        rerank_timed_out = true;
+                        warn!(
+                            query_id = %q.id,
+                            budget_ms = RERANK_BUDGET.as_millis(),
+                            "bounded rerank timed out; using retrieval order"
+                        );
+                    }
                     (
-                        reranked,
+                        bounded.hits,
                         raw_retrieval_us,
-                        Some(rerank_dur.as_micros() as u64),
+                        Some(bounded.duration.as_micros() as u64),
                     )
                 } else {
                     let trimmed: Vec<String> = raw_hits.into_iter().take(k as usize).collect();
@@ -966,41 +1080,42 @@ async fn eval_one_query(
     let gold_sub_rank = gold_substring_rank(&q.gold_answer, &hits);
     let primary_rank = primary_retrieval_rank(q, &hits);
 
-    let (model_answer, judge_prompt, correct) = if lexical_judge {
+    let (model_answer, judge_prompt, correct, answer_us, judge_us) = if lexical_judge {
         let joined = hits.join("\n");
         let model_answer = if joined.is_empty() {
             String::new()
         } else {
             joined
         };
-        // Lexical path: prefer evidence match when present, else gold substring.
         let correct = primary_rank.is_some();
-        (model_answer, String::new(), correct)
+        (model_answer, String::new(), correct, 0, 0)
     } else {
         let judge = judge.expect("JudgeClient when lexical_judge is false");
+        let answer_started = Instant::now();
         let model_answer = match judge.answer(&system, &user_msg).await {
             Ok(a) => a,
             Err(e) => {
                 return Err(QueryEvalError::AnswerFailed(format!("{e:#}")));
             }
         };
+        let answer_us = answer_started.elapsed().as_micros() as u64;
         let judge_prompt = build_judge_prompt(
             &q.question,
             &q.gold_answer,
             &model_answer,
             q.judge_context.as_deref(),
         );
+        let judge_started = Instant::now();
         let correct = match judge.judge(&judge_prompt).await {
             Ok(c) => c,
             Err(e) => {
-                // Never default to incorrect on judge failure — that deflates
-                // the score. Skip the query (counted, aborts run before publish).
                 return Err(QueryEvalError::AnswerFailed(format!(
                     "judge LLM failed: {e:#}"
                 )));
             }
         };
-        (model_answer, judge_prompt, correct)
+        let judge_us = judge_started.elapsed().as_micros() as u64;
+        (model_answer, judge_prompt, correct, answer_us, judge_us)
     };
 
     let stale_served = match &q.anti_answer {
@@ -1035,12 +1150,19 @@ async fn eval_one_query(
                 RetrievalMode::Hybrid => "hybrid",
                 RetrievalMode::HybridRerank => "hybrid-rerank",
             },
-            "k": k,
-            "evidence_window": evidence_window,
-            "rerank_enabled": retrieval.rerank,
+             "k": k,
+             "evidence_window": evidence_window,
+             "candidate_profile": candidate_profile,
+             "candidate_ids_pre_rerank": candidate_ids_pre_rerank,
+             "fact_candidate_ids": fact_candidate_ids,
+             "rerank_enabled": retrieval.rerank,
+
             "rerank_skipped": rerank_skipped,
             "retrieval_us": retrieval_us,
             "rerank_us": rerank_us,
+            "rerank_timed_out": rerank_timed_out,
+            "answer_us": answer_us,
+            "judge_us": judge_us,
             "hits_count": hits.len(),
             "hits": hits,
             "primary_rank": primary_rank,
@@ -1069,6 +1191,12 @@ async fn eval_one_query(
         end_to_end_us,
         prompt_tokens,
         rerank_us,
+        answer_us,
+        judge_us,
+        rerank_timed_out,
+        candidate_profile,
+        candidate_ids_pre_rerank,
+        fact_candidate_ids,
         category: q.category.clone(),
         gold_rank: primary_rank,
         gold_substring_rank: gold_sub_rank,
@@ -1330,6 +1458,38 @@ fn build_report(
             Some(percentile_ms(&mut rerank_samples.clone(), 95)),
         )
     };
+    let answer_samples: Vec<u64> = results
+        .iter()
+        .filter(|r| r.answer_us > 0)
+        .map(|r| r.answer_us)
+        .collect();
+    let (answer_p50_ms, answer_p95_ms) = if answer_samples.is_empty() {
+        (None, None)
+    } else {
+        (
+            Some(percentile_ms(&mut answer_samples.clone(), 50)),
+            Some(percentile_ms(&mut answer_samples.clone(), 95)),
+        )
+    };
+    let judge_samples: Vec<u64> = results
+        .iter()
+        .filter(|r| r.judge_us > 0)
+        .map(|r| r.judge_us)
+        .collect();
+    let (judge_p50_ms, judge_p95_ms) = if judge_samples.is_empty() {
+        (None, None)
+    } else {
+        (
+            Some(percentile_ms(&mut judge_samples.clone(), 50)),
+            Some(percentile_ms(&mut judge_samples.clone(), 95)),
+        )
+    };
+    let rerank_timeout_pct = if rerank_enabled && total > 0 {
+        let timeouts = results.iter().filter(|r| r.rerank_timed_out).count();
+        Some(timeouts as f64 / total as f64 * 100.0)
+    } else {
+        None
+    };
 
     RunReport {
         benchmark: format!("{kind:?} ({mode_tag}, w={evidence_window})"),
@@ -1350,6 +1510,11 @@ fn build_report(
         end_to_end_p95_ms: e2e_p95,
         rerank_p50_ms,
         rerank_p95_ms,
+        answer_p50_ms,
+        answer_p95_ms,
+        judge_p50_ms,
+        judge_p95_ms,
+        rerank_timeout_pct,
         queries_requested,
         queries_skipped,
         query_results: results,

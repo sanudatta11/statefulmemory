@@ -4,7 +4,7 @@
 //! Spec sections: FR1.1, FR1.2, FR1.3, EC-7, EC-8, SC-1, SC-2, SC-14, SC-15,
 //! NFR1, NFR5, NFR6.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -43,11 +43,10 @@ pub async fn run(
         )));
     };
 
-    // Persist repo_path if it came from the request (OQ-3).
-    if let Some(rp) = req.repo_path.as_deref() {
+    if req.repo_path.is_some() {
         if let Err(e) = state
             .registry
-            .set_repo_path(&project.display_name, Path::new(rp))
+            .set_repo_path(&project.display_name, &repo_path)
         {
             warn!(project = %project.normalized, err = %e, "could not persist repo_path");
         }
@@ -175,21 +174,32 @@ fn resolve_repo_path(
     project: &Arc<ProjectState>,
     request_repo_path: Option<&str>,
 ) -> Result<Option<PathBuf>, Status> {
-    if let Some(rp) = request_repo_path {
-        let p = PathBuf::from(rp);
-        if !p.is_dir() {
-            return Err(Status::invalid_argument(format!(
-                "repo_path '{}' is not a directory",
-                p.display()
-            )));
-        }
-        return Ok(Some(p));
+    let raw = if let Some(path) = request_repo_path {
+        Some(path.to_string())
+    } else {
+        state
+            .registry
+            .get_repo_path(&project.display_name)
+            .map_err(crate::error_map::to_status)?
+            .map(|path| path.to_string_lossy().into_owned())
+    };
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let path = state.resolve_user_path(project, &raw, true)?;
+    if !path.is_dir() {
+        return Err(Status::invalid_argument(format!(
+            "repo_path '{}' is not a directory",
+            path.display()
+        )));
     }
-    // Fall back to stored config.
-    Ok(state
-        .registry
-        .get_repo_path(&project.display_name)
-        .unwrap_or(None))
+    if state.auth_required && !statefulmemory_core::git::is_repo(&path) {
+        return Err(Status::invalid_argument(format!(
+            "repo_path '{}' is not a git worktree",
+            path.display()
+        )));
+    }
+    Ok(Some(path))
 }
 
 /// Entry point called from the `sync_export` RPC handler in `service.rs`.

@@ -37,7 +37,11 @@ use rusqlite::params;
 
 use statefulmemory_core::paths;
 use statefulmemory_embed::{cache::EmbeddingCache, Embedder};
-use statefulmemory_storage::ProjectRegistry;
+use statefulmemory_retrieval::hybrid::{self, CandidateTrace};
+use statefulmemory_storage::{
+    facts as facts_q, read as read_q, write::WriteRequest, ProjectRegistry,
+};
+use tokio::sync::oneshot;
 
 use crate::vec_index::{bootstrap_vec_index, open_with_vec};
 
@@ -47,6 +51,14 @@ pub struct HybridResult {
     pub hits: Vec<String>,
     /// End-to-end retrieval latency (embed + BM25 + ANN + RRF + SELECT-back).
     pub latency: Duration,
+    pub candidate_ids: Vec<u64>,
+}
+
+#[derive(Debug)]
+pub struct ProductionProfileResult {
+    pub hits: Vec<String>,
+    pub latency: Duration,
+    pub candidates: CandidateTrace,
 }
 
 /// Hybrid retrieval over `project`.
@@ -74,6 +86,26 @@ pub async fn retrieve_hybrid(
     })
     .await
     .context("join hybrid retrieve task")?
+}
+
+pub async fn retrieve_hybrid_production_profile(
+    data_dir: &Path,
+    project: &str,
+    query: &str,
+    k: i32,
+    embedder: Arc<dyn Embedder>,
+    cache: Arc<EmbeddingCache>,
+) -> Result<ProductionProfileResult> {
+    let data_dir = data_dir.to_path_buf();
+    let project = project.to_string();
+    let query = query.to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::project_lock::with_project_lock(&project, || {
+            retrieve_hybrid_production_profile_sync(&data_dir, &project, &query, k, embedder, cache)
+        })
+    })
+    .await
+    .context("join production-profile hybrid retrieve task")?
 }
 
 /// Ensure sidecar vec indexes exist for each project (sequential, locked).
@@ -108,6 +140,139 @@ pub async fn prewarm_vec_indexes(
     .context("join prewarm task")?
 }
 
+pub async fn prewarm_project_embeddings(
+    data_dir: &Path,
+    projects: &[String],
+    embedder: Arc<dyn Embedder>,
+    cache: Arc<EmbeddingCache>,
+) -> Result<()> {
+    std::env::set_var("STATEFULMEMORY_DATA_DIR", data_dir);
+    paths::ensure_dirs(data_dir).ok();
+    let registry = ProjectRegistry::new(64, 1, Duration::from_millis(50));
+    for project in projects {
+        let state = registry
+            .get_or_open(project)
+            .with_context(|| format!("open project '{project}' for embedding prewarm"))?;
+        let conn = state
+            .open_read_conn()
+            .with_context(|| format!("open read connection for embedding prewarm '{project}'"))?;
+        let live_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("count observations for embedding prewarm '{project}'"))?;
+        let stored_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM observation_embedding_meta WHERE observation_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if live_count > 0 && stored_count >= live_count {
+            continue;
+        }
+
+        let rows = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, title, content FROM observations \
+                     WHERE deleted_at IS NULL ORDER BY id",
+                )
+                .context("prepare project embedding prewarm SELECT")?;
+            let collected = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .context("query project embedding prewarm SELECT")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("collect project embedding prewarm rows")?;
+            collected
+        };
+        drop(conn);
+
+        let texts = rows
+            .iter()
+            .map(|(_, title, content)| format!("{title} {content}"))
+            .collect::<Vec<_>>();
+        let text_refs = texts.iter().map(String::as_str).collect::<Vec<_>>();
+        let (mut vectors, miss_indices) = cache
+            .get_many(&text_refs)
+            .with_context(|| format!("embedding cache lookup for '{project}'"))?;
+        if !miss_indices.is_empty() {
+            let misses = miss_indices
+                .iter()
+                .map(|index| text_refs[*index])
+                .collect::<Vec<_>>();
+            let embedded = embedder
+                .embed(&misses)
+                .with_context(|| format!("embed project '{project}'"))?;
+            let mut puts = Vec::with_capacity(misses.len());
+            for (offset, index) in miss_indices.iter().enumerate() {
+                let vector = embedded
+                    .get(offset)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("embedding batch shorter than miss list"))?;
+                vectors[*index] = Some(vector.clone());
+                puts.push((texts[*index].clone(), vector));
+            }
+            cache
+                .put_many(&puts)
+                .with_context(|| format!("populate embedding cache for '{project}'"))?;
+        }
+
+        let mut replies = Vec::with_capacity(rows.len());
+        for ((observation_id, _, _), vector) in rows.iter().zip(vectors.iter()) {
+            let vector = vector.clone().ok_or_else(|| {
+                anyhow::anyhow!("missing embedding for observation {observation_id}")
+            })?;
+            let (reply, receiver) = oneshot::channel();
+            state
+                .write
+                .send(WriteRequest::InsertEmbedding {
+                    obs_id: *observation_id,
+                    embedding: vector,
+                    model: "eval-bge-small".into(),
+                    quantize: false,
+                    reply,
+                })
+                .with_context(|| format!("queue embedding for '{project}'"))?;
+            replies.push(receiver);
+        }
+        for receiver in replies {
+            receiver
+                .await
+                .context("await project embedding write")?
+                .with_context(|| format!("store project embedding for '{project}'"))?;
+        }
+    }
+    Ok(())
+}
+
+fn embed_query_cached(
+    query: &str,
+    embedder: &dyn Embedder,
+    cache: &EmbeddingCache,
+) -> Result<Vec<f32>> {
+    let (mut hits, _miss_idx) = cache.get_many(&[query]).context("query cache lookup")?;
+    if let Some(vector) = hits[0].take() {
+        return Ok(vector);
+    }
+    let mut vectors = embedder
+        .embed(&[query])
+        .context("embed query (cache miss)")?;
+    let vector = vectors.remove(0);
+    cache
+        .put_many(&[(query.to_string(), vector.clone())])
+        .context("populate cache after query embed")?;
+    Ok(vector)
+}
+
 fn retrieve_hybrid_sync(
     data_dir: &Path,
     project: &str,
@@ -126,20 +291,7 @@ fn retrieve_hybrid_sync(
     // on the same project DB from ensure / BM25 / fetch.
     let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
 
-    // 1. Embed the query (cache → fall through to embedder on miss).
-    let (mut hits, _miss_idx) = cache.get_many(&[query]).context("query cache lookup")?;
-    let query_vec: Vec<f32> = if let Some(v) = hits[0].take() {
-        v
-    } else {
-        let mut vs = embedder
-            .embed(&[query])
-            .context("embed query (cache miss)")?;
-        let v = vs.remove(0);
-        cache
-            .put_many(&[(query.to_string(), v.clone())])
-            .context("populate cache after query embed")?;
-        v
-    };
+    let query_vec = embed_query_cached(query, embedder.as_ref(), cache.as_ref())?;
 
     // 2. Ensure the sidecar vec DB has embeddings for every live observation.
     ensure_vec_index(
@@ -164,8 +316,9 @@ fn retrieve_hybrid_sync(
         );
         bm25_ids
     } else {
-        crate::rrf::rrf_fuse(&[bm25_ids, ann_ids], 60)
+        hybrid::fuse_candidate_trace(&bm25_ids, &ann_ids, &[], hybrid::DEFAULT_RRF_K).ids()
     };
+    let candidate_ids = fused.clone();
     let top_k: Vec<u64> = fused.into_iter().take(k.max(0) as usize).collect();
 
     // 5. SELECT title+content in fused order.
@@ -174,6 +327,75 @@ fn retrieve_hybrid_sync(
     Ok(HybridResult {
         hits,
         latency: t0.elapsed(),
+        candidate_ids,
+    })
+}
+
+fn retrieve_hybrid_production_profile_sync(
+    data_dir: &Path,
+    project: &str,
+    query: &str,
+    k: i32,
+    embedder: Arc<dyn Embedder>,
+    cache: Arc<EmbeddingCache>,
+) -> Result<ProductionProfileResult> {
+    let t0 = Instant::now();
+    std::env::set_var("STATEFULMEMORY_DATA_DIR", data_dir);
+    paths::ensure_dirs(data_dir).ok();
+
+    let registry = Arc::new(ProjectRegistry::new(64, 1, Duration::from_millis(50)));
+    let project_state = registry
+        .get_or_open(project)
+        .with_context(|| format!("open project '{project}' for production-profile retrieval"))?;
+    let conn = project_state
+        .open_read_conn()
+        .context("open read connection for production-profile retrieval")?;
+    let query_vec = embed_query_cached(query, embedder.as_ref(), cache.as_ref())?;
+
+    let bm25 = read_q::search(&conn, query, None, None, hybrid::DEFAULT_CANDIDATE_DEPTH)
+        .context("production-profile BM25 retrieval")?;
+    let dense = read_q::search_dense(
+        &conn,
+        &query_vec,
+        i64::from(hybrid::DEFAULT_CANDIDATE_DEPTH),
+    )
+    .context("production-profile dense retrieval")?;
+
+    let bm25_ids: Vec<u64> = bm25
+        .into_iter()
+        .map(|observation| observation.id as u64)
+        .collect();
+    let dense_ids: Vec<u64> = dense
+        .into_iter()
+        .map(|observation| observation.id as u64)
+        .collect();
+    let fact_parent_ids = facts_q::search_observation_ids(
+        &conn,
+        query,
+        i64::from(hybrid::DEFAULT_CANDIDATE_DEPTH),
+    )
+    .unwrap_or_else(|error| {
+        tracing::debug!(target: "statefulmemory_eval::retrieve_hybrid", %error, "fact lane unavailable");
+        Vec::new()
+    });
+    let candidates = hybrid::fuse_candidate_trace(
+        &bm25_ids,
+        &dense_ids,
+        &fact_parent_ids,
+        hybrid::DEFAULT_RRF_K,
+    );
+    let top_k: Vec<u64> = candidates
+        .ids()
+        .into_iter()
+        .take(k.max(0) as usize)
+        .collect();
+    let hits = fetch_observations(registry, project, &top_k)
+        .context("fetch production-profile observations by id")?;
+
+    Ok(ProductionProfileResult {
+        hits,
+        latency: t0.elapsed(),
+        candidates,
     })
 }
 

@@ -58,6 +58,7 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                         k: 10,
                         evidence_window: 0,
                         rerank: false,
+                        production_profile: false,
                         decay_lambda: 0.0,
                     },
                     eval_data_dir,
@@ -74,6 +75,7 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                         k: 10,
                         evidence_window: 0,
                         rerank: false,
+                        production_profile: false,
                         decay_lambda: 0.0,
                     },
                     eval_data_dir,
@@ -102,6 +104,8 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                     retrieval.mode = RetrievalMode::Hybrid;
                 }
             }
+            retrieval.production_profile = args.production_profile;
+
             let shards = if matches!(
                 benchmark_kind,
                 BenchmarkKind::Beam1m | BenchmarkKind::Beam10m
@@ -298,6 +302,7 @@ mod tests {
             limit: Some(1),
             lexical_judge: false,
             save_scorecard: None,
+            production_profile: false,
             no_supersede: false,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -326,6 +331,7 @@ mod tests {
             limit: Some(1),
             lexical_judge: false,
             save_scorecard: None,
+            production_profile: false,
             no_supersede: false,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();

@@ -1,13 +1,13 @@
 //! `ImportMem` — restore a portable `.mem` snapshot into one project.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tonic::Status;
 use tracing::{info, instrument, warn};
 
 use statefulmemory_proto::{ImportMemRequest, ImportMemResponse};
-use statefulmemory_storage::write::WriteRequest;
+use statefulmemory_storage::read as read_q;
+use statefulmemory_storage::write::{ObservationKey, WriteRequest};
 use statefulmemory_sync::mem_archive::{decode, is_encrypted};
 use statefulmemory_sync::snapshot::{self, ApplyReport};
 
@@ -26,7 +26,8 @@ pub async fn handle(
     if !req.file.ends_with(".mem") {
         return Err(Status::invalid_argument("import path must end with .mem"));
     }
-    let src = PathBuf::from(&req.file);
+    let project = map(state.registry.get_or_open(&req.project_name))?;
+    let src = state.resolve_user_path(&project, &req.file, true)?;
     let bytes = tokio::fs::read(&src)
         .await
         .map_err(|e| Status::invalid_argument(format!("read {}: {e}", src.display())))?;
@@ -60,19 +61,34 @@ pub async fn handle(
     } else {
         req.mode.clone()
     };
-    let project = map(state.registry.get_or_open(&req.project_name))?;
+    let replace = mode.trim() == "replace";
     let report = apply_on_write_thread(&project, payload, mode).await?;
 
-    if let Some(pool) = state.embed_pool.read().as_ref() {
-        if let Ok(conn) = project.open_read_conn() {
-            if let Ok(rows) = snapshot::imported_observation_ids(&conn) {
-                for (obs_id, title, content) in rows {
-                    pool.try_queue(crate::embed_worker::EmbedTask {
-                        project_name: project.display_name.clone(),
-                        obs_id,
-                        title,
-                        content,
-                    });
+    if replace {
+        if let Some(global) = &state.global_db {
+            let mut guard = global.lock();
+            if let Err(e) = guard.clear_project(&project.display_name) {
+                tracing::warn!(
+                    error = %e,
+                    project = %project.display_name,
+                    "global mirror clear failed during replace import"
+                );
+            }
+        }
+    }
+    if let Ok(conn) = project.open_read_conn() {
+        if let Ok(rows) = snapshot::imported_observation_ids(&conn) {
+            drop(conn);
+            for (obs_id, _, _) in rows {
+                let conn = match project.open_read_conn() {
+                    Ok(conn) => conn,
+                    Err(_) => continue,
+                };
+                if let Ok(obs) = read_q::get(&conn, &ObservationKey::Id(obs_id)) {
+                    drop(conn);
+                    state
+                        .refresh_observation_projections(&project, &obs, false, false)
+                        .await;
                 }
             }
         }

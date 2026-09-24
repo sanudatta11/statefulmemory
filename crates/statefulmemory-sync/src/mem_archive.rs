@@ -14,7 +14,8 @@ use zeroize::Zeroizing;
 use crate::error::{Result, SyncError};
 
 pub const MAGIC: &[u8; 4] = b"SMEM";
-pub const ARCHIVE_VERSION: u16 = 1;
+pub const ARCHIVE_VERSION: u16 = 2;
+const LEGACY_ARCHIVE_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 88;
 pub const FLAG_ENCRYPTED: u8 = 0x01;
 const ZSTD_LEVEL: i32 = 19;
@@ -22,6 +23,14 @@ const KEY_DOMAIN: &[u8] = b"statefulmemory.mem.v1\0";
 const ARGON2_M_KIB: u32 = 64 * 1024;
 const ARGON2_T: u32 = 3;
 const ARGON2_P: u32 = 1;
+
+fn default_verify_state() -> String {
+    "unanchored".to_string()
+}
+
+fn default_schema_version() -> i32 {
+    1
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArchivedObservation {
@@ -44,6 +53,35 @@ pub struct ArchivedObservation {
     pub deleted_at: Option<String>,
     pub review_after: Option<String>,
     pub code_anchor: Option<String>,
+    #[serde(default = "default_verify_state")]
+    pub verify_state: String,
+    #[serde(default)]
+    pub verified_commit: Option<String>,
+    #[serde(default)]
+    pub verified_at: Option<String>,
+    #[serde(default)]
+    pub superseded_by_id: Option<i64>,
+    #[serde(default)]
+    pub delete_reason: Option<String>,
+    #[serde(default)]
+    pub superseded_count: i32,
+    #[serde(default)]
+    pub key_expand: String,
+    #[serde(default)]
+    pub exported_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArchivedAnchor {
+    pub id: i64,
+    pub observation_id: i64,
+    pub path: String,
+    pub symbol: Option<String>,
+    pub line_start: Option<i64>,
+    pub line_end: Option<i64>,
+    pub anchor_commit: Option<String>,
+    pub content_digest: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,11 +157,14 @@ pub struct ArchivedEntityEdge {
 pub struct ArchivePayload {
     pub format: String,
     pub archive_version: u16,
+    #[serde(default = "default_schema_version")]
     pub schema_version: i32,
     pub exported_at: String,
     pub project: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observations: Vec<ArchivedObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<ArchivedAnchor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<ArchivedSession>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -264,7 +305,7 @@ pub fn decode(bytes: &[u8], seed: Option<&str>) -> Result<ArchivePayload> {
         return Err(SyncError::NotArchive);
     }
     let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
-    if version != ARCHIVE_VERSION {
+    if version != ARCHIVE_VERSION && version != LEGACY_ARCHIVE_VERSION {
         return Err(SyncError::UnsupportedVersion(version));
     }
     let encrypted = bytes[6] & FLAG_ENCRYPTED != 0;
@@ -305,11 +346,12 @@ mod tests {
     fn sample() -> ArchivePayload {
         ArchivePayload {
             format: "statefulmemory.archive".into(),
-            archive_version: 1,
-            schema_version: 8,
+            archive_version: ARCHIVE_VERSION,
+            schema_version: 12,
             exported_at: "2026-09-12T00:00:00Z".into(),
             project: "demo".into(),
             observations: vec![],
+            anchors: vec![],
             sessions: vec![],
             prompts: vec![],
             facts: vec![],
@@ -335,6 +377,15 @@ mod tests {
         assert_eq!(bytes[6] & FLAG_ENCRYPTED, 0);
         let back = decode(&bytes, None).unwrap();
         assert_eq!(back.project, "demo");
+    }
+
+    #[test]
+    fn decode_accepts_legacy_archive_version() {
+        let mut payload = sample();
+        payload.archive_version = LEGACY_ARCHIVE_VERSION;
+        let mut bytes = encode(&payload, &params(None)).unwrap();
+        bytes[4..6].copy_from_slice(&LEGACY_ARCHIVE_VERSION.to_le_bytes());
+        assert_eq!(decode(&bytes, None).unwrap().archive_version, LEGACY_ARCHIVE_VERSION);
     }
 
     #[test]
@@ -397,9 +448,18 @@ mod tests {
                 created_at: "2026-09-12T00:00:00Z".into(),
                 updated_at: "2026-09-12T00:00:00Z".into(),
                 deleted_at: None,
-                review_after: None,
-                code_anchor: None,
-            })
+                 review_after: None,
+                 code_anchor: None,
+                 verify_state: "unanchored".into(),
+                 verified_commit: None,
+                 verified_at: None,
+                 superseded_by_id: None,
+                 delete_reason: None,
+                 superseded_count: 0,
+                 key_expand: String::new(),
+                 exported_at: None,
+             })
+
             .collect();
         let mem = encode(&p, &params(None)).unwrap();
         let json = serde_json::to_vec_pretty(&p).unwrap();

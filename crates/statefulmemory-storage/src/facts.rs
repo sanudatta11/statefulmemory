@@ -125,6 +125,17 @@ pub fn search_facts(conn: &Connection, q: &str, limit: i64) -> Result<Vec<Fact>>
     Ok(out)
 }
 
+pub fn search_observation_ids(conn: &Connection, query: &str, limit: i64) -> Result<Vec<u64>> {
+    let mut ids = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for fact in search_facts(conn, query, limit)? {
+        if seen.insert(fact.obs_id) {
+            ids.push(fact.obs_id as u64);
+        }
+    }
+    Ok(ids)
+}
+
 /// Mark one fact as superseded by another. Used when a future spec wires in
 /// fact-supersession; the schema supports it from V5 onward.
 pub fn mark_superseded(conn: &Connection, old_id: i64, new_id: i64) -> Result<()> {

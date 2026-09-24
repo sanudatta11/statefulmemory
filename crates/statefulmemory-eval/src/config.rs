@@ -33,6 +33,7 @@ pub struct RetrievalConfig {
     pub k: i32,
     pub evidence_window: u8,
     pub rerank: bool,
+    pub production_profile: bool,
     /// Time-decay lambda applied during scoring (P5 spec-task-29).
     /// `combined *= exp(-decay_lambda * age_days)`. Default 0.005 gives
     /// a half-life of ~138 days. Set to 0.0 to disable decay entirely.
@@ -46,6 +47,7 @@ impl Default for RetrievalConfig {
             k: 10,
             evidence_window: 0,
             rerank: false,
+            production_profile: false,
             decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
         }
     }
@@ -69,6 +71,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             k: 20,
             evidence_window: 6,
             rerank: true,
+            production_profile: false,
             decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
         },
         BenchmarkKind::Longmemeval => RetrievalConfig {
@@ -76,6 +79,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             k: 10,
             evidence_window: 6,
             rerank: true,
+            production_profile: false,
             decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
         },
         BenchmarkKind::Beam1m | BenchmarkKind::Beam10m => RetrievalConfig {
@@ -83,6 +87,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             k: 10,
             evidence_window: 0,
             rerank: false,
+            production_profile: false,
             decay_lambda: 0.0,
         },
         BenchmarkKind::Staleness => RetrievalConfig {
@@ -90,6 +95,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             k: 10,
             evidence_window: 0,
             rerank: false,
+            production_profile: false,
             decay_lambda: 0.0,
         },
     }

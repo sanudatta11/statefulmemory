@@ -340,9 +340,24 @@ pub fn soft_delete_project_observations(db: &Path) -> Result<i64> {
         return Ok(0);
     }
     let conn = crate::db::open_write(db)?;
+    let ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM observations WHERE deleted_at IS NULL")
+            .map_err(|e| Error::internal(format!("prepare project soft-delete: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|e| Error::internal(format!("query project soft-delete: {e}")))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| Error::internal(format!("collect project soft-delete: {e}")))?
+    };
+    for id in &ids {
+        crate::write::invalidate_observation_projections(&conn, *id)?;
+    }
     let n = conn
         .execute(
-            "UPDATE observations SET deleted_at = datetime('now') WHERE deleted_at IS NULL",
+            "UPDATE observations
+                SET deleted_at = datetime('now'), exported_at = NULL
+              WHERE deleted_at IS NULL",
             [],
         )
         .map_err(|e| Error::internal(format!("soft-delete project: {e}")))? as i64;

@@ -66,8 +66,9 @@ pub fn select_unexported_for_export(
                     created_by, topic_key, normalized_hash, revision_count, duplicate_count, \
                     last_seen_at, created_at, updated_at, deleted_at, review_after \
              FROM observations \
-             WHERE exported_at IS NULL \
-             ORDER BY id ASC",
+              WHERE exported_at IS NULL OR updated_at > exported_at \
+              ORDER BY id ASC",
+
         )
         .map_err(|e| Error::internal(format!("prepare select_unexported observations: {e}")))?;
     let observations: Vec<Observation> = stmt
@@ -268,8 +269,10 @@ pub fn upsert_observation_from_remote(
                        session_id = ?2, type = ?3, title = ?4, content = ?5, tool_name = ?6, \
                        scope = ?7, created_by = ?8, topic_key = ?9, normalized_hash = ?10, \
                        revision_count = ?11, duplicate_count = ?12, last_seen_at = ?13, \
-                       created_at = ?14, updated_at = ?15, deleted_at = ?16, review_after = ?17 \
-                     WHERE sync_id = ?1",
+                        created_at = ?14, updated_at = ?15, deleted_at = ?16, review_after = ?17, \
+                        exported_at = NULL \
+                      WHERE sync_id = ?1",
+
                     params![
                         obs.sync_id,
                         obs.session_id,
@@ -346,7 +349,8 @@ pub fn upsert_session_from_remote(conn: &Connection, sess: &Session) -> Result<U
             };
             if incoming_newer {
                 conn.execute(
-                    "UPDATE sessions SET directory = ?2, started_at = ?3, ended_at = ?4, summary = ?5 \
+                    "UPDATE sessions SET directory = ?2, started_at = ?3, ended_at = ?4, summary = ?5, \
+                            exported_at = NULL \
                      WHERE id = ?1",
                     params![
                         sess.id,
@@ -573,6 +577,28 @@ mod tests {
         let (obs1, _, _) = select_unexported_for_export(&conn).unwrap();
         assert_eq!(obs1.len(), 1);
         assert_eq!(obs1[0].sync_id, "obs-b");
+    }
+
+    #[test]
+    fn updated_observation_becomes_dirty_after_export() {
+        let conn = open_test_conn();
+        insert_session(&conn, "s1");
+        let id = insert_obs(&conn, "obs-a", "s1", "2026-01-01T00:00:00Z");
+        let ids = ExportedIds {
+            observations: vec![id],
+            sessions: vec![],
+            prompts: vec![],
+        };
+        mark_exported(&conn, &ids, "2026-01-02T00:00:00Z").unwrap();
+        assert!(select_unexported_for_export(&conn).unwrap().0.is_empty());
+        conn.execute(
+            "UPDATE observations SET updated_at = '2026-01-03T00:00:00Z' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        let (observations, _, _) = select_unexported_for_export(&conn).unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].id, id);
     }
 
     #[test]

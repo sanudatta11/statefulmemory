@@ -49,6 +49,20 @@ pub struct Scorecard {
     pub judge_model: Option<String>,
     pub retrieval_p50_ms: f64,
     pub retrieval_p95_ms: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_p50_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_p50_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_p50_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_timeout_pct: Option<f64>,
     pub end_to_end_p50_ms: f64,
     pub end_to_end_p95_ms: f64,
     /// Queries the run was asked to evaluate (after limit / stratified sample).
@@ -87,6 +101,13 @@ impl Scorecard {
             judge_model,
             retrieval_p50_ms: report.retrieval_p50_ms,
             retrieval_p95_ms: report.retrieval_p95_ms,
+            rerank_p50_ms: report.rerank_p50_ms,
+            rerank_p95_ms: report.rerank_p95_ms,
+            answer_p50_ms: report.answer_p50_ms,
+            answer_p95_ms: report.answer_p95_ms,
+            judge_p50_ms: report.judge_p50_ms,
+            judge_p95_ms: report.judge_p95_ms,
+            rerank_timeout_pct: report.rerank_timeout_pct,
             end_to_end_p50_ms: report.end_to_end_p50_ms,
             end_to_end_p95_ms: report.end_to_end_p95_ms,
             queries_requested: report.queries_requested,
@@ -135,6 +156,27 @@ impl Scorecard {
         );
         if let Some(gsr) = self.gold_substring_recall {
             out.push_str(&format!("Gold-substring R:  {:.4}\n", gsr));
+        }
+        if let Some(p50) = self.rerank_p50_ms {
+            out.push_str(&format!("Rerank p50:        {p50:.2} ms\n"));
+        }
+        if let Some(p95) = self.rerank_p95_ms {
+            out.push_str(&format!("Rerank p95:        {p95:.2} ms\n"));
+        }
+        if let Some(p50) = self.answer_p50_ms {
+            out.push_str(&format!("Answer p50:        {p50:.2} ms\n"));
+        }
+        if let Some(p95) = self.answer_p95_ms {
+            out.push_str(&format!("Answer p95:        {p95:.2} ms\n"));
+        }
+        if let Some(p50) = self.judge_p50_ms {
+            out.push_str(&format!("Judge p50:         {p50:.2} ms\n"));
+        }
+        if let Some(p95) = self.judge_p95_ms {
+            out.push_str(&format!("Judge p95:         {p95:.2} ms\n"));
+        }
+        if let Some(pct) = self.rerank_timeout_pct {
+            out.push_str(&format!("Rerank timeouts:   {pct:.1}%\n"));
         }
         if let Some(rsp) = self.rerank_skipped_pct {
             out.push_str(&format!("Rerank skipped:    {:.1}%\n", rsp));
@@ -221,8 +263,13 @@ mod tests {
             retrieval_p95_ms: 25.0,
             end_to_end_p50_ms: 450.0,
             end_to_end_p95_ms: 800.0,
-            rerank_p50_ms: None,
-            rerank_p95_ms: None,
+            rerank_p50_ms: Some(11.0),
+            rerank_p95_ms: Some(22.0),
+            answer_p50_ms: Some(30.0),
+            answer_p95_ms: Some(40.0),
+            judge_p50_ms: Some(50.0),
+            judge_p95_ms: Some(60.0),
+            rerank_timeout_pct: Some(0.0),
             queries_requested: 10,
             queries_skipped: 0,
             query_results: Vec::new(),
@@ -240,6 +287,10 @@ mod tests {
         assert_eq!(card.scorecard_version, "2.0");
         assert_eq!(card.recall_at_k, 0.9);
         assert_eq!(card.mrr, 0.75);
+        assert_eq!(card.rerank_p50_ms, Some(11.0));
+        assert_eq!(card.rerank_p95_ms, Some(22.0));
+        assert_eq!(card.answer_p50_ms, Some(30.0));
+        assert_eq!(card.judge_p95_ms, Some(60.0));
         assert!(card.token_f1.is_none());
         assert!(!card.render_text().contains("F1 Score"));
 

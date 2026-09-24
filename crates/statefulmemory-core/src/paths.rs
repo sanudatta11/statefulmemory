@@ -37,6 +37,14 @@ pub fn data_dir() -> PathBuf {
     home.join(".statefulmemory")
 }
 
+pub fn user_bin_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".local").join("bin"))
+}
+
+pub fn managed_statefulmemory_path() -> Option<PathBuf> {
+    user_bin_dir().map(|dir| dir.join("statefulmemory"))
+}
+
 pub fn projects_dir() -> PathBuf {
     data_dir().join("projects")
 }

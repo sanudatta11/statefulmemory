@@ -4,7 +4,12 @@
 //! per-project version, the eval harness uses sidecar vec DBs). This module
 //! holds just the small types that both call sites use so signatures match.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
+
+pub const DEFAULT_CANDIDATE_DEPTH: i32 = 30;
+pub const DEFAULT_RRF_K: u32 = 60;
 
 /// Retrieval mode requested by the caller. The CLI flag `--mode` and the
 /// proto `mode` field deserialize to this.
@@ -57,6 +62,60 @@ pub struct HybridCandidate {
     pub rrf_score: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandidateTrace {
+    pub candidates: Vec<HybridCandidate>,
+    pub fact_parent_ids: Vec<u64>,
+}
+
+impl CandidateTrace {
+    pub fn ids(&self) -> Vec<u64> {
+        self.candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect()
+    }
+}
+
+pub fn fuse_candidate_trace(
+    bm25: &[u64],
+    dense: &[u64],
+    fact_parent_ids: &[u64],
+    k_const: u32,
+) -> CandidateTrace {
+    let fact_parents = dedup_preserving_order(fact_parent_ids);
+    let lists = vec![bm25.to_vec(), dense.to_vec(), fact_parents.clone()];
+    let scored = crate::rrf::rrf_fuse_scored(&lists, k_const);
+    let bm25_ranks = rank_map(bm25);
+    let dense_ranks = rank_map(dense);
+
+    CandidateTrace {
+        candidates: scored
+            .into_iter()
+            .map(|(id, rrf_score)| HybridCandidate {
+                id,
+                bm25_rank: bm25_ranks.get(&id).copied(),
+                dense_rank: dense_ranks.get(&id).copied(),
+                rrf_score,
+            })
+            .collect(),
+        fact_parent_ids: fact_parents,
+    }
+}
+
+fn dedup_preserving_order(ids: &[u64]) -> Vec<u64> {
+    let mut seen = HashSet::with_capacity(ids.len());
+    ids.iter().copied().filter(|id| seen.insert(*id)).collect()
+}
+
+fn rank_map(ids: &[u64]) -> HashMap<u64, usize> {
+    let mut ranks = HashMap::with_capacity(ids.len());
+    for (index, id) in ids.iter().copied().enumerate() {
+        ranks.entry(id).or_insert(index + 1);
+    }
+    ranks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +151,33 @@ mod tests {
         for mode in [HybridMode::Bm25, HybridMode::Hybrid] {
             assert_eq!(HybridMode::parse_wire(Some(mode.as_wire())), mode);
         }
+    }
+
+    #[test]
+    fn candidate_trace_preserves_lane_ranks_and_fact_parents() {
+        let trace = fuse_candidate_trace(&[101, 102, 103], &[103, 101, 104], &[105, 102, 102], 60);
+        assert_eq!(trace.fact_parent_ids, vec![105, 102]);
+        assert_eq!(trace.ids(), vec![101, 103, 102, 105, 104]);
+
+        let first = &trace.candidates[0];
+        assert_eq!(first.bm25_rank, Some(1));
+        assert_eq!(first.dense_rank, Some(2));
+        let fact_only = trace
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == 105)
+            .unwrap();
+        assert_eq!(fact_only.bm25_rank, None);
+        assert_eq!(fact_only.dense_rank, None);
+    }
+
+    #[test]
+    fn candidate_trace_empty_dense_lane_preserves_bm25_order() {
+        let trace = fuse_candidate_trace(&[8, 3, 1], &[], &[], DEFAULT_RRF_K);
+        assert_eq!(trace.ids(), vec![8, 3, 1]);
+        assert!(trace
+            .candidates
+            .iter()
+            .all(|candidate| candidate.dense_rank.is_none()));
     }
 }

@@ -88,6 +88,34 @@ pub fn insert_mention(
     Ok(())
 }
 
+pub fn remove_observation(conn: &Connection, observation_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM entity_mentions WHERE observation_id = ?1",
+        params![observation_id],
+    )
+    .map_err(|e| Error::internal(format!("remove observation mentions: {e}")))?;
+    conn.execute(
+        "DELETE FROM entity_edges WHERE relation = 'mentions'",
+        [],
+    )
+    .map_err(|e| Error::internal(format!("clear co-occurrence edges: {e}")))?;
+    conn.execute(
+        "INSERT INTO entity_edges
+            (from_entity, to_entity, relation, weight, first_seen, last_seen,
+             src_observation_id)
+         SELECT a.entity_id, b.entity_id, 'mentions', COUNT(DISTINCT a.observation_id),
+                NULL, NULL, MIN(a.observation_id)
+         FROM entity_mentions a
+         JOIN entity_mentions b
+           ON b.observation_id = a.observation_id
+          AND b.entity_id > a.entity_id
+         GROUP BY a.entity_id, b.entity_id",
+        [],
+    )
+    .map_err(|e| Error::internal(format!("rebuild co-occurrence edges: {e}")))?;
+    Ok(())
+}
+
 /// Increment-style edge write: existing (from,to,relation) rows accumulate
 /// weight (weight = weight + new) and refresh `last_seen`; new pairs insert at
 /// the given weight. Self-edges are silently skipped (logged at debug).

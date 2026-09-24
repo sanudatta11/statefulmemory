@@ -116,6 +116,24 @@ pub enum WriteRequest {
         f: Box<dyn FnOnce(&mut Connection) -> Result<()> + Send>,
         reply: oneshot::Sender<Result<()>>,
     },
+    EnqueueJob {
+        job: crate::jobs::NewJob,
+        reply: oneshot::Sender<Result<i64>>,
+    },
+    ClaimJob {
+        kind: String,
+        reply: oneshot::Sender<Result<Option<crate::jobs::Job>>>,
+    },
+    CompleteJob {
+        id: i64,
+        reply: oneshot::Sender<Result<bool>>,
+    },
+    FailJob {
+        id: i64,
+        error: String,
+        retry_delay_secs: i64,
+        reply: oneshot::Sender<Result<crate::jobs::JobStatus>>,
+    },
 }
 
 /// Caller-supplied input for [`WriteRequest::InsertFacts`]. Mirrors
@@ -385,6 +403,35 @@ fn process_batch(
                     let _ = reply.send(r);
                 }));
             }
+            WriteRequest::EnqueueJob { job, reply } => {
+                let r = crate::jobs::enqueue(&tx, &job);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
+            WriteRequest::ClaimJob { kind, reply } => {
+                let r = crate::jobs::claim(&tx, &kind);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
+            WriteRequest::CompleteJob { id, reply } => {
+                let r = crate::jobs::complete(&tx, id);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
+            WriteRequest::FailJob {
+                id,
+                error,
+                retry_delay_secs,
+                reply,
+            } => {
+                let r = crate::jobs::fail(&tx, id, &error, retry_delay_secs);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
             WriteRequest::Custom { f, reply } => {
                 // Custom needs a `&mut Connection` but we hold a Transaction.
                 // We commit the in-flight tx, then run the closure against the
@@ -471,9 +518,11 @@ fn handle_save_observation(
                         revision_count = revision_count + 1,
                         updated_at = ?5,
                         last_seen_at = ?5,
-                        review_after = COALESCE(?6, review_after),
-                        code_anchor = COALESCE(?7, code_anchor)
-                  WHERE id = ?1",
+                         review_after = COALESCE(?6, review_after),
+                         code_anchor = COALESCE(?7, code_anchor),
+                         exported_at = NULL
+                   WHERE id = ?1",
+
                     params![
                         existing.id,
                         &input.title,
@@ -485,6 +534,7 @@ fn handle_save_observation(
                     ],
                 )
                 .map_err(|e| Error::internal(format!("topic upsert update: {e}")))?;
+                invalidate_observation_projections(tx, existing.id)?;
                 return fetch_observation_by_id(tx, existing.id)?
                     .ok_or_else(|| Error::internal("topic upsert: row vanished"));
             }
@@ -498,10 +548,12 @@ fn handle_save_observation(
             fetch_active_obs_by_hash_in_window(tx, &normalized_hash, input.dedupe_window_secs)?
         {
             tx.execute(
-                "UPDATE observations
-                    SET duplicate_count = duplicate_count + 1,
-                        last_seen_at = ?2
-                  WHERE id = ?1",
+                    "UPDATE observations
+                        SET duplicate_count = duplicate_count + 1,
+                            last_seen_at = ?2,
+                            exported_at = NULL
+                      WHERE id = ?1",
+
                 params![existing.id, &now],
             )
             .map_err(|e| Error::internal(format!("hash-dedupe update: {e}")))?;
@@ -577,11 +629,13 @@ fn handle_save_observation(
             "UPDATE observations
                 SET deleted_at = ?2,
                     delete_reason = 'superseded',
-                    superseded_by_id = ?3
+                    superseded_by_id = ?3,
+                    exported_at = NULL
               WHERE id = ?1",
             params![old_id, &now, id],
         )
         .map_err(|e| Error::internal(format!("supersede old obs: {e}")))?;
+        invalidate_observation_projections(tx, old_id)?;
         tx.execute(
             "UPDATE observations SET superseded_count = superseded_count + 1 WHERE id = ?1",
             params![id],
@@ -638,7 +692,8 @@ fn handle_end_session(
     let now = mtime::now_rfc3339();
     let n = tx
         .execute(
-            "UPDATE sessions SET ended_at = ?2, summary = COALESCE(?3, summary) WHERE id = ?1",
+            "UPDATE sessions          SET ended_at = ?2, summary = COALESCE(?3, summary), exported_at = NULL WHERE id = ?1",
+
             params![id, now, summary],
         )
         .map_err(|e| Error::internal(format!("update session: {e}")))?;
@@ -660,7 +715,8 @@ fn handle_save_session_summary(
 ) -> Result<crate::models::Session> {
     let n = tx
         .execute(
-            "UPDATE sessions SET summary = ?2 WHERE id = ?1",
+            "UPDATE sessions          SET summary = ?2, exported_at = NULL WHERE id = ?1",
+
             params![id, summary],
         )
         .map_err(|e| Error::internal(format!("update session summary: {e}")))?;
@@ -705,15 +761,81 @@ fn handle_save_prompt(
     .map_err(|e| Error::internal(format!("post-insert prompt fetch: {e}")))
 }
 
+pub fn invalidate_observation_projections(
+    conn: &rusqlite::Connection,
+    observation_id: i64,
+) -> Result<()> {
+    invalidate_observation_content(conn, observation_id)?;
+    crate::graph::remove_observation(conn, observation_id)
+}
+
+pub fn invalidate_observation_content(
+    conn: &rusqlite::Connection,
+    observation_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM observations_vec WHERE rowid = ?1",
+        params![observation_id],
+    )
+    .map_err(|e| Error::internal(format!("invalidate embedding vector: {e}")))?;
+    conn.execute(
+        "DELETE FROM observation_embedding_meta WHERE observation_id = ?1",
+        params![observation_id],
+    )
+    .map_err(|e| Error::internal(format!("invalidate embedding meta: {e}")))?;
+    conn.execute(
+        "DELETE FROM facts WHERE obs_id = ?1",
+        params![observation_id],
+    )
+    .map_err(|e| Error::internal(format!("invalidate facts: {e}")))?;
+    conn.execute(
+        "UPDATE observations
+            SET key_expand = '',
+                verify_state = 'unanchored',
+                verified_commit = NULL,
+                verified_at = NULL
+          WHERE id = ?1",
+        params![observation_id],
+    )
+    .map_err(|e| Error::internal(format!("invalidate observation projections: {e}")))?;
+    conn.execute(
+        "DELETE FROM observation_anchors WHERE observation_id = ?1",
+        params![observation_id],
+    )
+    .map_err(|e| Error::internal(format!("invalidate observation anchors: {e}")))?;
+    Ok(())
+}
+
+fn observation_id_for_key(
+    tx: &rusqlite::Transaction<'_>,
+    key: &ObservationKey,
+) -> Result<i64> {
+    match key {
+        ObservationKey::Id(id) => Ok(*id),
+        ObservationKey::SyncId(sync_id) => tx
+            .query_row(
+                "SELECT id FROM observations WHERE sync_id = ?1",
+                params![sync_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::not_found(format!("observation sync_id '{sync_id}': {e}"))),
+    }
+}
+
 fn handle_soft_delete_obs(tx: &rusqlite::Transaction<'_>, key: &ObservationKey) -> Result<()> {
+    let observation_id = observation_id_for_key(tx, key)?;
     let now = mtime::now_rfc3339();
     let n = match key {
         ObservationKey::Id(id) => tx.execute(
-            "UPDATE observations SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            "UPDATE observations
+                SET deleted_at = ?2, exported_at = NULL
+              WHERE id = ?1 AND deleted_at IS NULL",
             params![id, now],
         ),
         ObservationKey::SyncId(s) => tx.execute(
-            "UPDATE observations SET deleted_at = ?2 WHERE sync_id = ?1 AND deleted_at IS NULL",
+            "UPDATE observations
+                SET deleted_at = ?2, exported_at = NULL
+              WHERE sync_id = ?1 AND deleted_at IS NULL",
             params![s, now],
         ),
     }
@@ -721,10 +843,12 @@ fn handle_soft_delete_obs(tx: &rusqlite::Transaction<'_>, key: &ObservationKey) 
     if n == 0 {
         return Err(Error::not_found("observation"));
     }
-    Ok(())
+    invalidate_observation_projections(tx, observation_id)
 }
 
 fn handle_hard_delete_obs(tx: &rusqlite::Transaction<'_>, key: &ObservationKey) -> Result<()> {
+    let observation_id = observation_id_for_key(tx, key)?;
+    invalidate_observation_projections(tx, observation_id)?;
     let n = match key {
         ObservationKey::Id(id) => tx.execute("DELETE FROM observations WHERE id = ?1", params![id]),
         ObservationKey::SyncId(s) => {
@@ -768,10 +892,12 @@ fn handle_update_obs(
                 scope = ?5,
                 type = ?6,
                 normalized_hash = ?7,
-                code_anchor = ?8,
-                revision_count = revision_count + 1,
-                updated_at = ?9
-          WHERE id = ?1",
+                 code_anchor = ?8,
+                 revision_count = revision_count + 1,
+                 updated_at = ?9,
+                 exported_at = NULL
+            WHERE id = ?1",
+
         params![
             existing.id,
             title,
@@ -785,6 +911,7 @@ fn handle_update_obs(
         ],
     )
     .map_err(|e| Error::internal(format!("update: {e}")))?;
+    invalidate_observation_projections(tx, existing.id)?;
     fetch_observation_by_id(tx, existing.id)?
         .ok_or_else(|| Error::internal("post-update fetch: row vanished"))
 }
@@ -1449,6 +1576,105 @@ mod tests {
         );
         // updated_at advanced (or at least did not regress).
         assert!(updated.updated_at >= original.updated_at);
+    }
+
+    #[test]
+    fn update_invalidates_derived_projections() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let obs = handle_save_observation(
+            &tx,
+            SaveObservationInput {
+                title: "`alpha`".into(),
+                content: "`alpha` and `beta`".into(),
+                ..save_input("unused")
+            },
+            None,
+        )
+        .unwrap();
+        handle_insert_embedding(&tx, obs.id, &vec![0.0; 384], "test", false).unwrap();
+        handle_insert_facts(
+            &tx,
+            obs.id,
+            &[NewFact {
+                subject: "alpha".into(),
+                predicate: "is".into(),
+                object: "beta".into(),
+                temporal: None,
+                salience: None,
+                extracted_by: "test".into(),
+            }],
+        )
+        .unwrap();
+        handle_index_graph(&tx, obs.id, "`alpha`", "`alpha` and `beta`", &[], 1).unwrap();
+        let patch = ObservationPatch {
+            content: Some("updated content".into()),
+            ..Default::default()
+        };
+        handle_update_obs(&tx, &ObservationKey::Id(obs.id), &patch).unwrap();
+        let embedding_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM observation_embedding_meta WHERE observation_id = ?1",
+                params![obs.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let fact_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE obs_id = ?1",
+                params![obs.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mention_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM entity_mentions WHERE observation_id = ?1",
+                params![obs.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let state: (String, String, Option<String>) = tx
+            .query_row(
+                "SELECT key_expand, verify_state, exported_at FROM observations WHERE id = ?1",
+                params![obs.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(embedding_count, 0);
+        assert_eq!(fact_count, 0);
+        assert_eq!(mention_count, 0);
+        assert_eq!(state, (String::new(), "unanchored".into(), None));
+    }
+
+    #[test]
+    fn update_resets_export_marker() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let obs = handle_save_observation(&tx, save_input("v1"), None).unwrap();
+        tx.execute(
+            "UPDATE observations SET exported_at = '2026-01-01T00:00:00Z' WHERE id = ?1",
+            params![obs.id],
+        )
+        .unwrap();
+        handle_update_obs(
+            &tx,
+            &ObservationKey::Id(obs.id),
+            &ObservationPatch {
+                title: Some("v2".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let exported_at: Option<String> = tx
+            .query_row(
+                "SELECT exported_at FROM observations WHERE id = ?1",
+                params![obs.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(exported_at, None);
     }
 
     #[test]

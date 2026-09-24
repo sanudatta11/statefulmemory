@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use statefulmemory_client::channel::connect_uds;
-use statefulmemory_client::{with_retry, ClientError};
+use statefulmemory_client::ClientError;
 use statefulmemory_proto::stateful_memory_client::StatefulMemoryClient;
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -94,13 +94,13 @@ impl LazyClient {
                     return Err(first);
                 }
                 drop(guard);
-                // Best-effort: a failed spawn must not mask the dial error.
-                let _ = self.try_recover().await;
+                let recovery_error = self.try_recover().await.err();
                 let mut guard = self.cached.lock().await;
                 if let Some(client) = guard.as_ref() {
                     return Ok(client.clone());
                 }
-                let client = dial(&self.socket_path)?;
+                let client = dial(&self.socket_path)
+                    .map_err(|dial_error| recovery_error.unwrap_or(dial_error))?;
                 *guard = Some(client.clone());
                 Ok(client)
             }
@@ -118,15 +118,23 @@ impl LazyClient {
             Ok(c) => c,
             Err(e) => return Err(e),
         };
-        match with_retry(|| op(client.clone())).await {
+        match op(client.clone()).await {
             Ok(v) => Ok(v),
             Err(status) if status.code() == tonic::Code::Unavailable => {
                 // Daemon died mid-session (or restarted): repair once, re-dial, retry.
                 self.invalidate().await;
-                // Best-effort — re-dial below reports the final error.
-                let _ = self.try_recover().await;
+                let recovery_error = self.try_recover().await.err();
                 let client = self.get_after_recover().await?;
-                op(client).await.map_err(McpError::from)
+                match op(client).await {
+                    Ok(value) => Ok(value),
+                    Err(status)
+                        if status.code() == tonic::Code::Unavailable
+                            && recovery_error.is_some() =>
+                    {
+                        Err(recovery_error.expect("recovery error checked"))
+                    }
+                    Err(status) => Err(McpError::from(status)),
+                }
             }
             Err(status) => Err(McpError::from(status)),
         }
@@ -169,7 +177,9 @@ mod tests {
         async fn recover(&self) -> Result<(), McpError> {
             self.hits.fetch_add(1, Ordering::SeqCst);
             if self.fail {
-                Err(McpError::DaemonNotRunning)
+                Err(McpError::Recovery {
+                    message: "test recovery failure".into(),
+                })
             } else {
                 Ok(())
             }
@@ -198,7 +208,7 @@ mod tests {
             rec.clone(),
         );
         let err = lc.get().await.expect_err("still missing after recover");
-        assert!(matches!(err, McpError::SocketMissing { .. }), "{err:?}");
+        assert!(matches!(err, McpError::Recovery { .. }), "{err:?}");
         assert_eq!(rec.hits.load(Ordering::SeqCst), 1, "recover once per get");
     }
 

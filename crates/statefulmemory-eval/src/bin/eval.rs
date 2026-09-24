@@ -57,6 +57,9 @@ enum Commands {
         #[arg(long, value_enum)]
         mode: Option<RetrievalMode>,
 
+        #[arg(long, default_value_t = false)]
+        production_profile: bool,
+
         /// Evidence window (±N raw observations around each hit).
         #[arg(long, default_value_t = 2)]
         evidence_window: u8,
@@ -161,6 +164,7 @@ async fn main() -> Result<()> {
             out,
             skip_ingest,
             mode,
+            production_profile,
             evidence_window,
             shards,
         } => {
@@ -174,6 +178,7 @@ async fn main() -> Result<()> {
                 retrieval.rerank = matches!(mode, RetrievalMode::HybridRerank);
             }
             retrieval.k = k;
+            retrieval.production_profile = production_profile;
             retrieval.evidence_window = evidence_window;
 
             // Auto-derive trace file path from --out: foo.md -> foo.trace.jsonl.

@@ -119,6 +119,61 @@ impl GlobalDb {
         Ok(())
     }
 
+    pub fn clear_project(&mut self, project: &str) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| Error::internal(format!("global clear: begin tx: {e}")))?;
+        tx.execute(
+            "DELETE FROM observations WHERE project = ?1",
+            params![project],
+        )
+        .map_err(|e| Error::internal(format!("global clear observations: {e}")))?;
+        tx.execute(
+            "INSERT INTO manifest (project, last_synced_at, observation_count)
+             VALUES (?1, datetime('now'), 0)
+             ON CONFLICT(project) DO UPDATE SET
+                 last_synced_at = excluded.last_synced_at,
+                 observation_count = 0",
+            params![project],
+        )
+        .map_err(|e| Error::internal(format!("global clear manifest: {e}")))?;
+        tx.commit()
+            .map_err(|e| Error::internal(format!("global clear commit: {e}")))?;
+        Ok(())
+    }
+
+    pub fn delete_observation(&mut self, project: &str, source_id: i64) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| Error::internal(format!("global delete: begin tx: {e}")))?;
+        tx.execute(
+            "DELETE FROM observations WHERE project = ?1 AND source_id = ?2",
+            params![project, source_id],
+        )
+        .map_err(|e| Error::internal(format!("global delete observation: {e}")))?;
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM observations WHERE project = ?1",
+                params![project],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::internal(format!("global delete count: {e}")))?;
+        tx.execute(
+            "INSERT INTO manifest (project, last_synced_at, observation_count)
+             VALUES (?1, datetime('now'), ?2)
+             ON CONFLICT(project) DO UPDATE SET
+                 last_synced_at = excluded.last_synced_at,
+                 observation_count = excluded.observation_count",
+            params![project, count],
+        )
+        .map_err(|e| Error::internal(format!("global delete manifest: {e}")))?;
+        tx.commit()
+            .map_err(|e| Error::internal(format!("global delete commit: {e}")))?;
+        Ok(())
+    }
+
     /// BM25-ranked FTS5 search across every project. The `query` string is
     /// passed to FTS5 verbatim — callers should pre-escape if it contains
     /// double-quotes / column qualifiers (mirrors per-project semantics).
@@ -286,6 +341,18 @@ mod tests {
         let projects: Vec<_> = hits.iter().map(|h| h.project.as_str()).collect();
         assert!(projects.contains(&"repo-a"));
         assert!(projects.contains(&"repo-b"));
+    }
+
+    #[test]
+    fn delete_observation_removes_mirror_row_and_updates_count() {
+        let dir = TempDir::new().unwrap();
+        let mut db = GlobalDb::open(dir.path()).unwrap();
+        db.upsert_observation("repo-a", &obs(1, "t", "c")).unwrap();
+        db.upsert_observation("repo-a", &obs(2, "t2", "c2")).unwrap();
+        db.delete_observation("repo-a", 1).unwrap();
+        let hits = db.search("t", 5).unwrap();
+        assert!(hits.iter().all(|hit| hit.source_id != 1));
+        assert_eq!(db.manifest_for("repo-a").unwrap().unwrap().observation_count, 1);
     }
 
     #[test]

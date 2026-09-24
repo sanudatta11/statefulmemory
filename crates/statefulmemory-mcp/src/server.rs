@@ -21,8 +21,8 @@ use crate::tools::{
     AddArgs, ContextArgs, DecideArgs, FactsArgs, GraphQueryArgs, HealthArgs, RecentArgs, SearchArgs,
 };
 
-fn default_search_mode() -> String {
-    statefulmemory_core::config::load_resolved(None).search.mode
+fn default_search_mode(project: &str) -> String {
+    statefulmemory_core::config::load_resolved(Some(project)).search.mode
 }
 
 /// Local stdio MCP server exposing statefulmemory memory operations as tools.
@@ -230,6 +230,7 @@ impl MemoryServer {
             }
             .into());
         }
+        let mode = args.mode.unwrap_or_else(|| default_search_mode(&project));
         let req = statefulmemory_proto::SearchObservationsRequest {
             project_name: project,
             query: args.query,
@@ -237,7 +238,7 @@ impl MemoryServer {
             scope: args.scope,
             all_projects: false,
             limit: clamp_limit(args.limit, 10),
-            mode: Some(args.mode.unwrap_or_else(default_search_mode)),
+            mode: Some(mode),
             rerank: args.rerank,
             max_tokens: args.max_tokens,
         };
@@ -279,7 +280,7 @@ impl MemoryServer {
         // Spec P6: optional anchor → tool_name hint (file::symbol style).
         let req = statefulmemory_proto::SaveObservationRequest {
             project_name: project,
-            sync_id: None,
+            sync_id: Some(format!("mcp-{}", uuid::Uuid::new_v4())),
             session_id: args.session.unwrap_or_default(),
             r#type: args.type_,
             title: args.title,
@@ -320,10 +321,11 @@ impl MemoryServer {
         Parameters(args): Parameters<ContextArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let project = resolve_project(&self.base_project, args.project.as_deref())?;
+        let mode = args.mode.unwrap_or_else(|| default_search_mode(&project));
         let req = statefulmemory_proto::ContextRequest {
             project_name: project,
             recent_limit: clamp_limit(args.limit, 10),
-            mode: Some(args.mode.unwrap_or_else(default_search_mode)),
+            mode: Some(mode),
             rerank: args.rerank,
             query: args.query.filter(|q| !q.trim().is_empty()),
             anchor: None,

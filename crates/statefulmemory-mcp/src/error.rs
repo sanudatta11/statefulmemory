@@ -25,7 +25,9 @@ pub enum McpError {
     #[error("unknown project: {name}")]
     UnknownProject { name: String },
 
-    /// A daemon RPC returned an error status.
+    #[error("daemon recovery failed: {message}")]
+    Recovery { message: String },
+
     #[error("daemon RPC failed ({code}): {message}")]
     Rpc { code: String, message: String },
 
@@ -42,6 +44,7 @@ impl McpError {
             McpError::DaemonNotRunning => "daemon_not_running",
             McpError::SocketMissing { .. } => "socket_missing",
             McpError::UnknownProject { .. } => "unknown_project",
+            McpError::Recovery { .. } => "daemon_recovery_failed",
             McpError::Rpc { .. } => "rpc_error",
             McpError::BadArgs { .. } => "bad_args",
         }
@@ -57,6 +60,7 @@ impl McpError {
             McpError::UnknownProject { .. } => {
                 Some("list known projects with `statefulmemory project list`")
             }
+            McpError::Recovery { .. } => Some("check the daemon log and rerun `statefulmemory install`"),
             _ => None,
         }
     }
@@ -84,9 +88,10 @@ impl From<McpError> for ErrorData {
                 ErrorData::invalid_params(message, Some(data))
             }
             // Environment / daemon problems map to internal_error.
-            McpError::DaemonNotRunning | McpError::SocketMissing { .. } | McpError::Rpc { .. } => {
-                ErrorData::internal_error(message, Some(data))
-            }
+            McpError::DaemonNotRunning
+            | McpError::SocketMissing { .. }
+            | McpError::Recovery { .. }
+            | McpError::Rpc { .. } => ErrorData::internal_error(message, Some(data)),
         }
     }
 }

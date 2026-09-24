@@ -31,8 +31,8 @@ pub async fn handle(
     if !req.file.ends_with(".mem") {
         return Err(Status::invalid_argument("export path must end with .mem"));
     }
-    let dest = PathBuf::from(&req.file);
     let project = map(state.registry.get_or_open(&req.project_name))?;
+    let dest = state.resolve_user_path(&project, &req.file, false)?;
     run(&project, dest, req.seed_phrase.filter(|s| !s.is_empty())).await
 }
 

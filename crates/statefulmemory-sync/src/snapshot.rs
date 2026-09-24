@@ -8,11 +8,12 @@ use statefulmemory_core::error::Error;
 
 use crate::error::{Result, SyncError};
 use crate::mem_archive::{
-    ArchivePayload, ArchivedEntity, ArchivedEntityEdge, ArchivedEntityMention, ArchivedFact,
-    ArchivedObservation, ArchivedPrompt, ArchivedRelation, ArchivedSession,
+    ArchivePayload, ArchivedAnchor, ArchivedEntity, ArchivedEntityEdge, ArchivedEntityMention,
+    ArchivedFact, ArchivedObservation, ArchivedPrompt, ArchivedRelation, ArchivedSession,
+    ARCHIVE_VERSION,
 };
 
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 12;
 
 #[derive(Debug, Clone, Default)]
 pub struct ApplyReport {
@@ -36,6 +37,7 @@ fn storage_err(e: rusqlite::Error) -> SyncError {
 pub fn dump_payload(conn: &Connection, project: &str, exported_at: &str) -> Result<ArchivePayload> {
     let sessions = dump_sessions(conn)?;
     let observations = dump_observations(conn)?;
+    let anchors = dump_anchors(conn)?;
     let prompts = dump_prompts(conn)?;
     let facts = dump_facts(conn)?;
     let relations = dump_relations(conn)?;
@@ -44,11 +46,12 @@ pub fn dump_payload(conn: &Connection, project: &str, exported_at: &str) -> Resu
     let entity_edges = dump_edges(conn)?;
     Ok(ArchivePayload {
         format: "statefulmemory.archive".into(),
-        archive_version: 1,
+        archive_version: ARCHIVE_VERSION,
         schema_version: SCHEMA_VERSION,
         exported_at: exported_at.into(),
         project: project.into(),
         observations,
+        anchors,
         sessions,
         prompts,
         facts,
@@ -143,7 +146,9 @@ fn dump_observations(conn: &Connection) -> Result<Vec<ArchivedObservation>> {
         .prepare(
             "SELECT id, sync_id, session_id, type, title, content, tool_name, scope,
                     created_by, topic_key, normalized_hash, revision_count, duplicate_count,
-                    last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor
+                    last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor,
+                    verify_state, verified_commit, verified_at, superseded_by_id, delete_reason,
+                    superseded_count, key_expand, exported_at
              FROM observations ORDER BY id",
         )
         .map_err(storage_err)?;
@@ -169,6 +174,40 @@ fn dump_observations(conn: &Connection) -> Result<Vec<ArchivedObservation>> {
                 deleted_at: row.get(16)?,
                 review_after: row.get(17)?,
                 code_anchor: row.get(18)?,
+                verify_state: row.get(19)?,
+                verified_commit: row.get(20)?,
+                verified_at: row.get(21)?,
+                superseded_by_id: row.get(22)?,
+                delete_reason: row.get(23)?,
+                superseded_count: row.get(24)?,
+                key_expand: row.get(25)?,
+                exported_at: row.get(26)?,
+            })
+        })
+        .map_err(storage_err)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(storage_err)
+}
+
+fn dump_anchors(conn: &Connection) -> Result<Vec<ArchivedAnchor>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, observation_id, path, symbol, line_start, line_end, anchor_commit, \
+                    content_digest, created_at
+             FROM observation_anchors ORDER BY observation_id, id",
+        )
+        .map_err(storage_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ArchivedAnchor {
+                id: row.get(0)?,
+                observation_id: row.get(1)?,
+                path: row.get(2)?,
+                symbol: row.get(3)?,
+                line_start: row.get(4)?,
+                line_end: row.get(5)?,
+                anchor_commit: row.get(6)?,
+                content_digest: row.get(7)?,
+                created_at: row.get(8)?,
             })
         })
         .map_err(storage_err)?;
@@ -281,7 +320,8 @@ pub fn apply_payload(
             .map_err(storage_err)?;
         if existed.is_some() {
             tx.execute(
-                "UPDATE sessions SET directory = ?2, started_at = ?3, ended_at = ?4, summary = ?5
+                "UPDATE sessions SET directory = ?2, started_at = ?3, ended_at = ?4, summary = ?5, \
+                        exported_at = NULL \
                  WHERE id = ?1",
                 params![&s.id, &s.directory, &s.started_at, &s.ended_at, &s.summary],
             )
@@ -309,34 +349,46 @@ pub fn apply_payload(
             .optional()
             .map_err(storage_err)?;
         if let Some(id) = existing {
+            statefulmemory_storage::write::invalidate_observation_content(&tx, id)?;
             tx.execute(
                 "UPDATE observations SET
                     session_id = ?2, type = ?3, title = ?4, content = ?5, tool_name = ?6,
                     scope = ?7, created_by = ?8, topic_key = ?9, normalized_hash = ?10,
                     revision_count = ?11, duplicate_count = ?12, last_seen_at = ?13,
                     created_at = ?14, updated_at = ?15, deleted_at = ?16, review_after = ?17,
-                    code_anchor = ?18
+                    code_anchor = ?18, verify_state = ?19, verified_commit = ?20,
+                    verified_at = ?21, superseded_by_id = ?22, delete_reason = ?23,
+                    superseded_count = ?24, key_expand = ?25, exported_at = ?26
                  WHERE id = ?1",
-                params![
-                    id,
-                    &o.session_id,
-                    &o.r#type,
-                    &o.title,
-                    &o.content,
-                    &o.tool_name,
-                    &o.scope,
-                    &o.created_by,
-                    &o.topic_key,
-                    &o.normalized_hash,
-                    o.revision_count,
-                    o.duplicate_count,
-                    &o.last_seen_at,
-                    &o.created_at,
-                    &o.updated_at,
-                    &o.deleted_at,
-                    &o.review_after,
-                    &o.code_anchor,
-                ],
+                 params![
+                     id,
+                     &o.session_id,
+                     &o.r#type,
+                     &o.title,
+                     &o.content,
+                     &o.tool_name,
+                     &o.scope,
+                     &o.created_by,
+                     &o.topic_key,
+                     &o.normalized_hash,
+                     o.revision_count,
+                     o.duplicate_count,
+                     &o.last_seen_at,
+                     &o.created_at,
+                     &o.updated_at,
+                     &o.deleted_at,
+                     &o.review_after,
+                     &o.code_anchor,
+                     &o.verify_state,
+                     &o.verified_commit,
+                     &o.verified_at,
+                     &o.superseded_by_id,
+                     &o.delete_reason,
+                     o.superseded_count,
+                     &o.key_expand,
+                     &o.exported_at,
+                 ],
+
             )
             .map_err(storage_err)?;
             obs_id_map.insert(o.id, id);
@@ -344,10 +396,13 @@ pub fn apply_payload(
         } else {
             tx.execute(
                 "INSERT INTO observations
-                    (sync_id, session_id, type, title, content, tool_name, scope,
-                     created_by, topic_key, normalized_hash, revision_count, duplicate_count,
-                     last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                     (sync_id, session_id, type, title, content, tool_name, scope,
+                      created_by, topic_key, normalized_hash, revision_count, duplicate_count,
+                      last_seen_at, created_at, updated_at, deleted_at, review_after, code_anchor,
+                      verify_state, verified_commit, verified_at, superseded_by_id, delete_reason,
+                      superseded_count, key_expand, exported_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)",
+
                 params![
                     &o.sync_id,
                     &o.session_id,
@@ -367,6 +422,14 @@ pub fn apply_payload(
                     &o.deleted_at,
                     &o.review_after,
                     &o.code_anchor,
+                    &o.verify_state,
+                    &o.verified_commit,
+                    &o.verified_at,
+                    &o.superseded_by_id,
+                    &o.delete_reason,
+                    o.superseded_count,
+                    &o.key_expand,
+                    &o.exported_at,
                 ],
             )
             .map_err(storage_err)?;
@@ -374,6 +437,48 @@ pub fn apply_payload(
             obs_id_map.insert(o.id, new_id);
             report.observations_imported += 1;
         }
+    }
+
+    for o in &payload.observations {
+        let Some(&local_id) = obs_id_map.get(&o.id) else {
+            continue;
+        };
+        let superseded = o.superseded_by_id.and_then(|id| obs_id_map.get(&id).copied());
+        tx.execute(
+            "UPDATE observations SET superseded_by_id = ?1 WHERE id = ?2",
+            params![superseded, local_id],
+        )
+        .map_err(storage_err)?;
+    }
+    for &obs_id in obs_id_map.values() {
+        tx.execute(
+            "DELETE FROM observation_anchors WHERE observation_id = ?1",
+            params![obs_id],
+        )
+        .map_err(storage_err)?;
+    }
+    for anchor in &payload.anchors {
+        let Some(&obs_id) = obs_id_map.get(&anchor.observation_id) else {
+            report.skipped += 1;
+            continue;
+        };
+        tx.execute(
+            "INSERT INTO observation_anchors
+                (observation_id, path, symbol, line_start, line_end, anchor_commit,
+                 content_digest, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                obs_id,
+                &anchor.path,
+                &anchor.symbol,
+                &anchor.line_start,
+                &anchor.line_end,
+                &anchor.anchor_commit,
+                &anchor.content_digest,
+                &anchor.created_at,
+            ],
+        )
+        .map_err(storage_err)?;
     }
 
     let mut fact_id_map: HashMap<i64, i64> = HashMap::new();
@@ -612,6 +717,7 @@ fn wipe_project(conn: &Connection) -> Result<()> {
         "DELETE FROM observation_relations",
         "DELETE FROM facts",
         "DELETE FROM observation_embedding_meta",
+        "DELETE FROM observation_anchors",
         "DELETE FROM user_prompts",
         "DELETE FROM observations",
         "DELETE FROM sessions",
@@ -690,6 +796,71 @@ mod tests {
             .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n2, 1);
+    }
+
+    #[test]
+    fn dump_apply_preserves_observation_metadata_and_anchors() {
+        let (_dir, src) = open_db();
+        seed(&src);
+        let obs_id: i64 = src
+            .query_row("SELECT id FROM observations ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        src.execute(
+            "UPDATE observations
+             SET verify_state = 'verified', verified_commit = 'abc123', verified_at = '2026-09-12T00:00:00Z',
+                 superseded_by_id = ?1, delete_reason = 'superseded', superseded_count = 2,
+                 key_expand = 'alpha beta', exported_at = '2026-09-12T00:00:00Z'
+             WHERE id = ?1",
+            params![obs_id],
+        )
+        .unwrap();
+        src.execute(
+            "INSERT INTO observation_anchors
+                (observation_id, path, symbol, line_start, line_end, anchor_commit, content_digest, created_at)
+             VALUES (?1, 'src/main.rs', 'main', 1, 2, 'abc123', 'digest', '2026-09-12T00:00:00Z')",
+            params![obs_id],
+        )
+        .unwrap();
+        let payload = dump_payload(&src, "demo", "2026-09-12T00:00:00Z").unwrap();
+        let (_dir2, mut dst) = open_db();
+        apply_payload(&mut dst, &payload, "merge").unwrap();
+        let metadata: (String, Option<String>, Option<String>, Option<i64>, Option<String>, i32, String, Option<String>) = dst
+            .query_row(
+                "SELECT verify_state, verified_commit, verified_at, superseded_by_id, delete_reason,
+                        superseded_count, key_expand, exported_at
+                 FROM observations WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(metadata.0, "verified");
+        assert_eq!(metadata.1.as_deref(), Some("abc123"));
+        assert_eq!(metadata.3, Some(1));
+        assert_eq!(metadata.5, 2);
+        assert_eq!(metadata.6, "alpha beta");
+        assert_eq!(metadata.7.as_deref(), Some("2026-09-12T00:00:00Z"));
+        let anchor: (String, Option<String>, Option<String>, Option<String>) = dst
+            .query_row(
+                "SELECT path, symbol, anchor_commit, content_digest FROM observation_anchors",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(anchor.0, "src/main.rs");
+        assert_eq!(anchor.1.as_deref(), Some("main"));
+        assert_eq!(anchor.2.as_deref(), Some("abc123"));
+        assert_eq!(anchor.3.as_deref(), Some("digest"));
     }
 
     #[test]
@@ -1005,8 +1176,8 @@ mod tests {
     ) -> ArchivePayload {
         ArchivePayload {
             format: "statefulmemory.archive".into(),
-            archive_version: 1,
-            schema_version: 9,
+            archive_version: ARCHIVE_VERSION,
+            schema_version: 12,
             exported_at: "2026-09-12T00:00:00Z".into(),
             project: "demo".into(),
             observations: vec![ArchivedObservation {
@@ -1027,9 +1198,19 @@ mod tests {
                 created_at: "2026-09-01T00:00:00Z".into(),
                 updated_at: "2026-09-01T00:00:00Z".into(),
                 deleted_at: None,
-                review_after: None,
-                code_anchor: None,
-            }],
+                 review_after: None,
+                 code_anchor: None,
+                 verify_state: "unanchored".into(),
+                 verified_commit: None,
+                 verified_at: None,
+                 superseded_by_id: None,
+                 delete_reason: None,
+                 superseded_count: 0,
+                 key_expand: String::new(),
+                 exported_at: None,
+             }],
+            anchors: vec![],
+
             sessions: vec![ArchivedSession {
                 id: "s1".into(),
                 directory: "/tmp".into(),

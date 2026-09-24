@@ -193,5 +193,27 @@ pub fn audit_and_repair(conn: &Connection, auto_repair: bool) -> Result<Vec<Doct
         });
     }
 
+    let job_counts = crate::jobs::status_counts(conn).unwrap_or_default();
+    let dead_jobs = job_counts
+        .iter()
+        .find(|(status, _)| status == "dead")
+        .map(|(_, count)| *count)
+        .unwrap_or(0);
+    let pending_jobs = job_counts
+        .iter()
+        .find(|(status, _)| status == "pending")
+        .map(|(_, count)| *count)
+        .unwrap_or(0);
+    findings.push(DoctorFinding {
+        code: "DURABLE_JOBS".into(),
+        severity: if dead_jobs > 0 { "warn" } else { "info" }.into(),
+        message: format!("Durable jobs: {pending_jobs} pending, {dead_jobs} dead"),
+        remedy: if dead_jobs > 0 {
+            Some("Inspect dead jobs and requeue after correcting provider/configuration errors".into())
+        } else {
+            None
+        },
+    });
+
     Ok(findings)
 }

@@ -12,13 +12,18 @@ use crate::error::McpError;
 /// per-call override. A present-but-empty override is a caller error rather
 /// than a silent fallback (so a typo is not masked).
 pub fn resolve_project(base: &str, over: Option<&str>) -> Result<String, McpError> {
-    match over {
-        Some(p) if !p.trim().is_empty() => Ok(p.trim().to_string()),
-        Some(_) => Err(McpError::BadArgs {
-            message: "project override must not be empty".to_string(),
-        }),
-        None => Ok(base.to_string()),
-    }
+    let raw = match over {
+        Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+        Some(_) => {
+            return Err(McpError::BadArgs {
+                message: "project override must not be empty".to_string(),
+            })
+        }
+        None => base.to_string(),
+    };
+    statefulmemory_core::project::normalize(&raw).map_err(|e| McpError::BadArgs {
+        message: e.to_string(),
+    })
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 use tokio::sync::oneshot;
 
 use statefulmemory_core::config::{self, ModelKind};
@@ -27,7 +27,7 @@ use statefulmemory_storage::ProjectRegistry;
 
 /// One unit of extract work queued by `service::save_observation` after
 /// the synchronous save commits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExtractTask {
     pub project_name: String,
     pub obs_id: i64,
@@ -121,10 +121,6 @@ fn run_loop(
     client: Arc<dyn ClaudeClient>,
     registry: Arc<ProjectRegistry>,
 ) {
-    // The worker uses a single-threaded tokio runtime so it can drive the
-    // async ClaudeCliExtractor::extract() to completion from this OS thread.
-    // Blocking on `Handle::block_on` keeps the design simple — one thread,
-    // one tokio current-thread runtime, nothing fancy.
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -137,48 +133,126 @@ fn run_loop(
     };
 
     let mut consecutive_429: u32 = 0;
-    while let Ok(task) = rx.recv() {
-        match rt.block_on(process(&task, &client, &registry)) {
-            Ok(n) => {
-                consecutive_429 = 0;
-                tracing::trace!(
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(task) => {
+                let outcome = rt.block_on(process(&task, &client, &registry));
+                consecutive_429 = record_outcome(&task, outcome, consecutive_429);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(error) = recover_one(&rt, &client, &registry) {
+                    tracing::debug!(error = %error, "durable extract recovery poll failed");
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn record_outcome(task: &ExtractTask, outcome: anyhow::Result<usize>, mut consecutive_429: u32) -> u32 {
+    match outcome {
+        Ok(facts) => {
+            tracing::trace!(
+                obs_id = task.obs_id,
+                project = %task.project_name,
+                facts,
+                "extract task completed",
+            );
+            0
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            if looks_like_rate_limit(&message) {
+                consecutive_429 = consecutive_429.saturating_add(1);
+                tracing::warn!(
                     obs_id = task.obs_id,
                     project = %task.project_name,
-                    facts = n,
-                    "extract task completed",
+                    consecutive = consecutive_429,
+                    "extract rate-limited",
                 );
-            }
-            Err(e) => {
-                let msg = format!("{e:#}");
-                if looks_like_rate_limit(&msg) {
-                    consecutive_429 = consecutive_429.saturating_add(1);
+                if consecutive_429 >= RATE_LIMIT_PAUSE_THRESHOLD {
                     tracing::warn!(
-                        obs_id = task.obs_id,
-                        project = %task.project_name,
                         consecutive = consecutive_429,
-                        "extract rate-limited",
+                        pause_secs = RATE_LIMIT_PAUSE.as_secs(),
+                        "extract worker pausing on persistent 429s",
                     );
-                    if consecutive_429 >= RATE_LIMIT_PAUSE_THRESHOLD {
-                        tracing::warn!(
-                            consecutive = consecutive_429,
-                            pause_secs = RATE_LIMIT_PAUSE.as_secs(),
-                            "extract worker pausing on persistent 429s",
-                        );
-                        std::thread::sleep(RATE_LIMIT_PAUSE);
-                        consecutive_429 = 0;
-                    }
+                    std::thread::sleep(RATE_LIMIT_PAUSE);
+                    0
                 } else {
-                    consecutive_429 = 0;
-                    tracing::warn!(
-                        obs_id = task.obs_id,
-                        project = %task.project_name,
-                        error = %e,
-                        "extract task failed; observation has no facts but is still searchable",
-                    );
+                    consecutive_429
                 }
+            } else {
+                tracing::warn!(
+                    obs_id = task.obs_id,
+                    project = %task.project_name,
+                    error = %error,
+                    "extract task failed; observation has no facts but is still searchable",
+                );
+                0
             }
         }
     }
+}
+
+fn recover_one(
+    rt: &tokio::runtime::Runtime,
+    client: &Arc<dyn ClaudeClient>,
+    registry: &ProjectRegistry,
+) -> anyhow::Result<()> {
+    let projects = ProjectRegistry::list_known_on_disk()?;
+    for (_name, config) in projects {
+        let project = registry.get_or_open(&config.project_display_name)?;
+        let (reply, receiver) = oneshot::channel();
+        project.write.send(WriteRequest::ClaimJob {
+            kind: "extract".into(),
+            reply,
+        })?;
+        let Some(job) = receiver.blocking_recv()?? else {
+            continue;
+        };
+        let task = match serde_json::from_str::<ExtractTask>(&job.payload) {
+            Ok(task) => task,
+            Err(error) => {
+                fail_job(registry, &job.project_name, job.id, &error.to_string())?;
+                continue;
+            }
+        };
+        match rt.block_on(process(&task, client, registry)) {
+            Ok(_) => complete_job(registry, &job.project_name, job.id)?,
+            Err(error) => fail_job(registry, &job.project_name, job.id, &format!("{error:#}"))?,
+        }
+    }
+    Ok(())
+}
+
+fn complete_job(
+    registry: &ProjectRegistry,
+    project_name: &str,
+    id: i64,
+) -> anyhow::Result<()> {
+    let project = registry.get_or_open(project_name)?;
+    let (reply, receiver) = oneshot::channel();
+    project.write.send(WriteRequest::CompleteJob { id, reply })?;
+    receiver.blocking_recv()??;
+    Ok(())
+}
+
+fn fail_job(
+    registry: &ProjectRegistry,
+    project_name: &str,
+    id: i64,
+    error: &str,
+) -> anyhow::Result<()> {
+    let project = registry.get_or_open(project_name)?;
+    let (reply, receiver) = oneshot::channel();
+    project.write.send(WriteRequest::FailJob {
+        id,
+        error: error.to_string(),
+        retry_delay_secs: 30,
+        reply,
+    })?;
+    receiver.blocking_recv()??;
+    Ok(())
 }
 
 async fn process(

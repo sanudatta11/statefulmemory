@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 use tokio::sync::oneshot;
 
 use statefulmemory_core::config;
@@ -20,7 +20,7 @@ use crate::extract_worker::QueueResult;
 
 const QUEUE_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolveJob {
     pub project: String,
     pub old_id: i64,
@@ -103,23 +103,107 @@ fn run_loop(
             return;
         }
     };
-    while let Ok(job) = rx.recv() {
-        if let Err(e) = rt.block_on(resolve_pair(
-            &client,
-            &registry,
-            &job.project,
-            job.old_id,
-            job.new_id,
-        )) {
-            tracing::warn!(
-                old_id = job.old_id,
-                new_id = job.new_id,
-                project = %job.project,
-                error = %e,
-                "resolve job failed"
-            );
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(job) => process_queued_job(&rt, &client, &registry, &job),
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(error) = recover_one(&rt, &client, &registry) {
+                    tracing::debug!(error = %error, "durable resolve recovery poll failed");
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+fn process_queued_job(
+    rt: &tokio::runtime::Runtime,
+    client: &Arc<dyn ClaudeClient>,
+    registry: &ProjectRegistry,
+    job: &ResolveJob,
+) {
+    if let Err(error) = rt.block_on(resolve_pair(
+        client,
+        registry,
+        &job.project,
+        job.old_id,
+        job.new_id,
+    )) {
+        tracing::warn!(
+            old_id = job.old_id,
+            new_id = job.new_id,
+            project = %job.project,
+            error = %error,
+            "resolve job failed"
+        );
+    }
+}
+
+fn recover_one(
+    rt: &tokio::runtime::Runtime,
+    client: &Arc<dyn ClaudeClient>,
+    registry: &ProjectRegistry,
+) -> anyhow::Result<()> {
+    let projects = ProjectRegistry::list_known_on_disk()?;
+    for (_name, config) in projects {
+        let project = registry.get_or_open(&config.project_display_name)?;
+        let (reply, receiver) = oneshot::channel();
+        project.write.send(WriteRequest::ClaimJob {
+            kind: "resolve".into(),
+            reply,
+        })?;
+        let Some(job) = receiver.blocking_recv()?? else {
+            continue;
+        };
+        let task = match serde_json::from_str::<ResolveJob>(&job.payload) {
+            Ok(task) => task,
+            Err(error) => {
+                fail_job(registry, &job.project_name, job.id, &error.to_string())?;
+                continue;
+            }
+        };
+        match rt.block_on(resolve_pair(
+            client,
+            registry,
+            &task.project,
+            task.old_id,
+            task.new_id,
+        )) {
+            Ok(_) => complete_job(registry, &job.project_name, job.id)?,
+            Err(error) => fail_job(registry, &job.project_name, job.id, &format!("{error:#}"))?,
+        }
+    }
+    Ok(())
+}
+
+fn complete_job(
+    registry: &ProjectRegistry,
+    project_name: &str,
+    id: i64,
+) -> anyhow::Result<()> {
+    let project = registry.get_or_open(project_name)?;
+    let (reply, receiver) = oneshot::channel();
+    project.write.send(WriteRequest::CompleteJob { id, reply })?;
+    receiver.blocking_recv()??;
+    Ok(())
+}
+
+fn fail_job(
+    registry: &ProjectRegistry,
+    project_name: &str,
+    id: i64,
+    error: &str,
+) -> anyhow::Result<()> {
+    let project = registry.get_or_open(project_name)?;
+    let (reply, receiver) = oneshot::channel();
+    project.write.send(WriteRequest::FailJob {
+        id,
+        error: error.to_string(),
+        retry_delay_secs: 30,
+        reply,
+    })?;
+    receiver.blocking_recv()??;
+    Ok(())
 }
 
 pub fn build_resolve_prompt(

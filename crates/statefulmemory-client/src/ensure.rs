@@ -244,6 +244,7 @@ pub async fn poll_socket(
     socket.exists()
 }
 
+
 /// Spawn the daemon as a detached child. The child is placed in its own
 /// session via `setsid(2)` so SIGHUP from the parent shell does not propagate.
 ///
