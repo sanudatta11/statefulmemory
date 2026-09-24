@@ -1,0 +1,27 @@
+[package]
+name = "statefulmemory-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Loopback browser backend for statefulmemory."
+
+[lib]
+name = "statefulmemory_ui"
+path = "src/lib.rs"
+
+[dependencies]
+statefulmemory-client = { path = "../statefulmemory-client" }
+statefulmemory-proto = { path = "../statefulmemory-proto" }
+
+async-trait.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tiny_http.workspace = true
+tokio.workspace = true
+tonic.workspace = true

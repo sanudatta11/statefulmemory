@@ -6,6 +6,7 @@ members = [
     "crates/statefulmemory-storage",
     "crates/statefulmemory-daemon",
     "crates/statefulmemory-client",
+    "crates/statefulmemory-ui",
     "crates/statefulmemory-cli",
     "crates/statefulmemory-tests",
     "crates/statefulmemory-sync",

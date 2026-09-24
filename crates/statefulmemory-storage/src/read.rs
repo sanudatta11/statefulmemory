@@ -63,11 +63,14 @@ pub fn search(
     let safe_query = sanitize_fts5_query(query);
     let mut sql = format!(
         "SELECT {SELECT_COLS} FROM observations
-          WHERE id IN (
-              SELECT rowid FROM observations_fts WHERE observations_fts MATCH ?1
+          JOIN (
+              SELECT rowid,
+                     ROW_NUMBER() OVER (ORDER BY bm25(observations_fts)) AS relevance_rank
+              FROM observations_fts
+              WHERE observations_fts MATCH ?1
               ORDER BY bm25(observations_fts) ASC LIMIT ?2
-          )
-          AND deleted_at IS NULL",
+          ) AS ranked ON ranked.rowid = observations.id
+          WHERE observations.deleted_at IS NULL",
     );
     let mut bind: Vec<Box<dyn ToSql>> = vec![Box::new(safe_query), Box::new(limit)];
     if let Some(t) = type_filter {
@@ -79,7 +82,7 @@ pub fn search(
         sql.push_str(&format!(" AND scope = ?{pos}"));
         bind.push(Box::new(s.to_string()));
     }
-    sql.push_str(" ORDER BY id DESC");
+    sql.push_str(" ORDER BY ranked.relevance_rank ASC");
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| Error::internal(format!("prepare search: {e}")))?;
@@ -833,6 +836,16 @@ mod tests {
         let hits = search(&c, "auth", None, None, 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].content.contains("auth"));
+    }
+
+    #[test]
+    fn search_preserves_bm25_rank_order() {
+        let (_d, mut c) = make_conn();
+        save(&mut c, "alpha beta gamma", "note");
+        save(&mut c, "alpha", "note");
+        let hits = search(&c, "alpha beta", None, None, 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].content.contains("gamma"));
     }
 
     #[test]

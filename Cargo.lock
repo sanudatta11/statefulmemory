@@ -3750,9 +3750,9 @@ dependencies = [
  "statefulmemory-proto",
  "statefulmemory-storage",
  "statefulmemory-sync",
+ "statefulmemory-ui",
  "tempfile",
  "thiserror 1.0.69",
- "tiny_http",
  "tokio",
  "toml",
  "tonic",
@@ -4020,6 +4020,23 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "statefulmemory-ui"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "statefulmemory-client",
+ "statefulmemory-proto",
+ "subtle",
+ "thiserror 1.0.69",
+ "tiny_http",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

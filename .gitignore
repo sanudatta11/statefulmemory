@@ -34,6 +34,13 @@ venv/
 dist/
 build/
 *.egg-info/
+!dashboard/dist/
+dashboard/dist/*
+!dashboard/dist/index.html
+!dashboard/dist/assets/
+dashboard/dist/assets/*
+!dashboard/dist/assets/app.js
+!dashboard/dist/assets/app.css
 
 # Logs
 logs/

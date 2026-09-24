@@ -35,10 +35,23 @@ pub mod write;
 
 pub use anchor::{Anchor, VerifyState};
 pub use db::{open_read, open_write, Migrate};
-pub use doctor::{audit_and_repair, DoctorFinding};
+pub use doctor::{
+    audit_and_repair, health_snapshot, project_health_snapshot, projection_health,
+    projection_health_snapshot, DoctorFinding, HealthSnapshot, ProjectHealthSnapshot,
+    ProjectionHealthSnapshot,
+};
 pub use global::{GlobalDb, GlobalHit, ManifestRow};
-pub use jobs::{Job, JobStatus, NewJob};
+pub use graph::{
+    coverage, coverage_stats, graph_coverage, stats_and_coverage, GraphCoverage, GraphStats,
+};
+pub use jobs::{
+    count, count_filtered, count_for_project, counts, get, list, list_by_status, list_filtered,
+    list_for_kind, list_for_project, status, status_summary, Job, JobCounts, JobFilter,
+    JobQueueStats, JobStatus, JobStatusCounts, NewJob, DEFAULT_LIST_LIMIT, MAX_JOB_LIST_LIMIT,
+    MAX_LIST_LIMIT, MAX_STATUS_ROWS,
+};
 pub use models::{Observation, Prompt, Session};
+pub use stats::{count_for, project_summary, summary, ProjectStats, ProjectSummary};
 pub use registry::{ProjectConfig, ProjectRegistry, ProjectState};
 pub use relations::{add_relation, get_relations_for_observation, ObservationRelation};
 pub use sync_state::{ExportedIds, UpsertOutcome};

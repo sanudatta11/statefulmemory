@@ -79,6 +79,7 @@ fn mk_mem(project: &str, session: &str, title: &str, content: &str) -> EvalMemor
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn production_profile_candidates_match_storage_lanes() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     let data_dir = fresh_data_dir("production-profile");

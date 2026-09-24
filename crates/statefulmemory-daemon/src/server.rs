@@ -17,7 +17,10 @@ use tracing::info;
 use statefulmemory_core::config::Config;
 use statefulmemory_core::error::{Error, Result};
 use statefulmemory_core::paths;
-use statefulmemory_proto::stateful_memory_server::StatefulMemoryServer;
+use statefulmemory_proto::{
+    stateful_memory_server::StatefulMemoryServer,
+    stateful_memory_visualization_server::StatefulMemoryVisualizationServer,
+};
 use statefulmemory_storage::diskmon::{self, DiskMonitor};
 use statefulmemory_storage::{pragmas, ProjectRegistry};
 
@@ -277,7 +280,8 @@ async fn serve_uds_then_load_embedder(
         .http2_keepalive_timeout(Some(Duration::from_secs(20)))
         .concurrency_limit_per_connection(64)
         .max_concurrent_streams(Some(256))
-        .add_service(StatefulMemoryServer::new(svc))
+        .add_service(StatefulMemoryServer::new(svc.clone()))
+        .add_service(StatefulMemoryVisualizationServer::new(svc))
         .serve_with_incoming_shutdown(stream, async move {
             let _ = rx.changed().await;
             info!("UDS server: drain triggered");
@@ -348,7 +352,6 @@ async fn serve_tcp(
     let tls_cfg = tls::server_tls_config(cert, key)?;
 
     let store = token_store.expect("TCP mode opens token_store above");
-    let interceptor = auth::make_interceptor(store);
 
     let mut rx = shutdown_rx.clone();
     Server::builder()
@@ -360,7 +363,14 @@ async fn serve_tcp(
         .max_concurrent_streams(Some(256))
         .tcp_nodelay(true)
         .accept_http1(false)
-        .add_service(StatefulMemoryServer::with_interceptor(svc, interceptor))
+        .add_service(StatefulMemoryServer::with_interceptor(
+            svc.clone(),
+            auth::make_interceptor(store.clone()),
+        ))
+        .add_service(StatefulMemoryVisualizationServer::with_interceptor(
+            svc,
+            auth::make_interceptor(store),
+        ))
         .serve_with_shutdown(addr, async move {
             let _ = rx.changed().await;
             info!("TCP server: drain triggered");

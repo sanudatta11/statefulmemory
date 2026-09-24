@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 
 use statefulmemory_core::error::{Error, Result};
@@ -7,6 +7,10 @@ pub const JOB_PENDING: &str = "pending";
 pub const JOB_RUNNING: &str = "running";
 pub const JOB_COMPLETED: &str = "completed";
 pub const JOB_DEAD: &str = "dead";
+pub const DEFAULT_LIST_LIMIT: usize = 50;
+pub const MAX_LIST_LIMIT: usize = 200;
+pub const MAX_JOB_LIST_LIMIT: usize = MAX_LIST_LIMIT;
+pub const MAX_STATUS_ROWS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct NewJob {
@@ -53,6 +57,42 @@ impl JobStatus {
             Self::Dead => JOB_DEAD,
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            JOB_PENDING => Some(Self::Pending),
+            JOB_RUNNING => Some(Self::Running),
+            JOB_COMPLETED => Some(Self::Completed),
+            JOB_DEAD => Some(Self::Dead),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobStatusCounts {
+    pub pending: i64,
+    pub running: i64,
+    pub completed: i64,
+    pub dead: i64,
+}
+
+pub type JobCounts = JobStatusCounts;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobQueueStats {
+    pub total: i64,
+    pub by_status: JobStatusCounts,
+    pub oldest_pending_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobFilter {
+    pub status: Option<JobStatus>,
+    pub kind: Option<String>,
+    pub project_name: Option<String>,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 pub fn enqueue(conn: &Connection, job: &NewJob) -> Result<i64> {
@@ -210,6 +250,201 @@ pub fn status_counts(conn: &Connection) -> Result<Vec<(String, i64)>> {
         out.push(row.map_err(|e| Error::internal(format!("read job status counts: {e}")))?);
     }
     Ok(out)
+}
+
+pub fn status_summary(conn: &Connection) -> Result<JobStatusCounts> {
+    let mut counts = JobStatusCounts::default();
+    let mut stmt = conn
+        .prepare("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+        .map_err(|e| Error::internal(format!("prepare job status summary: {e}")))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|e| Error::internal(format!("query job status summary: {e}")))?;
+    for row in rows {
+        let (status, count) = row
+            .map_err(|e| Error::internal(format!("read job status summary: {e}")))?;
+        if let Some(status) = JobStatus::parse(&status) {
+            match status {
+                JobStatus::Pending => counts.pending = count,
+                JobStatus::Running => counts.running = count,
+                JobStatus::Completed => counts.completed = count,
+                JobStatus::Dead => counts.dead = count,
+            }
+        }
+    }
+    Ok(counts)
+}
+
+pub fn counts(conn: &Connection) -> Result<JobStatusCounts> {
+    status_summary(conn)
+}
+
+pub fn get(conn: &Connection, id: i64) -> Result<Job> {
+    conn.query_row(
+        "SELECT id, kind, project_name, observation_id, dedupe_key, payload, status, \
+                attempts, max_attempts, available_at, locked_at, last_error, \
+                created_at, updated_at \
+         FROM jobs WHERE id = ?1",
+        params![id],
+        job_from_row,
+    )
+    .map_err(|e| Error::internal(format!("get job: {e}")))
+}
+
+pub fn status(conn: &Connection, id: i64) -> Result<JobStatus> {
+    let value: String = conn
+        .query_row("SELECT status FROM jobs WHERE id = ?1", params![id], |row| row.get(0))
+        .optional()
+        .map_err(|e| Error::internal(format!("get job status: {e}")))?
+        .ok_or_else(|| Error::not_found(format!("job {id}")))?;
+    JobStatus::parse(&value).ok_or_else(|| Error::internal(format!("invalid job status: {value}")))
+}
+
+pub fn count(conn: &Connection) -> Result<i64> {
+    count_filtered(conn, &JobFilter::default())
+}
+
+pub fn count_filtered(conn: &Connection, filter: &JobFilter) -> Result<i64> {
+    let (clause, values) = filter_sql(filter, false);
+    let sql = format!("SELECT COUNT(*) FROM jobs {clause}");
+    let bound: Vec<&dyn ToSql> = values.iter().map(|value| value as &dyn ToSql).collect();
+    if bound.is_empty() {
+        return conn
+            .query_row(&sql, [], |row| row.get(0))
+            .map_err(|e| Error::internal(format!("count jobs: {e}")));
+    }
+    conn.query_row(&sql, params_from_iter(bound), |row| row.get(0))
+        .map_err(|e| Error::internal(format!("count jobs: {e}")))
+}
+
+pub fn count_for_project(conn: &Connection, project_name: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM jobs WHERE project_name = ?1",
+        params![project_name],
+        |row| row.get(0),
+    )
+    .map_err(|e| Error::internal(format!("count project jobs: {e}")))
+}
+
+pub fn list_filtered(conn: &Connection, filter: &JobFilter) -> Result<Vec<Job>> {
+    let (clause, values) = filter_sql(filter, true);
+    let sql = format!(
+        "SELECT id, kind, project_name, observation_id, dedupe_key, payload, status, \
+                attempts, max_attempts, available_at, locked_at, last_error, \
+                created_at, updated_at \
+         FROM jobs {clause} ORDER BY id DESC"
+    );
+    let bound: Vec<&dyn ToSql> = values.iter().map(|value| value as &dyn ToSql).collect();
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::internal(format!("prepare list jobs: {e}")))?;
+    let rows = if bound.is_empty() {
+        stmt.query_map([], job_from_row)
+    } else {
+        stmt.query_map(params_from_iter(bound), job_from_row)
+    }
+    .map_err(|e| Error::internal(format!("query list jobs: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| Error::internal(format!("read list job: {e}")))?);
+    }
+    Ok(out)
+}
+
+pub fn list(conn: &Connection, limit: usize) -> Result<Vec<Job>> {
+    list_filtered(
+        conn,
+        &JobFilter {
+            limit,
+            ..JobFilter::default()
+        },
+    )
+}
+
+pub fn list_by_status(conn: &Connection, job_status: JobStatus, limit: usize) -> Result<Vec<Job>> {
+    list_filtered(
+        conn,
+        &JobFilter {
+            status: Some(job_status),
+            limit,
+            ..JobFilter::default()
+        },
+    )
+}
+
+pub fn list_for_kind(conn: &Connection, kind: &str, limit: usize) -> Result<Vec<Job>> {
+    list_filtered(
+        conn,
+        &JobFilter {
+            kind: Some(kind.to_string()),
+            limit,
+            ..JobFilter::default()
+        },
+    )
+}
+
+pub fn list_for_project(conn: &Connection, project_name: &str, limit: usize) -> Result<Vec<Job>> {
+    list_filtered(
+        conn,
+        &JobFilter {
+            project_name: Some(project_name.to_string()),
+            limit,
+            ..JobFilter::default()
+        },
+    )
+}
+
+pub fn queue_stats(conn: &Connection) -> Result<JobQueueStats> {
+    let by_status = status_summary(conn)?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+        .map_err(|e| Error::internal(format!("count all jobs: {e}")))?;
+    let oldest_pending_at: Option<String> = conn
+        .query_row(
+            "SELECT MIN(created_at) FROM jobs WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::internal(format!("find oldest pending job: {e}")))?;
+    Ok(JobQueueStats {
+        total,
+        by_status,
+        oldest_pending_at,
+    })
+}
+
+fn filter_sql(filter: &JobFilter, bounded: bool) -> (String, Vec<SqlValue>) {
+    let mut clauses = Vec::new();
+    let mut values = Vec::new();
+    if let Some(job_status) = filter.status {
+        clauses.push("status = ?".to_string());
+        values.push(SqlValue::Text(job_status.as_str().to_string()));
+    }
+    if let Some(kind) = &filter.kind {
+        clauses.push("kind = ?".to_string());
+        values.push(SqlValue::Text(kind.clone()));
+    }
+    if let Some(project_name) = &filter.project_name {
+        clauses.push("project_name = ?".to_string());
+        values.push(SqlValue::Text(project_name.clone()));
+    }
+    let clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+    if bounded {
+        let limit = filter.limit.clamp(1, MAX_LIST_LIMIT);
+        values.push(SqlValue::Integer(limit as i64));
+        let offset = filter.offset.min(i64::MAX as usize) as i64;
+        values.push(SqlValue::Integer(offset));
+        (
+            format!("{clause} LIMIT ? OFFSET ?"),
+            values,
+        )
+    } else {
+        (clause, values)
+    }
 }
 
 fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {

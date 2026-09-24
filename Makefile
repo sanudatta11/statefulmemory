@@ -1,7 +1,7 @@
 # statefulmemory — common development and user commands
 # Run `make` or `make help` to see available targets.
 
-.PHONY: help prereqs check-inputs build release install test test-eval lint clean \
+.PHONY: help prereqs check-inputs build release install test test-eval lint clean dashboard-build \
         daemon-start daemon-stop daemon-status logs skill-install \
         extract-locomo run-locomo \
         eval-locomo-smoke eval-locomo-fetch eval-bge-model \
@@ -86,6 +86,7 @@ help:
 	@echo "Prerequisites"
 	@echo "  prereqs          Install Rust toolchain and required system dependencies"
 	@echo "  check-inputs     Verify cargo, protoc, and embedded skill assets exist"
+	@echo "  dashboard-build  Rebuild embedded React dashboard assets"
 	@echo ""
 	@echo "Install"
 	@echo "  install          Build release binary and copy to $(INSTALL_DIR)/statefulmemory"
@@ -168,8 +169,14 @@ check-inputs:
 	@command -v protoc >/dev/null || (echo "error: protoc not found. Run 'make prereqs' (needs protobuf-compiler)."; exit 1)
 	@test -f skills/statefulmemory/SKILL.md || (echo "error: skills/statefulmemory/SKILL.md missing (required — embedded into the CLI)."; exit 1)
 	@test -f proto/statefulmemory.proto || (echo "error: proto/statefulmemory.proto missing."; exit 1)
+	@test -f dashboard/dist/index.html || (echo "error: dashboard/dist/index.html missing; run make dashboard-build."; exit 1)
+	@test -f dashboard/dist/assets/app.js || (echo "error: dashboard/dist/assets/app.js missing; run make dashboard-build."; exit 1)
+	@test -f dashboard/dist/assets/app.css || (echo "error: dashboard/dist/assets/app.css missing; run make dashboard-build."; exit 1)
 
 # ── Build ─────────────────────────────────────────────────────────────────────
+
+dashboard-build:
+	cd dashboard && npm ci && npm run build
 
 build: check-inputs
 	cargo build -p statefulmemory-cli

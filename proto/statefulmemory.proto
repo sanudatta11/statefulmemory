@@ -899,6 +899,202 @@ message DecideResponse {
   optional string signals_json = 8;
 }
 
+message VisualizationAnchor {
+  string path = 1;
+  optional string symbol = 2;
+  optional int32 line_start = 3;
+  optional int32 line_end = 4;
+  optional string anchor_commit = 5;
+  optional string content_digest = 6;
+}
+
+message VisualizationCandidate {
+  int64 observation_id = 1;
+  repeated string sources = 2;
+  int32 bm25_rank = 3;
+  int32 dense_rank = 4;
+  int32 fused_rank = 5;
+  int32 final_rank = 6;
+  double score = 7;
+}
+
+message VisualizationJob {
+  int64 id = 1;
+  string kind = 2;
+  string project_name = 3;
+  optional int64 observation_id = 4;
+  optional string dedupe_key = 5;
+  string status = 6;
+  int64 attempts = 7;
+  int64 max_attempts = 8;
+  string available_at = 9;
+  optional string locked_at = 10;
+  optional string last_error = 11;
+  string created_at = 12;
+  string updated_at = 13;
+  string payload = 14;
+}
+
+message VisualizationProjectSummary {
+  string project = 1;
+  int64 observations = 2;
+  int64 soft_deleted_observations = 3;
+  int64 sessions = 4;
+  int64 prompts = 5;
+  int64 facts = 6;
+  int64 active_facts = 7;
+  int64 embedded_observations = 8;
+  int64 anchor_rows = 9;
+  int64 anchored_observations = 10;
+  int64 entities = 11;
+  int64 entity_mentions = 12;
+  int64 entity_edges = 13;
+  int64 jobs = 14;
+  int64 pending_jobs = 15;
+  int64 running_jobs = 16;
+  int64 dead_jobs = 17;
+  optional string latest_observation_at = 18;
+  optional string latest_updated_at = 19;
+}
+
+message GetObservationDetailRequest {
+  string project_name = 1;
+  int64 observation_id = 2;
+}
+
+message GetObservationDetailResponse {
+  Observation observation = 1;
+  repeated VisualizationAnchor anchors = 2;
+  repeated Fact facts = 3;
+  repeated ObservationRelation relations = 4;
+  repeated GraphEntity entities = 5;
+  repeated GraphEdge edges = 6;
+  repeated Observation history = 7;
+}
+
+message GetHealthRequest {
+  string project_name = 1;
+}
+
+message GetHealthResponse {
+  string project_name = 1;
+  string state = 2;
+  string database_integrity = 3;
+  int64 total_observations = 4;
+  int64 active_observations = 5;
+  int64 soft_deleted_observations = 6;
+  int64 fts_rows = 7;
+  int64 fts_missing = 8;
+  int64 fts_stale = 9;
+  int64 embedding_rows = 10;
+  int64 embedding_missing = 11;
+  int64 orphan_embeddings = 12;
+  int64 fact_rows = 13;
+  int64 anchor_rows = 14;
+  int64 entities = 15;
+  int64 entity_mentions = 16;
+  int64 entity_edges = 17;
+  int64 pending_jobs = 18;
+  int64 running_jobs = 19;
+  int64 dead_jobs = 20;
+  double graph_coverage = 21;
+}
+
+message ExplainRetrievalRequest {
+  string project_name = 1;
+  string query = 2;
+  int32 limit = 3;
+  optional string mode = 4;
+  optional string rerank = 5;
+}
+
+message ExplainRetrievalResponse {
+  string query = 1;
+  string mode = 2;
+  string rerank = 3;
+  int32 candidate_depth = 4;
+  bool rerank_timed_out = 5;
+  int64 elapsed_us = 6;
+  repeated VisualizationCandidate candidates = 7;
+  repeated Observation results = 8;
+  optional int32 tokens_used = 9;
+}
+
+message ListJobsRequest {
+  string project_name = 1;
+  string status = 2;
+  string kind = 3;
+  int32 limit = 4;
+}
+
+message ListJobsResponse {
+  repeated VisualizationJob jobs = 1;
+  int64 total = 2;
+  int64 pending = 3;
+  int64 running = 4;
+  int64 completed = 5;
+  int64 dead = 6;
+}
+
+message GetGraphStatsRequest {
+  string project_name = 1;
+}
+
+message GetGraphStatsResponse {
+  string project_name = 1;
+  int64 total_entities = 2;
+  int64 total_mentions = 3;
+  int64 total_edges = 4;
+  int64 covered_observations = 5;
+  double coverage_ratio = 6;
+  repeated VisualizationCount entities_by_kind = 7;
+  repeated VisualizationCount edges_by_relation = 8;
+}
+
+message VisualizationCount {
+  string name = 1;
+  int64 value = 2;
+}
+
+message GetSyncStateRequest {
+  string project_name = 1;
+}
+
+message GetSyncStateResponse {
+  string project_name = 1;
+  optional string last_export_at = 2;
+  optional string last_import_at = 3;
+  int32 unseen_chunk_count = 4;
+  optional string last_error = 5;
+  int64 total_exported_chunks = 6;
+  int64 total_imported_chunks = 7;
+}
+
+message GetProjectSummaryRequest {
+  string project_name = 1;
+}
+
+message GetProjectSummaryResponse {
+  VisualizationProjectSummary summary = 1;
+}
+
+message ListProjectSummariesRequest {}
+
+message ListProjectSummariesResponse {
+  repeated VisualizationProjectSummary projects = 1;
+}
+
+service StatefulMemoryVisualization {
+  rpc GetObservationDetail (GetObservationDetailRequest) returns (GetObservationDetailResponse);
+  rpc GetHealth (GetHealthRequest) returns (GetHealthResponse);
+  rpc ExplainRetrieval (ExplainRetrievalRequest) returns (ExplainRetrievalResponse);
+  rpc ListJobs (ListJobsRequest) returns (ListJobsResponse);
+  rpc GetGraphStats (GetGraphStatsRequest) returns (GetGraphStatsResponse);
+  rpc GetSyncState (GetSyncStateRequest) returns (GetSyncStateResponse);
+  rpc GetProjectSummary (GetProjectSummaryRequest) returns (GetProjectSummaryResponse);
+  rpc ListProjectSummaries (ListProjectSummariesRequest) returns (ListProjectSummariesResponse);
+}
+
 // ---
 // Service
 // ---

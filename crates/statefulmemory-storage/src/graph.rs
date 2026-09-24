@@ -6,6 +6,7 @@
 use statefulmemory_core::config::{normalize_entity_name, Entity, EntityKind};
 use statefulmemory_core::error::{Error, Result};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 /// Prefix lookup on `norm_name`, ordered shortest-first (more general cues first).
@@ -414,6 +415,15 @@ pub struct GraphStats {
     pub total_edges: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GraphCoverage {
+    pub total_entities: i64,
+    pub total_mentions: i64,
+    pub total_edges: i64,
+    pub covered_observations: i64,
+    pub coverage_ratio: f64,
+}
+
 impl std::fmt::Display for GraphStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "entities: {}", self.total_entities)?;
@@ -469,7 +479,59 @@ pub fn stats(conn: &Connection) -> Result<GraphStats> {
     Ok(out)
 }
 
-/// One entity per `observation_anchors` row: `file` for the path part, `symbol`
+pub fn coverage(conn: &Connection) -> Result<GraphCoverage> {
+    let total_entities: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+        .map_err(|e| Error::internal(format!("graph coverage entities: {e}")))?;
+    let total_mentions: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entity_mentions", [], |row| row.get(0))
+        .map_err(|e| Error::internal(format!("graph coverage mentions: {e}")))?;
+    let total_edges: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entity_edges", [], |row| row.get(0))
+        .map_err(|e| Error::internal(format!("graph coverage edges: {e}")))?;
+    let active_observations: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::internal(format!("graph coverage observations: {e}")))?;
+    let covered_observations: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT m.observation_id)
+             FROM entity_mentions m
+             JOIN observations o ON o.id = m.observation_id
+             WHERE o.deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::internal(format!("graph coverage linked observations: {e}")))?;
+    let coverage_ratio = if active_observations == 0 {
+        1.0
+    } else {
+        covered_observations as f64 / active_observations as f64
+    };
+    Ok(GraphCoverage {
+        total_entities,
+        total_mentions,
+        total_edges,
+        covered_observations,
+        coverage_ratio,
+    })
+}
+
+pub fn coverage_stats(conn: &Connection) -> Result<GraphCoverage> {
+    coverage(conn)
+}
+
+pub fn graph_coverage(conn: &Connection) -> Result<GraphCoverage> {
+    coverage(conn)
+}
+
+pub fn stats_and_coverage(conn: &Connection) -> Result<(GraphStats, GraphCoverage)> {
+    Ok((stats(conn)?, coverage(conn)?))
+}
+
 /// for the symbol part when present. Mentions wired with `source='anchor'`.
 /// Returns the number of NEW entity rows created; idempotent.
 pub fn backfill_from_anchors(conn: &Connection) -> Result<usize> {

@@ -824,7 +824,17 @@ mod tests {
         let payload = dump_payload(&src, "demo", "2026-09-12T00:00:00Z").unwrap();
         let (_dir2, mut dst) = open_db();
         apply_payload(&mut dst, &payload, "merge").unwrap();
-        let metadata: (String, Option<String>, Option<String>, Option<i64>, Option<String>, i32, String, Option<String>) = dst
+        type ObservationMetadata = (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            i32,
+            String,
+            Option<String>,
+        );
+        let metadata: ObservationMetadata = dst
             .query_row(
                 "SELECT verify_state, verified_commit, verified_at, superseded_by_id, delete_reason,
                         superseded_count, key_expand, exported_at

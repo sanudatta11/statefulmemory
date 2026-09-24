@@ -457,7 +457,7 @@ impl StatefulMemoryService {
     }
 
     #[allow(clippy::result_large_err)]
-    fn authorize_project(
+    pub(crate) fn authorize_project(
         &self,
         auth: Option<&crate::auth::AuthCtx>,
         project: &str,
@@ -487,7 +487,7 @@ impl StatefulMemoryService {
     }
 
     #[allow(clippy::result_large_err)]
-    fn authorize_admin<T>(&self, req: &Request<T>) -> Result<(), Status> {
+    pub(crate) fn authorize_admin<T>(&self, req: &Request<T>) -> Result<(), Status> {
         if !self.state.auth_required {
             return Ok(());
         }
@@ -919,7 +919,7 @@ async fn await_write_reply<T>(
 // Conversions: storage models ↔ proto messages
 // ---------------------------------------------------------------------------
 
-fn obs_to_proto(o: Observation) -> statefulmemory_proto::Observation {
+pub(crate) fn obs_to_proto(o: Observation) -> statefulmemory_proto::Observation {
     statefulmemory_proto::Observation {
         id: o.id,
         sync_id: o.sync_id,
@@ -947,7 +947,7 @@ fn obs_to_proto(o: Observation) -> statefulmemory_proto::Observation {
     }
 }
 
-fn entity_to_proto(e: statefulmemory_core::Entity) -> statefulmemory_proto::GraphEntity {
+pub(crate) fn entity_to_proto(e: statefulmemory_core::Entity) -> statefulmemory_proto::GraphEntity {
     statefulmemory_proto::GraphEntity {
         id: e.id,
         kind: e.kind.as_str().into(),
@@ -956,7 +956,7 @@ fn entity_to_proto(e: statefulmemory_core::Entity) -> statefulmemory_proto::Grap
     }
 }
 
-fn edge_to_proto(e: statefulmemory_storage::graph::GraphEdge) -> statefulmemory_proto::GraphEdge {
+pub(crate) fn edge_to_proto(e: statefulmemory_storage::graph::GraphEdge) -> statefulmemory_proto::GraphEdge {
     statefulmemory_proto::GraphEdge {
         from_id: e.from_id,
         to_id: e.to_id,
@@ -3631,15 +3631,62 @@ impl StatefulMemory for StatefulMemoryService {
         &self,
         req: Request<DoctorRequest>,
     ) -> Result<Response<DoctorResponse>, Status> {
+        let _guard = self.enter_rpc();
         if req.get_ref().project_name.is_none() {
             self.authorize_admin(&req)?;
         }
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
-        if let Some(project) = r.project_name.as_deref() {
-            self.authorize_project(auth_ctx.as_ref(), project, r.auto_repair)?;
+        let projects = match r.project_name.as_deref() {
+            Some(project) => {
+                self.authorize_project(auth_ctx.as_ref(), project, r.auto_repair)?;
+                vec![project.to_string()]
+            }
+            None => map(ProjectRegistry::list_known_on_disk())?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
+        };
+        if r.auto_repair {
+            map(self.check_writeable())?;
         }
-        Err(Status::unimplemented("Doctor: implemented in Spec 4"))
+        let mut findings = Vec::new();
+        for project_name in projects {
+            let project = map(self.open_project(&project_name))?;
+            if r.auto_repair {
+                let write = project.write.clone();
+                let (reply, receiver) = tokio::sync::oneshot::channel();
+                write
+                    .send(WriteRequest::Custom {
+                        f: Box::new(|conn| {
+                            statefulmemory_storage::doctor::audit_and_repair(conn, true)?;
+                            Ok(())
+                        }),
+                        reply,
+                    })
+                    .map_err(|error| Status::internal(format!("doctor write enqueue: {error}")))?;
+                await_write_reply(receiver).await?;
+            }
+            let conn = map(project.open_read_conn())?;
+            for mut finding in map(statefulmemory_storage::doctor::audit_and_repair(
+                &conn,
+                false,
+            ))? {
+                finding.code = format!("{project_name}:{}", finding.code);
+                findings.push(finding);
+            }
+        }
+        Ok(Response::new(DoctorResponse {
+            findings: findings
+                .into_iter()
+                .map(|finding| statefulmemory_proto::doctor_response::Finding {
+                    code: finding.code,
+                    severity: finding.severity,
+                    message: finding.message,
+                    remedy: finding.remedy,
+                })
+                .collect(),
+        }))
     }
 
     async fn dream_scan(

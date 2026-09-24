@@ -25,14 +25,13 @@ path = "src/lib.rs"
 statefulmemory-core = { path = "../statefulmemory-core" }
 statefulmemory-proto = { path = "../statefulmemory-proto" }
 statefulmemory-client = { path = "../statefulmemory-client" }
+statefulmemory-ui = { path = "../statefulmemory-ui" }
 statefulmemory-daemon = { path = "../statefulmemory-daemon" }
 statefulmemory-mcp = { path = "../statefulmemory-mcp" }
 statefulmemory-eval = { path = "../statefulmemory-eval" }
 statefulmemory-extract = { path = "../statefulmemory-extract" }
 statefulmemory-storage = { path = "../statefulmemory-storage" }
 statefulmemory-sync = { path = "../statefulmemory-sync" }
-
-tiny_http.workspace = true
 
 tempfile = "3"
 clap.workspace = true

@@ -33,5 +33,6 @@ pub mod token_budget;
 pub mod tokens;
 pub mod verify;
 pub mod verify_worker;
+pub mod visualization;
 
 pub use service::StatefulMemoryService;

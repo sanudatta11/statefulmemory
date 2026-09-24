@@ -32,10 +32,10 @@
   <div class="card"><h2>Stats</h2><div id="stats" class="muted">loading…</div></div>
   <div class="card"><h2>Search</h2>
     <div class="row">
-      <input type="text" id="q" placeholder="e.g. why did we pick pgx?" />
-      <button id="btn">Search</button>
+      <input type="text" id="q" placeholder="e.g. why did we pick pgx?" aria-label="Search memories" />
+      <button id="btn" type="button">Search</button>
     </div>
-    <div id="results"></div>
+    <div id="results" aria-live="polite"></div>
   </div>
   <div class="card"><h2>Graph</h2>
     <div class="row">
@@ -57,7 +57,9 @@
   const esc = (s) => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
   async function post(path, body) {
     const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) });
-    return r.json();
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.message || data.error || 'request failed');
+    return data;
   }
   document.addEventListener('DOMContentLoaded', async () => {
     const st = await post('/api/stats', {});
@@ -66,11 +68,15 @@
   $('#btn').addEventListener('click', async () => {
     const q = $('#q').value.trim(); if (!q) return;
     $('#results').innerHTML = '<p class="muted">searching…</p>';
-    const d = await post('/api/search', { query: q });
-    if (d.error) { $('#results').innerHTML = '<p class="muted">' + esc(d.error) + '</p>'; return; }
-    const hits = d.hits || [];
-    $('#results').innerHTML = hits.length ? '' : '<p class="muted">no results</p>';
-    hits.slice(0, 20).forEach(() => {});
+    try {
+      const d = await post('/api/search', { query: q });
+      const hits = d.hits || [];
+      $('#results').innerHTML = hits.length
+        ? hits.slice(0, 20).map((hit) => '<article class="hit"><b>' + esc(hit.title) + '</b><div class="muted">' + esc(hit.content) + '</div><small class="muted">' + esc(hit.type) + ' · #' + esc(hit.id) + '</small></article>').join('')
+        : '<p class="muted">no results</p>';
+    } catch (error) {
+      $('#results').innerHTML = '<p class="muted">' + esc(error.message || 'request failed') + '</p>';
+    }
   });
   $('#gbtn').addEventListener('click', async () => {
     const e = $('#ge').value.trim(); if (!e) return;
