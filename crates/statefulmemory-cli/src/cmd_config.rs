@@ -92,7 +92,8 @@ fn get(a: ConfigGetArgs) -> Result<(), String> {
         format!(
             "unknown config key: {}; valid keys: extract.enabled, extract.model, \
              extract.timeout_secs, extract.workers, rerank.model, rerank.timeout_secs, \
-             embed.workers, verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
+             conflict.enabled, conflict.model, conflict.timeout_secs, embed.workers, \
+             verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
              graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities",
             a.key
         )
@@ -147,16 +148,19 @@ fn set(a: ConfigSetArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Look up one resolved value. Returns the printable form ("haiku", "true",
+/// Look up one resolved value. Returns the printable form (model role, "true",
 /// "30", etc.) or `None` for unknown keys.
 fn lookup(cfg: &StatefulMemoryConfig, key: &str) -> Option<String> {
     Some(match key {
         "extract.enabled" => cfg.extract.enabled.to_string(),
-        "extract.model" => cfg.extract.model.as_lowercase().to_string(),
+        "extract.model" => cfg.extract.model.cli_model_id().to_string(),
         "extract.timeout_secs" => cfg.extract.timeout_secs.to_string(),
         "extract.workers" => cfg.extract.workers.to_string(),
-        "rerank.model" => cfg.rerank.model.as_lowercase().to_string(),
+        "rerank.model" => cfg.rerank.model.cli_model_id().to_string(),
         "rerank.timeout_secs" => cfg.rerank.timeout_secs.to_string(),
+        "conflict.enabled" => cfg.conflict.enabled.to_string(),
+        "conflict.model" => cfg.conflict.model.cli_model_id().to_string(),
+        "conflict.timeout_secs" => cfg.conflict.timeout_secs.to_string(),
         "embed.workers" => cfg.embed.workers.to_string(),
         "verify.serve_stale" => cfg.verify.serve_stale.to_string(),
         "graph.enabled" => cfg.graph.enabled.to_string(),
@@ -175,13 +179,8 @@ fn lookup(cfg: &StatefulMemoryConfig, key: &str) -> Option<String> {
 fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
     let v = value.trim();
     match key {
-        "extract.enabled" => {
-            parse_bool(v)
-                .ok_or_else(|| format!("extract.enabled must be true|false (got {value:?})"))?;
-        }
-        "verify.serve_stale" => {
-            parse_bool(v)
-                .ok_or_else(|| format!("verify.serve_stale must be true|false (got {value:?})"))?;
+        "extract.enabled" | "conflict.enabled" | "verify.serve_stale" => {
+            parse_bool(v).ok_or_else(|| format!("{key} must be true|false (got {value:?})"))?;
         }
         "extract.model" | "rerank.model" | "conflict.model" => {
             if ![
@@ -194,7 +193,7 @@ fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
                 ));
             }
         }
-        "extract.timeout_secs" | "rerank.timeout_secs" => {
+        "extract.timeout_secs" | "rerank.timeout_secs" | "conflict.timeout_secs" => {
             v.parse::<u64>()
                 .map_err(|_| format!("{key} must be a non-negative integer (got {value:?})"))?;
         }
@@ -241,7 +240,8 @@ fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
             return Err(format!(
                 "unknown config key: {other}; valid keys: extract.enabled, extract.model, \
                  extract.timeout_secs, extract.workers, rerank.model, rerank.timeout_secs, \
-                 embed.workers, verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
+                 conflict.enabled, conflict.model, conflict.timeout_secs, embed.workers, \
+                 verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
                  graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities",
             ));
         }
@@ -367,6 +367,29 @@ mod tests {
         let raw = read_global_config(&dir);
         assert_eq!(raw["extract"]["model"].as_str(), Some("sonnet"));
         assert_eq!(raw["extract"]["enabled"].as_bool(), Some(true));
+
+        std::env::remove_var("STATEFULMEMORY_DATA_DIR");
+    }
+
+    #[test]
+    fn set_get_roundtrip_conflict_model() {
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_dir();
+
+        set(ConfigSetArgs {
+            key: "conflict.model".into(),
+            value: "fast".into(),
+            project: None,
+        })
+        .unwrap();
+
+        let raw = read_global_config(&dir);
+        assert_eq!(raw["conflict"]["model"].as_str(), Some("fast"));
+        let cfg = config::load_resolved(None);
+        assert_eq!(lookup(&cfg, "conflict.model").as_deref(), Some("fast"));
 
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }
@@ -508,8 +531,8 @@ mod tests {
         assert_eq!(lookup(&cfg, "extract.workers").as_deref(), Some("4"));
         assert_eq!(
             lookup(&cfg, "extract.model").as_deref(),
-            Some("haiku"),
-            "default preserved when not set",
+            Some("fast"),
+            "default role preserved when not set",
         );
         assert!(lookup(&cfg, "extract.flux").is_none());
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");

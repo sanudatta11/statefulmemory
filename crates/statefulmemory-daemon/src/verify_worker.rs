@@ -99,6 +99,31 @@ fn run_job(
     Ok(verdicts)
 }
 
+fn send_verdict_write(
+    project: &statefulmemory_storage::ProjectState,
+    verdicts: &[AnchorVerdict],
+    head: Option<&str>,
+) -> statefulmemory_core::Result<oneshot::Receiver<statefulmemory_core::Result<()>>> {
+    let verdicts = verdicts.to_vec();
+    let head = head.map(str::to_owned);
+    let (tx, rx) = oneshot::channel();
+    project.write.send(WriteRequest::Custom {
+        f: Box::new(move |conn| {
+            for v in &verdicts {
+                let commit = if v.state == VerifyState::Verified {
+                    head.as_deref()
+                } else {
+                    None
+                };
+                anchor::set_verify_state(conn, v.observation_id, v.state, commit)?;
+            }
+            Ok(())
+        }),
+        reply: tx,
+    })?;
+    Ok(rx)
+}
+
 pub fn apply_verdicts(
     project: &statefulmemory_storage::ProjectState,
     verdicts: &[AnchorVerdict],
@@ -106,19 +131,7 @@ pub fn apply_verdicts(
     if verdicts.is_empty() {
         return Ok(());
     }
-    let verdicts = verdicts.to_vec();
-    let (tx, rx) = oneshot::channel();
-    project.write.send(WriteRequest::Custom {
-        f: Box::new(move |conn| {
-            for v in &verdicts {
-                // Leave verified_commit untouched when head is unknown.
-                let commit: Option<&str> = None;
-                anchor::set_verify_state(conn, v.observation_id, v.state, commit)?;
-            }
-            Ok(())
-        }),
-        reply: tx,
-    })?;
+    let rx = send_verdict_write(project, verdicts, None)?;
     rx.blocking_recv()
         .map_err(|_| statefulmemory_core::Error::internal("verify write reply dropped"))??;
     Ok(())
@@ -133,24 +146,58 @@ pub fn apply_verdicts_with_head(
     if verdicts.is_empty() {
         return Ok(());
     }
-    let verdicts = verdicts.to_vec();
-    let head = head.to_string();
-    let (tx, rx) = oneshot::channel();
-    project.write.send(WriteRequest::Custom {
-        f: Box::new(move |conn| {
-            for v in &verdicts {
-                let commit = if v.state == VerifyState::Verified {
-                    Some(head.as_str())
-                } else {
-                    None
-                };
-                anchor::set_verify_state(conn, v.observation_id, v.state, commit)?;
-            }
-            Ok(())
-        }),
-        reply: tx,
-    })?;
+    let rx = send_verdict_write(project, verdicts, Some(head))?;
     rx.blocking_recv()
         .map_err(|_| statefulmemory_core::Error::internal("verify write reply dropped"))??;
     Ok(())
+}
+
+pub async fn apply_verdicts_with_head_async(
+    project: &statefulmemory_storage::ProjectState,
+    verdicts: &[AnchorVerdict],
+    head: &str,
+) -> statefulmemory_core::Result<()> {
+    if verdicts.is_empty() {
+        return Ok(());
+    }
+    let rx = send_verdict_write(project, verdicts, Some(head))?;
+    rx.await
+        .map_err(|_| statefulmemory_core::Error::internal("verify write reply dropped"))??;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn apply_verdicts_with_head_async_awaits_write_reply() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("verify.db");
+        let write = statefulmemory_storage::write::spawn_write_thread(
+            "verify".into(),
+            db_path.clone(),
+            1,
+            Duration::from_millis(1),
+            None,
+        )
+        .unwrap();
+        let project = statefulmemory_storage::ProjectState {
+            normalized: "verify".into(),
+            display_name: "verify".into(),
+            db_path,
+            write,
+            read_in_flight: parking_lot::Mutex::new(0),
+        };
+        let verdicts = vec![AnchorVerdict {
+            observation_id: 1,
+            state: VerifyState::Stale,
+            reason: "test",
+        }];
+
+        apply_verdicts_with_head_async(&project, &verdicts, "head")
+            .await
+            .unwrap();
+    }
 }

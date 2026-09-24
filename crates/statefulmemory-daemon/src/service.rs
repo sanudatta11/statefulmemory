@@ -2415,9 +2415,9 @@ impl StatefulMemory for StatefulMemoryService {
         drop(conn);
 
         let verdicts = crate::verify::verify_anchors(&repo, &head, &pairs);
-        map(crate::verify_worker::apply_verdicts_with_head(
-            &project, &verdicts, &head,
-        ))?;
+        map(
+            crate::verify_worker::apply_verdicts_with_head_async(&project, &verdicts, &head).await,
+        )?;
 
         let mut resp = VerifyAnchorsResponse::default();
         for v in &verdicts {

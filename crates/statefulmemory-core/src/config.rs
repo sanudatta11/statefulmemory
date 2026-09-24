@@ -595,12 +595,34 @@ impl MentionSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelKind {
     #[default]
     Haiku,
     Sonnet,
+}
+
+impl Serialize for ModelKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.cli_model_id())
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelKind {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        parse_model(&value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unknown model role {value:?}; expected fast|capable (aliases: haiku|sonnet)"
+            ))
+        })
+    }
 }
 
 impl ModelKind {
@@ -1053,6 +1075,9 @@ mod statefulmemory_config_tests {
             "STATEFULMEMORY_RERANK_BACKEND",
             "STATEFULMEMORY_SEARCH_ROUTER",
             "STATEFULMEMORY_EMBED_WORKERS",
+            "STATEFULMEMORY_CONFLICT_ENABLED",
+            "STATEFULMEMORY_CONFLICT_MODEL",
+            "STATEFULMEMORY_CONFLICT_TIMEOUT_SECS",
             "STATEFULMEMORY_SEARCH_MODE",
             "STATEFULMEMORY_GRAPH_ENABLED",
             "STATEFULMEMORY_GRAPH_HOPS",
@@ -1083,6 +1108,46 @@ mod statefulmemory_config_tests {
         assert_eq!(cfg.extract.model, ModelKind::Haiku);
         assert_eq!(cfg.rerank.model, ModelKind::Haiku);
         assert_eq!(cfg.embed.workers, 2);
+        std::env::remove_var("STATEFULMEMORY_DATA_DIR");
+    }
+
+    #[test]
+    fn model_role_aliases_preserve_other_config_values() {
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_data_dir();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"
+[extract]
+enabled = true
+model = "fast"
+timeout_secs = 17
+workers = 3
+
+[conflict]
+enabled = false
+model = "capable"
+timeout_secs = 9
+
+[laya]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_resolved(None);
+        assert!(cfg.extract.enabled);
+        assert_eq!(cfg.extract.model, ModelKind::Haiku);
+        assert_eq!(cfg.extract.timeout_secs, 17);
+        assert_eq!(cfg.extract.workers, 3);
+        assert!(!cfg.conflict.enabled);
+        assert_eq!(cfg.conflict.model, ModelKind::Sonnet);
+        assert_eq!(cfg.conflict.timeout_secs, 9);
+        assert!(cfg.laya.enabled);
+
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }
 
@@ -1319,5 +1384,13 @@ model = "sonnet"
         assert_eq!(parse_model("pro"), Some(ModelKind::Sonnet));
         assert_eq!(ModelKind::Haiku.cli_model_id(), "fast");
         assert_eq!(ModelKind::Sonnet.cli_model_id(), "capable");
+        assert_eq!(
+            serde_json::to_string(&ModelKind::Haiku).unwrap(),
+            "\"fast\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ModelKind::Sonnet).unwrap(),
+            "\"capable\""
+        );
     }
 }
