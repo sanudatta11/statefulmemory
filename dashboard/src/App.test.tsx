@@ -18,7 +18,8 @@ describe('dashboard shell', () => {
     await userEvent.click(screen.getByRole('button', { name: /Keep database writes on the project write thread/ }))
 
     expect(screen.getByRole('dialog', { name: 'Memory details' })).toBeInTheDocument()
-    expect(screen.getByText('Record timeline')).toBeInTheDocument()
+    expect(screen.getByText('Revision history')).toBeInTheDocument()
+    expect(screen.getByText('No extracted facts attached.')).toBeInTheDocument()
   })
 
   it('keeps project selection in the URL', async () => {

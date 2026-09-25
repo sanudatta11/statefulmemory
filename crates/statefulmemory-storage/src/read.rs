@@ -841,11 +841,25 @@ mod tests {
     #[test]
     fn search_preserves_bm25_rank_order() {
         let (_d, mut c) = make_conn();
-        save(&mut c, "alpha beta gamma", "note");
         save(&mut c, "alpha", "note");
-        let hits = search(&c, "alpha beta", None, None, 10).unwrap();
+        save(&mut c, "alpha beta gamma", "note");
+        let hits = search(&c, "alpha", None, None, 10).unwrap();
         assert_eq!(hits.len(), 2);
-        assert!(hits[0].content.contains("gamma"));
+        let expected = c
+            .prepare(
+                "SELECT rowid FROM observations_fts
+                 WHERE observations_fts MATCH 'alpha'
+                 ORDER BY bm25(observations_fts) ASC LIMIT 10",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            hits.iter().map(|hit| hit.id).collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]

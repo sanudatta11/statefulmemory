@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createDashboardApi } from './api'
-import type { DashboardApi, MemoryRecord } from './api/types'
+import type { DashboardApi, MemoryRecord, ObservationDetail } from './api/types'
 import { AppShell, type DashboardView } from './components/AppShell'
 import { DetailDrawer } from './components/DetailDrawer'
 import { GraphPlaceholder } from './components/GraphPlaceholder'
@@ -28,20 +28,68 @@ export function App({ api: injectedApi, initialView = 'overview' }: AppProps) {
   const { data, projects, status, error, refresh } = useDashboardData(api, project)
   const [activeView, setActiveView] = useState<DashboardView>(initialView)
   const [selectedMemory, setSelectedMemory] = useState<MemoryRecord | null>(null)
+  const [selectedDetail, setSelectedDetail] = useState<ObservationDetail | null>(null)
+  const [detailStatus, setDetailStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [detailError, setDetailError] = useState<Error | null>(null)
   const [searchResults, setSearchResults] = useState<MemoryRecord[] | null>(null)
   const [searchStatus, setSearchStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [searchError, setSearchError] = useState<Error | null>(null)
   const searchController = useRef<AbortController | null>(null)
+  const detailController = useRef<AbortController | null>(null)
   const mode = import.meta.env.VITE_DASHBOARD_DATA_SOURCE === 'api' ? 'api' : 'preview'
 
   useEffect(() => {
     searchController.current?.abort()
     searchController.current = null
+    detailController.current?.abort()
+    detailController.current = null
     setSearchResults(null)
     setSearchStatus('idle')
     setSearchError(null)
     setSelectedMemory(null)
+    setSelectedDetail(null)
+    setDetailStatus('idle')
+    setDetailError(null)
   }, [project])
+
+  useEffect(() => {
+    detailController.current?.abort()
+    detailController.current = null
+    setSelectedDetail(null)
+    setDetailError(null)
+    if (!selectedMemory) {
+      setDetailStatus('idle')
+      return undefined
+    }
+    if (!/^\d+$/.test(selectedMemory.id)) {
+      setSelectedDetail({
+        observation: selectedMemory,
+        anchors: [],
+        facts: [],
+        relations: [],
+        entities: [],
+        edges: [],
+        history: [selectedMemory],
+      })
+      setDetailStatus('success')
+      return undefined
+    }
+    const controller = new AbortController()
+    detailController.current = controller
+    setDetailStatus('loading')
+    void api
+      .getObservationDetail(project, selectedMemory.id, { signal: controller.signal })
+      .then((value) => {
+        if (controller.signal.aborted) return
+        setSelectedDetail(value)
+        setDetailStatus('success')
+      }, (reason: unknown) => {
+        if (controller.signal.aborted) return
+        setDetailError(toError(reason))
+        setDetailStatus('error')
+      })
+    return () => controller.abort()
+  }, [api, project, selectedMemory])
 
   const handleSearch = useCallback(
     (query: string) => {
@@ -155,7 +203,13 @@ export function App({ api: injectedApi, initialView = 'overview' }: AppProps) {
       projects={projects}
     >
       {content}
-      <DetailDrawer memory={selectedMemory} onClose={() => setSelectedMemory(null)} />
+      <DetailDrawer
+        detail={selectedDetail}
+        detailError={detailError}
+        detailStatus={detailStatus}
+        memory={selectedMemory}
+        onClose={() => setSelectedMemory(null)}
+      />
     </AppShell>
   )
 }
