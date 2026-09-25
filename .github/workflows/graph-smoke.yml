@@ -5,6 +5,16 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Commit to check when invoked by the manual release workflow
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
 
 concurrency:
   group: graph-smoke-${{ github.ref }}
@@ -22,6 +32,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Install system dependencies
         run: |
@@ -37,7 +49,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build CLI
-        run: cargo build -p statefulmemory-cli --release
+        run: cargo build --locked -p statefulmemory-cli --release
 
       - name: Seed + verify graph (module unit contract)
         env:
@@ -109,6 +121,6 @@ jobs:
           # unchanged when disabled (service) and zero expansion on empty cues
           # (daemon lib). Re-run the daemon lib graph tests as the parity gate.
           # `timeout` bounds each binary so a hang cannot eat the job budget.
-          timeout 300 cargo test -p statefulmemory-daemon --lib -- graph_expansion
-          timeout 300 cargo test -p statefulmemory-storage --lib -- graph::
-          timeout 300 cargo test -p statefulmemory-cli --lib -- cmd_graph::
+          timeout 300 cargo test --locked -p statefulmemory-daemon --lib -- graph_expansion
+          timeout 300 cargo test --locked -p statefulmemory-storage --lib -- graph::
+          timeout 300 cargo test --locked -p statefulmemory-cli --lib -- cmd_graph::

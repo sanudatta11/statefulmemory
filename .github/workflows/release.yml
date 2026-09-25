@@ -1,14 +1,18 @@
-name: Release
+name: Manual Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without leading v, for example 0.1.1
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: manual-release
   cancel-in-progress: false
 
 env:
@@ -16,8 +20,200 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  preflight:
+    name: Validate release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      source_sha: ${{ steps.preflight.outputs.source_sha }}
+      release_version: ${{ steps.preflight.outputs.release_version }}
+      release_tag: ${{ steps.preflight.outputs.release_tag }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release request
+        id: preflight
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+          UPDATE_SIGNING_KEY: ${{ secrets.STATEFULMEMORY_UPDATE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "::error::manual releases may only be dispatched from main"
+            exit 1
+          fi
+
+          source_sha="$(git rev-parse HEAD)"
+          if [[ "$source_sha" != "$DISPATCH_SHA" ]]; then
+            echo "::error::checked out SHA does not match dispatched SHA"
+            exit 1
+          fi
+
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$main_sha" != "$source_sha" ]]; then
+            echo "::error::main advanced after dispatch; rerun against current HEAD ($main_sha)"
+            exit 1
+          fi
+
+          git fetch --quiet --tags origin
+          if [[ -n "$(git tag --points-at "$source_sha")" ]]; then
+            echo "::error::current main HEAD is already tagged"
+            git tag --points-at "$source_sha"
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be numeric X.Y.Z without a leading v"
+            exit 1
+          fi
+          release_tag="v${RELEASE_VERSION_INPUT}"
+
+          releases_file="$RUNNER_TEMP/releases.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases_file"
+
+          release_tags="$(
+            python3 - "$releases_file" <<'PY'
+          import json
+          import sys
+
+          pages = json.load(open(sys.argv[1]))
+          for page in pages:
+              for release in page:
+                  tag = release.get("tag_name")
+                  if tag:
+                      print(tag)
+          PY
+          )"
+          while IFS= read -r release_tag_name; do
+            if [[ -z "$release_tag_name" ]]; then
+              continue
+            fi
+            tag_sha="$(git ls-remote --tags origin "refs/tags/${release_tag_name}^{}" | cut -f1)"
+            if [[ -z "$tag_sha" ]]; then
+              tag_sha="$(git ls-remote --tags origin "refs/tags/${release_tag_name}" | cut -f1)"
+            fi
+            if [[ "$tag_sha" == "$source_sha" ]]; then
+              echo "::error::current main HEAD is already represented by release tag ${release_tag_name}"
+              exit 1
+            fi
+          done <<< "$release_tags"
+
+          if [[ -n "$(git ls-remote --tags origin "refs/tags/${release_tag}" | cut -f1)" ]]; then
+            echo "::error::candidate tag ${release_tag} already exists"
+            exit 1
+          fi
+
+          python3 - "$releases_file" "$RELEASE_VERSION_INPUT" <<'PY'
+          import re
+          import sys
+
+          pages = __import__("json").load(open(sys.argv[1]))
+          releases = [release for page in pages for release in page]
+          requested = tuple(int(part) for part in sys.argv[2].split("."))
+          requested_tag = "v" + sys.argv[2]
+
+          if any(release.get("tag_name") == requested_tag for release in releases):
+              raise SystemExit(f"candidate release {requested_tag} already exists")
+
+          stable_versions = []
+          for release in releases:
+              if release.get("draft") or release.get("prerelease"):
+                  continue
+              tag = release.get("tag_name", "")
+              match = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)", tag)
+              if match:
+                  stable_versions.append(tuple(int(part) for part in match.groups()))
+
+          if stable_versions and requested <= max(stable_versions):
+              raise SystemExit(
+                  f"requested version {sys.argv[2]} must be greater than latest stable release"
+              )
+          PY
+
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          workspace_version="$(
+            python3 - "$RUNNER_TEMP/metadata.json" <<'PY'
+          import json
+          import sys
+
+          metadata = json.load(open(sys.argv[1]))
+          members = set(metadata["workspace_members"])
+          versions = {
+              package["version"]
+              for package in metadata["packages"]
+              if package["id"] in members
+          }
+          if len(versions) != 1:
+              raise SystemExit(f"workspace packages have inconsistent versions: {sorted(versions)}")
+          print(next(iter(versions)))
+          PY
+          )"
+          if [[ ! "$workspace_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo workspace version is not numeric X.Y.Z: ${workspace_version}"
+            exit 1
+          fi
+          python3 - "$workspace_version" "$RELEASE_VERSION_INPUT" <<'PY'
+          import sys
+
+          source = tuple(int(part) for part in sys.argv[1].split("."))
+          requested = tuple(int(part) for part in sys.argv[2].split("."))
+          if requested < source:
+              raise SystemExit(
+                  f"requested version {sys.argv[2]} is lower than source workspace version {sys.argv[1]}"
+              )
+          PY
+
+          if [[ -z "${UPDATE_SIGNING_KEY:-}" ]]; then
+            echo "::error::STATEFULMEMORY_UPDATE_SIGNING_KEY is required"
+            exit 1
+          fi
+
+          {
+            echo "source_sha=$source_sha"
+            echo "release_version=$RELEASE_VERSION_INPUT"
+            echo "release_tag=$release_tag"
+          } >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI gates
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+      strict_format: true
+
+  graph:
+    name: Graph gate
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/graph-smoke.yml
+    with:
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+
+  memory:
+    name: Memory portability gate
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mem-roundtrip.yml
+    with:
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+
   build:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: [preflight, ci, graph, memory]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -29,14 +225,11 @@ jobs:
             runner: macos-latest
             target: aarch64-apple-darwin
             smoke: true
-          # Cross-compile the Intel slice from the arm64 runner (Intel macOS
-          # runners are gone); cannot execute it here — smoke: false.
           - os: darwin
             arch: amd64
             runner: macos-latest
             target: x86_64-apple-darwin
             smoke: false
-          # ubuntu-22.04 (glibc 2.35) for wider binary compatibility.
           - os: linux
             arch: amd64
             runner: ubuntu-22.04
@@ -47,15 +240,21 @@ jobs:
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             smoke: true
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v5
-
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf cmake
-
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -67,48 +266,84 @@ jobs:
             protobuf-compiler \
             cmake
           protoc --version
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-${{ needs.preflight.outputs.release_tag }}-${{ matrix.target }}
+      - name: Prepare ephemeral release version
+        run: |
+          set -euo pipefail
+          python3 - "$RELEASE_VERSION" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
 
+          version = sys.argv[1]
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          text, count = re.subn(
+              r'(?m)^version = "[^"]+"$',
+              f'version = "{version}"',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("could not locate workspace version in Cargo.toml")
+          path.write_text(text)
+          PY
+          cargo metadata --format-version 1 > /dev/null
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/release-metadata.json"
+          python3 - "$RUNNER_TEMP/release-metadata.json" "$RELEASE_VERSION" <<'PY'
+          import json
+          import sys
+
+          metadata = json.load(open(sys.argv[1]))
+          members = set(metadata["workspace_members"])
+          versions = {
+              package["version"]
+              for package in metadata["packages"]
+              if package["id"] in members
+          }
+          if versions != {sys.argv[2]}:
+              raise SystemExit(f"ephemeral workspace versions are {sorted(versions)}")
+          PY
       - name: Build
-        run: cargo build --release -p statefulmemory-cli --target ${{ matrix.target }}
-
-      - name: Smoke test
+        run: cargo build --release --locked -p statefulmemory-cli --target "${{ matrix.target }}"
+      - name: Verify binary version and source
         if: matrix.smoke
         run: |
+          set -euo pipefail
           BIN="target/${{ matrix.target }}/release"
-          "$BIN/statefulmemory" --version
-          "$BIN/statefulmemory" version
-          "$BIN/smem" --version
-
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+          for executable in statefulmemory smem; do
+            for argument in --version version; do
+              output="$("$BIN/$executable" "$argument")"
+              if [[ "$output" != "statefulmemory ${RELEASE_VERSION} (commit ${SHORT_SHA},"* ]]; then
+                echo "unexpected version output: $output" >&2
+                exit 1
+              fi
+            done
+          done
       - name: Package
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          BASE="statefulmemory-${TAG}-${{ matrix.os }}-${{ matrix.arch }}"
+          BASE="statefulmemory-${RELEASE_TAG}-${{ matrix.os }}-${{ matrix.arch }}"
           STAGE="target/pkg/${BASE}"
           BIN="target/${{ matrix.target }}/release"
           mkdir -p "$STAGE"
           install -m 755 "$BIN/statefulmemory" "$STAGE/statefulmemory"
           install -m 755 "$BIN/smem" "$STAGE/smem"
-          # `sm` shorthand is a copy of the same binary (Makefile parity).
           install -m 755 "$BIN/statefulmemory" "$STAGE/sm"
           cp LICENSE-MIT LICENSE-APACHE README.md "$STAGE/"
-          if [ "${{ matrix.os }}" = "darwin" ]; then
-            # Ad-hoc resign post-strip (PRD §14.3) — prevents AMFI SIGKILL.
+          if [[ "${{ matrix.os }}" == "darwin" ]]; then
             codesign --force --sign - "$STAGE/statefulmemory" "$STAGE/smem" "$STAGE/sm"
           fi
           tar -czf "${BASE}.tar.gz" -C target/pkg "$BASE"
           ls -lh "${BASE}.tar.gz"
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -119,36 +354,78 @@ jobs:
 
   publish:
     name: Publish release
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      REPOSITORY: ${{ github.repository }}
+      UPDATE_PUBLIC_KEY_HEX: afff9bdc391221a753b80114bc49bba53d4a0f5c5762c55c49b5d5f83532f20b
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck source and candidate release
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$source_sha" != "$SOURCE_SHA" || "$main_sha" != "$SOURCE_SHA" ]]; then
+            echo "::error::main changed during release; refusing to publish stale artifacts"
+            exit 1
+          fi
 
+          git fetch --quiet --tags origin
+          if [[ -n "$(git tag --points-at "$SOURCE_SHA")" ]]; then
+            echo "::error::source SHA became tagged during release"
+            exit 1
+          fi
+          if git show-ref --tags --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            echo "::error::candidate tag ${RELEASE_TAG} was created during release"
+            exit 1
+          fi
+
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python3 - "$RUNNER_TEMP/releases.json" "$RELEASE_TAG" <<'PY'
+          import sys
+
+          pages = __import__("json").load(open(sys.argv[1]))
+          releases = [release for page in pages for release in page]
+          if any(release.get("tag_name") == sys.argv[2] for release in releases):
+              raise SystemExit(f"candidate release {sys.argv[2]} already exists")
+          PY
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-
       - name: Checksums
         working-directory: dist
         run: |
           set -euo pipefail
-          ls -lh *.tar.gz
-          test "$(ls -1 *.tar.gz | wc -l)" -eq 4
-          sha256sum *.tar.gz > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Build signed update manifest
+          archives=( *.tar.gz )
+          test "${#archives[@]}" -eq 4
+          sha256sum "${archives[@]}" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Build and verify signed update manifest
         working-directory: dist
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.STATEFULMEMORY_UPDATE_SIGNING_KEY }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          test -n "$UPDATE_SIGNING_KEY" || { echo "::error::STATEFULMEMORY_UPDATE_SIGNING_KEY secret is required"; exit 1; }
+          if [[ -z "${UPDATE_SIGNING_KEY:-}" ]]; then
+            echo "::error::STATEFULMEMORY_UPDATE_SIGNING_KEY is required"
+            exit 1
+          fi
           python3 - <<'PY'
           import hashlib
           import json
@@ -158,6 +435,9 @@ jobs:
           from datetime import datetime, timezone
 
           tag = os.environ["RELEASE_TAG"]
+          version = os.environ["RELEASE_VERSION"]
+          repository = os.environ["REPOSITORY"]
+          expected = {"darwin-arm64", "darwin-amd64", "linux-am64", "linux-arm64"}
           releases = {}
           for path in sorted(pathlib.Path(".").glob("statefulmemory-*.tar.gz")):
               match = re.fullmatch(r"statefulmemory-(.+)-(darwin|linux)-(arm64|amd64)\.tar\.gz", path.name)
@@ -165,14 +445,14 @@ jobs:
                   continue
               platform = f"{match.group(2)}-{match.group(3)}"
               releases[platform] = {
-                  "url": f"https://github.com/sanudatta11/statefulmemory/releases/download/{tag}/{path.name}",
+                  "url": f"https://github.com/{repository}/releases/download/{tag}/{path.name}",
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                   "size": path.stat().st_size,
               }
-          if not releases:
-              raise SystemExit("no release archives found")
+          if set(releases) != expected:
+              raise SystemExit(f"expected release platforms {sorted(expected)}, got {sorted(releases)}")
           manifest = {
-              "version": tag.removeprefix("v"),
+              "version": version,
               "published_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
               "releases": releases,
           }
@@ -180,20 +460,78 @@ jobs:
               json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
           )
           PY
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/statefulmemory-update-key.pem"
+          key_file="$RUNNER_TEMP/statefulmemory-update-key.pem"
+          public_der="$RUNNER_TEMP/statefulmemory-update-public.der"
+          public_pem="$RUNNER_TEMP/statefulmemory-update-public.pem"
+          trap 'rm -f "$key_file" "$public_der" "$public_pem"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key_file"
           openssl pkeyutl -sign -rawin \
-            -inkey "$RUNNER_TEMP/statefulmemory-update-key.pem" \
+            -inkey "$key_file" \
             -in statefulmemory-update.json \
             -out statefulmemory-update.json.sig
-          rm -f "$RUNNER_TEMP/statefulmemory-update-key.pem"
+          python3 - "$UPDATE_PUBLIC_KEY_HEX" "$public_der" <<'PY'
+          import pathlib
+          import sys
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.tar.gz
-            dist/SHA256SUMS
-            dist/statefulmemory-update.json
+          raw = bytes.fromhex(sys.argv[1])
+          if len(raw) != 32:
+              raise SystemExit("embedded update public key is not 32 bytes")
+          der_prefix = bytes.fromhex("302a300506032b6570032100")
+          pathlib.Path(sys.argv[2]).write_bytes(der_prefix + raw)
+          PY
+          openssl pkey -pubin -inform DER -in "$public_der" -out "$public_pem"
+          openssl pkeyutl -verify -rawin -pubin \
+            -inkey "$public_pem" \
+            -in statefulmemory-update.json \
+            -sigfile statefulmemory-update.json.sig
+      - name: Create draft release
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --target "$SOURCE_SHA" \
+            --title "statefulmemory $RELEASE_TAG" \
+            --generate-notes
+      - name: Upload release assets
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            dist/*.tar.gz \
+            dist/SHA256SUMS \
+            dist/statefulmemory-update.json \
             dist/statefulmemory-update.json.sig
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+      - name: Verify draft assets
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = true
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/assets.txt"
+          python3 - "$RUNNER_TEMP/assets.txt" "$RELEASE_TAG" <<'PY'
+          import sys
+
+          actual = {line.strip() for line in open(sys.argv[1]) if line.strip()}
+          tag = sys.argv[2]
+          expected = {
+              f"statefulmemory-{tag}-darwin-arm64.tar.gz",
+              f"statefulmemory-{tag}-darwin-amd64.tar.gz",
+              f"statefulmemory-{tag}-linux-amd64.tar.gz",
+              f"statefulmemory-{tag}-linux-arm64.tar.gz",
+              "SHA256SUMS",
+              "statefulmemory-update.json",
+              "statefulmemory-update.json.sig",
+          }
+          if actual != expected:
+              raise SystemExit(f"release asset mismatch: expected {sorted(expected)}, got {sorted(actual)}")
+          PY
+      - name: Publish release
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Verify published release
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = false
+          git fetch --quiet --tags origin
+          resolved_sha="$(git rev-parse --verify --quiet "${RELEASE_TAG}^{commit}" || true)"
+          if [[ "$resolved_sha" != "$SOURCE_SHA" ]]; then
+            echo "::error::published tag resolves to ${resolved_sha}, expected ${SOURCE_SHA}"
+            exit 1
+          fi
+          echo "Release published: $(gh release view "$RELEASE_TAG" --json url --jq '.url')"
