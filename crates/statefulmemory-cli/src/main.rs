@@ -18,7 +18,7 @@ use statefulmemory_cli::{autospawn, exit};
 use statefulmemory_cli::{
     cmd_context, cmd_daemon, cmd_decide, cmd_doctor, cmd_dream, cmd_eval, cmd_graph, cmd_hook,
     cmd_ingest, cmd_logs, cmd_mem, cmd_obs, cmd_project, cmd_prompt, cmd_session, cmd_skill,
-    cmd_sync, cmd_team, cmd_tui, cmd_ui, cmd_uninstall, cmd_verify, cmd_version,
+    cmd_sync, cmd_team, cmd_tui, cmd_ui, cmd_uninstall, cmd_update, cmd_verify, cmd_version,
 };
 use statefulmemory_client::{channel as client_channel, ClientError, StatefulMemoryClient};
 use statefulmemory_proto as p;
@@ -35,6 +35,9 @@ async fn main() -> ExitCode {
     // users who already set the env var themselves; `--quiet` is read by the
     // info!() macro in the lib root.
     statefulmemory_cli::init_globals(cli.quiet, cli.no_color);
+    if !cli.no_update_check && statefulmemory_cli::cmd_update::should_auto_update(&cli.command) {
+        statefulmemory_cli::cmd_update::maybe_auto_update();
+    }
 
     match cli.command {
         // daemon start --foreground runs the daemon in this process; never
@@ -48,6 +51,10 @@ async fn main() -> ExitCode {
             cmd_daemon::dispatch(fmt, verb).await
         }
         Command::Version => cmd_version::run(),
+        Command::Update(args) => cmd_update::dispatch(args),
+        Command::UpdateCheck => cmd_update::dispatch_check_helper(),
+        Command::UpdateApply(args) => cmd_update::dispatch_apply_helper(args),
+        Command::UpdateRollback(args) => cmd_update::dispatch_apply_helper(args),
         Command::Logs(args) => cmd_logs::dispatch(args).await,
         Command::Team(args) => {
             // Token verbs need a client; init-ca doesn't. Open the client

@@ -141,11 +141,59 @@ jobs:
           sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Build signed update manifest
+        working-directory: dist
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.STATEFULMEMORY_UPDATE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test -n "$UPDATE_SIGNING_KEY" || { echo "::error::STATEFULMEMORY_UPDATE_SIGNING_KEY secret is required"; exit 1; }
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          from datetime import datetime, timezone
+
+          tag = os.environ["RELEASE_TAG"]
+          releases = {}
+          for path in sorted(pathlib.Path(".").glob("statefulmemory-*.tar.gz")):
+              match = re.fullmatch(r"statefulmemory-(.+)-(darwin|linux)-(arm64|amd64)\.tar\.gz", path.name)
+              if not match:
+                  continue
+              platform = f"{match.group(2)}-{match.group(3)}"
+              releases[platform] = {
+                  "url": f"https://github.com/sanudatta11/statefulmemory/releases/download/{tag}/{path.name}",
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "size": path.stat().st_size,
+              }
+          if not releases:
+              raise SystemExit("no release archives found")
+          manifest = {
+              "version": tag.removeprefix("v"),
+              "published_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "releases": releases,
+          }
+          pathlib.Path("statefulmemory-update.json").write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          PY
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/statefulmemory-update-key.pem"
+          openssl pkeyutl -sign -rawin \
+            -inkey "$RUNNER_TEMP/statefulmemory-update-key.pem" \
+            -in statefulmemory-update.json \
+            -out statefulmemory-update.json.sig
+          rm -f "$RUNNER_TEMP/statefulmemory-update-key.pem"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
+            dist/statefulmemory-update.json
+            dist/statefulmemory-update.json.sig
           generate_release_notes: true
           fail_on_unmatched_files: true

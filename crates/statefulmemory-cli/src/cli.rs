@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub quiet: bool,
 
+    /// Disable the detached background update check for this invocation.
+    #[arg(long, global = true)]
+    pub no_update_check: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -111,6 +115,14 @@ pub enum Command {
     Ui(UiArgs),
     /// Print version and exit.
     Version,
+    /// Check for and install the latest GitHub release.
+    Update(UpdateArgs),
+    #[command(name = "__update-check", hide = true)]
+    UpdateCheck,
+    #[command(name = "__update-apply", hide = true)]
+    UpdateApply(UpdateApplyArgs),
+    #[command(name = "__update-rollback", hide = true)]
+    UpdateRollback(UpdateApplyArgs),
 }
 
 #[derive(Args, Debug)]
@@ -200,6 +212,32 @@ pub struct DreamRunArgs {
     /// Write the review report to this path (text). Default: stdout.
     #[arg(long)]
     pub out: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    #[command(subcommand)]
+    pub verb: Option<UpdateVerb>,
+    /// Only report whether a newer release exists.
+    #[arg(long)]
+    pub check: bool,
+    /// Skip the interactive confirmation for scripted installs.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UpdateVerb {
+    /// Check for a newer signed release without downloading it.
+    Check,
+    /// Restore the previous standalone binary.
+    Rollback,
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateApplyArgs {
+    #[arg(long)]
+    pub plan: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -1402,6 +1440,58 @@ mod tests {
             },
             _ => panic!("expected mem"),
         }
+    }
+
+    #[test]
+    fn update_commands_parse() {
+        let check = Cli::try_parse_from(["statefulmemory", "update", "check"]).unwrap();
+        assert!(matches!(
+            check.command,
+            Command::Update(UpdateArgs {
+                verb: Some(UpdateVerb::Check),
+                ..
+            })
+        ));
+        let install = Cli::try_parse_from(["statefulmemory", "update", "--yes"]).unwrap();
+        assert!(matches!(
+            install.command,
+            Command::Update(UpdateArgs { yes: true, .. })
+        ));
+        let rollback = Cli::try_parse_from(["statefulmemory", "update", "rollback"]).unwrap();
+        assert!(matches!(
+            rollback.command,
+            Command::Update(UpdateArgs {
+                verb: Some(UpdateVerb::Rollback),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn hidden_update_helpers_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["statefulmemory", "__update-check"])
+                .unwrap()
+                .command,
+            Command::UpdateCheck
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "statefulmemory",
+                "__update-apply",
+                "--plan",
+                "/tmp/plan.json",
+            ])
+            .unwrap()
+            .command,
+            Command::UpdateApply(UpdateApplyArgs { .. })
+        ));
+    }
+
+    #[test]
+    fn no_update_check_flag_parses_globally() {
+        let cli = Cli::try_parse_from(["statefulmemory", "--no-update-check", "version"]).unwrap();
+        assert!(cli.no_update_check);
     }
 
     #[test]

@@ -48,6 +48,10 @@ toml.workspace = true
 
 is-terminal.workspace = true
 fs2.workspace = true
+ed25519-dalek.workspace = true
+flate2.workspace = true
+tar.workspace = true
+ureq.workspace = true
 nix.workspace = true
 rcgen.workspace = true
 

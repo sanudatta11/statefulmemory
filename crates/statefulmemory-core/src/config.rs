@@ -258,6 +258,23 @@ pub struct StatefulMemoryConfig {
     pub verify: VerifyConfig,
     pub graph: GraphConfig,
     pub laya: LayaConfig,
+    pub update: UpdateConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub enabled: bool,
+    pub check_interval_hours: u64,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_interval_hours: 24,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -913,6 +930,16 @@ fn apply_statefulmemory_env_overrides(cfg: &mut StatefulMemoryConfig) {
             tracing::warn!(value = %v, "ignoring STATEFULMEMORY_LAYA_BACKEND: must be auto, mlx, or torch");
         }
     }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_UPDATE_ENABLED") {
+        cfg.update.enabled = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_UPDATE_INTERVAL_HOURS") {
+        if let Ok(n) = v.parse::<u64>() {
+            cfg.update.check_interval_hours = n.max(1);
+        } else {
+            tracing::warn!(value = %v, "ignoring STATEFULMEMORY_UPDATE_INTERVAL_HOURS: must be an integer");
+        }
+    }
 }
 
 fn parse_bool_env(v: &str) -> bool {
@@ -1084,6 +1111,8 @@ mod statefulmemory_config_tests {
             "STATEFULMEMORY_GRAPH_BOOST",
             "STATEFULMEMORY_GRAPH_RANKER",
             "STATEFULMEMORY_LAYA_BACKEND",
+            "STATEFULMEMORY_UPDATE_ENABLED",
+            "STATEFULMEMORY_UPDATE_INTERVAL_HOURS",
         ] {
             std::env::remove_var(k);
         }

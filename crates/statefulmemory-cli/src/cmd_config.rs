@@ -88,13 +88,15 @@ fn show(a: ConfigShowArgs) -> Result<(), String> {
 
 fn get(a: ConfigGetArgs) -> Result<(), String> {
     let cfg = config::load_resolved(a.project.as_deref());
-    let value = lookup(&cfg, &a.key).ok_or_else(|| {
+    let key = canonical_key(&a.key);
+    let value = lookup(&cfg, &key).ok_or_else(|| {
         format!(
             "unknown config key: {}; valid keys: extract.enabled, extract.model, \
              extract.timeout_secs, extract.workers, rerank.model, rerank.timeout_secs, \
              conflict.enabled, conflict.model, conflict.timeout_secs, embed.workers, \
-             verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
-             graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities",
+              verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
+              graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities, \
+              update.enabled, update.check_interval_hours",
             a.key
         )
     })?;
@@ -103,8 +105,9 @@ fn get(a: ConfigGetArgs) -> Result<(), String> {
 }
 
 fn set(a: ConfigSetArgs) -> Result<(), String> {
+    let key = canonical_key(&a.key);
     // Validate the key + value pair *before* touching the file.
-    validate_key_value(&a.key, &a.value)?;
+    validate_key_value(&key, &a.value)?;
 
     let path = match a.project.as_deref() {
         Some(name) => statefulmemory_project_config_path(name),
@@ -136,7 +139,7 @@ fn set(a: ConfigSetArgs) -> Result<(), String> {
         }
     };
 
-    set_in_table(&mut tbl, &a.key, parse_value(&a.value));
+    set_in_table(&mut tbl, &key, parse_value(&a.value));
 
     let new_text = toml::to_string_pretty(&toml::Value::Table(tbl))
         .map_err(|e| format!("serialize {}: {e}", path.display()))?;
@@ -146,6 +149,13 @@ fn set(a: ConfigSetArgs) -> Result<(), String> {
 
     eprintln!("Wrote {}", path.display());
     Ok(())
+}
+
+fn canonical_key(key: &str) -> String {
+    match key {
+        "update-check" | "update_check" => "update.enabled".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Look up one resolved value. Returns the printable form (model role, "true",
@@ -170,6 +180,8 @@ fn lookup(cfg: &StatefulMemoryConfig, key: &str) -> Option<String> {
         "graph.budget_pct" => cfg.graph.budget_pct.to_string(),
         "graph.degree_cap" => cfg.graph.degree_cap.to_string(),
         "graph.max_query_entities" => cfg.graph.max_query_entities.to_string(),
+        "update.enabled" => cfg.update.enabled.to_string(),
+        "update.check_interval_hours" => cfg.update.check_interval_hours.to_string(),
         _ => return None,
     })
 }
@@ -179,7 +191,7 @@ fn lookup(cfg: &StatefulMemoryConfig, key: &str) -> Option<String> {
 fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
     let v = value.trim();
     match key {
-        "extract.enabled" | "conflict.enabled" | "verify.serve_stale" => {
+        "extract.enabled" | "conflict.enabled" | "verify.serve_stale" | "update.enabled" => {
             parse_bool(v).ok_or_else(|| format!("{key} must be true|false (got {value:?})"))?;
         }
         "extract.model" | "rerank.model" | "conflict.model" => {
@@ -225,6 +237,14 @@ fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
             v.parse::<usize>()
                 .map_err(|_| format!("{key} must be a non-negative integer (got {value:?})"))?;
         }
+        "update.check_interval_hours" => {
+            let n = v
+                .parse::<u64>()
+                .map_err(|_| format!("{key} must be a positive integer (got {value:?})"))?;
+            if n == 0 {
+                return Err(format!("{key} must be > 0 (got 0)"));
+            }
+        }
         "graph.edge_types" => {
             // Comma-separated: mentions,fixes,contradicts,about,co_occurs
             for t in v.split(',') {
@@ -242,7 +262,8 @@ fn validate_key_value(key: &str, value: &str) -> Result<(), String> {
                  extract.timeout_secs, extract.workers, rerank.model, rerank.timeout_secs, \
                  conflict.enabled, conflict.model, conflict.timeout_secs, embed.workers, \
                  verify.serve_stale, graph.enabled, graph.hops, graph.boost, \
-                 graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities",
+                 graph.edge_types, graph.budget_pct, graph.degree_cap, graph.max_query_entities, \
+                 update.enabled, update.check_interval_hours",
             ));
         }
     }
@@ -338,6 +359,8 @@ mod tests {
             "STATEFULMEMORY_CONFLICT_ENABLED",
             "STATEFULMEMORY_CONFLICT_MODEL",
             "STATEFULMEMORY_CONFLICT_TIMEOUT_SECS",
+            "STATEFULMEMORY_UPDATE_ENABLED",
+            "STATEFULMEMORY_UPDATE_INTERVAL_HOURS",
         ] {
             std::env::remove_var(k);
         }
@@ -511,6 +534,25 @@ mod tests {
         );
         assert_eq!(raw["rerank"]["model"].as_str(), Some("sonnet"));
 
+        std::env::remove_var("STATEFULMEMORY_DATA_DIR");
+    }
+
+    #[test]
+    fn update_check_alias_maps_to_update_enabled() {
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let _d = fresh_dir();
+        set(ConfigSetArgs {
+            key: "update-check".into(),
+            value: "false".into(),
+            project: None,
+        })
+        .unwrap();
+        let cfg = config::load_resolved(None);
+        assert!(!cfg.update.enabled);
+        assert!(lookup(&cfg, &canonical_key("update_check")).is_some());
         std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }
 
