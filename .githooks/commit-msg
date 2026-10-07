@@ -6,14 +6,21 @@ set -euo pipefail
 msg_file="${1:?commit-msg hook requires a message file}"
 
 # Drop comment lines Git leaves in the editor template; keep real content.
-mapfile -t lines < <(grep -v '^#' "$msg_file" | sed -e 's/[[:space:]]*$//' )
+# NOTE: bash 3.2 compatible on purpose — macOS ships /bin/bash 3.2, which has
+# neither `mapfile` (4.0+) nor negative array subscripts (4.2+). Both of the
+# obvious spellings of this loop break there, which is how this hook came to be
+# silently skipped on developer machines.
+lines=()
+while IFS= read -r line; do
+  lines+=("$line")
+done < <(grep -v '^#' "$msg_file" | sed -e 's/[[:space:]]*$//')
 
 # Trim leading/trailing blank lines only.
 while [[ ${#lines[@]} -gt 0 && -z "${lines[0]}" ]]; do
   lines=("${lines[@]:1}")
 done
-while [[ ${#lines[@]} -gt 0 && -z "${lines[-1]}" ]]; do
-  unset 'lines[-1]'
+while [[ ${#lines[@]} -gt 0 && -z "${lines[${#lines[@]}-1]}" ]]; do
+  lines=("${lines[@]:0:${#lines[@]}-1}")
 done
 
 if [[ ${#lines[@]} -eq 0 ]]; then

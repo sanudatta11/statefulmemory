@@ -251,7 +251,7 @@ async fn main() -> ExitCode {
             }
             Err(code) => code,
         },
-        Command::Mcp => statefulmemory_cli::cmd_mcp::dispatch(cli.project).await,
+        Command::Mcp(a) => statefulmemory_cli::cmd_mcp::dispatch(cli.project, a).await,
         Command::Reindex(args) => match open_client(cli.output, cli.project).await {
             Ok((mut client, detection, _fmt)) => {
                 let req = p::ReindexObservationsRequest {

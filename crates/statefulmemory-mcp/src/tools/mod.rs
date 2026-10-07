@@ -33,6 +33,10 @@ pub struct SearchArgs {
     pub scope: Option<String>,
     /// Project to search; defaults to the server's working-directory project.
     pub project: Option<String>,
+    /// When true, search the cross-project knowledge base (every project on
+    /// this machine via the local global mirror) instead of a single project.
+    /// Ignored by the daemon if the caller isn't authorized for all-projects.
+    pub all_projects: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

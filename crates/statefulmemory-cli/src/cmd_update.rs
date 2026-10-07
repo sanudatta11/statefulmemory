@@ -101,7 +101,7 @@ pub fn should_auto_update(command: &CliCommand) -> bool {
         command,
         CliCommand::Update(_)
             | CliCommand::Version
-            | CliCommand::Mcp
+            | CliCommand::Mcp(_)
             | CliCommand::Hook(_)
             | CliCommand::Daemon(_)
             | CliCommand::UpdateCheck

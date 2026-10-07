@@ -92,7 +92,8 @@ pub enum Command {
     Reindex(ReindexArgs),
     /// Run the local stdio MCP server, exposing memory tools to MCP-capable
     /// agents (Claude Code, Windsurf). Speaks MCP on stdout; logs to stderr.
-    Mcp,
+    /// Pass --remote to target a shared/remote team knowledge base.
+    Mcp(McpArgs),
     /// Run accuracy and latency retrieval evaluation benchmark (LoCoMo, LongMemEval, BEAM).
     Eval(EvalArgs),
     /// Analyze stored memories and recommend a decision.
@@ -249,6 +250,19 @@ pub struct UiArgs {
     /// expose over a reverse proxy for LAN use.
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
+    /// Remote team daemon address (host:port). Serves a shared/remote knowledge
+    /// base over TCP+TLS instead of the local daemon. Takes precedence over
+    /// STATEFULMEMORY_ADDR. Requires --ca and --token-env.
+    #[arg(long)]
+    pub remote: Option<String>,
+    /// Path to the team CA PEM (from `statefulmemory team init-ca`). Required with --remote.
+    #[arg(long)]
+    pub ca: Option<std::path::PathBuf>,
+    /// Name of the env var holding the bearer token (from
+    /// `statefulmemory team token-create`). Required with --remote. The token is read
+    /// from this env var, never passed on argv.
+    #[arg(long = "token-env")]
+    pub token_env: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -391,6 +405,19 @@ pub struct InstallArgs {
     /// Config `[laya]` keys are still filled by bootstrap unless already set.
     #[arg(long)]
     pub no_laya: bool,
+
+    /// Register the MCP server in REMOTE mode against a shared team daemon at
+    /// this address (host:port). Agent configs get `mcp --remote …` so they
+    /// launch against a shared knowledge base. Requires --ca and --token-env.
+    #[arg(long)]
+    pub remote: Option<String>,
+    /// Path to the team CA PEM (from `statefulmemory team init-ca`). Used with --remote.
+    #[arg(long)]
+    pub ca: Option<std::path::PathBuf>,
+    /// Env var name holding the bearer token. Baked into the agent config as
+    /// `--token-env <VAR>` (the token itself is never written to disk). Used with --remote.
+    #[arg(long = "token-env")]
+    pub token_env: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1029,6 +1056,12 @@ pub struct TeamInitCaArgs {
     /// Overwrite existing PEM files (EC-9).
     #[arg(long)]
     pub force: bool,
+    /// Subject Alternative Name(s) for the leaf cert. Repeat for multiple
+    /// (e.g. `--san memory.corp.example --san 10.0.0.5`). Defaults to
+    /// `localhost` for a loopback demo; set your daemon's hostname/IP for
+    /// off-box remote access.
+    #[arg(long = "san")]
+    pub san: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1043,6 +1076,25 @@ pub struct TeamTokenCreateArgs {
 #[derive(Args, Debug)]
 pub struct TeamTokenRevokeArgs {
     pub name: String,
+}
+
+/// Flags for `statefulmemory mcp`. All optional; with none set the server targets
+/// the local UDS daemon (or STATEFULMEMORY_ADDR env if present).
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Remote team daemon address (host:port). Talks to a shared/remote
+    /// knowledge base over TCP+TLS instead of the local daemon. Takes
+    /// precedence over STATEFULMEMORY_ADDR. Requires --ca and --token-env.
+    #[arg(long)]
+    pub remote: Option<String>,
+    /// Path to the team CA PEM (from `statefulmemory team init-ca`). Required with --remote.
+    #[arg(long)]
+    pub ca: Option<std::path::PathBuf>,
+    /// Name of the env var holding the bearer token (from
+    /// `statefulmemory team token-create`). Required with --remote. The token is read
+    /// from this env var, never passed on argv.
+    #[arg(long = "token-env")]
+    pub token_env: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1143,7 +1195,7 @@ mod tests {
     #[test]
     fn mcp_subcommand_parses() {
         let cli = Cli::try_parse_from(["statefulmemory", "mcp"]).unwrap();
-        assert!(matches!(cli.command, Command::Mcp));
+        assert!(matches!(cli.command, Command::Mcp(_)));
     }
 
     #[test]

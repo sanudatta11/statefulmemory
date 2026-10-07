@@ -11,7 +11,9 @@
 
 use std::collections::HashMap;
 
-use statefulmemory_eval::scoring::{build_score_map, min_max_normalize, Bm25Norm, ScoreComponents};
+use statefulmemory_retrieval::scoring::{
+    build_score_map, min_max_normalize, Bm25Norm, ScoreComponents,
+};
 
 #[test]
 fn additive_formula_sums_three_signals() {

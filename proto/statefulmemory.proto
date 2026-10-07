@@ -916,6 +916,9 @@ message VisualizationCandidate {
   int32 fused_rank = 5;
   int32 final_rank = 6;
   double score = 7;
+  // Per-signal score breakdown (Phase 2.2b): bm25, sem, entity, salience,
+  // decay, combined. Empty when the daemon can't score (e.g. no embedder).
+  map<string, double> components = 8;
 }
 
 message VisualizationJob {

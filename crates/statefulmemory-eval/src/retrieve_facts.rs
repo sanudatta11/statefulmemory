@@ -43,7 +43,9 @@ use statefulmemory_embed::{cache::EmbeddingCache, Embedder};
 use statefulmemory_extract::entities::extract_heuristic_tokens;
 use statefulmemory_storage::ProjectRegistry;
 
-use crate::scoring::{apply_quality_modifiers, build_score_map, Bm25Norm, FactMeta, QualityConfig};
+use statefulmemory_retrieval::scoring::{
+    apply_quality_modifiers, build_score_map, Bm25Norm, FactMeta, QualityConfig,
+};
 use crate::vec_index::open_with_vec;
 
 /// Over-fetch policy: pull `max(k * 4, 60)` candidates per retriever before

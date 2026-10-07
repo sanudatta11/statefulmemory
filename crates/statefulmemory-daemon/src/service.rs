@@ -100,8 +100,8 @@ pub struct DaemonState {
     pub verify_pool: Option<crate::verify_worker::VerifyWorkerPool>,
     /// Wave 3 search result LRU (project-scoped keys).
     pub search_cache: std::sync::Arc<crate::search_cache::SearchCache>,
-    /// In-process query embedding cache (sha256 text → vector).
-    pub query_vec_cache: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, Vec<f32>>>>,
+    /// In-process query embedding cache (sha256 text → vector), bounded LRU.
+    pub query_vec_cache: std::sync::Arc<crate::query_vec_cache::QueryVecCache>,
     /// Optional Laya System-1 sidecar client. `None` when disabled or unhealthy.
     pub laya: Option<std::sync::Arc<crate::laya::LayaClient>>,
 }
@@ -386,6 +386,28 @@ fn canonicalize_candidate(path: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
+/// Observation-level salience proxy for score fusion (Phase 2.2). Combines a
+/// type weight (decisions/policies matter most) with a verify-state adjustment
+/// (verified code-anchored memory is trusted; stale/invalidated is discounted).
+/// Returns a multiplier in roughly [0.3, 1.1] applied as `salience_factor` in
+/// the additive scorer.
+pub(crate) fn observation_salience(o: &Observation) -> f32 {
+    let type_w: f32 = match o.r#type.as_str() {
+        "decision" | "policy" => 1.0,
+        "fix" | "pattern" => 0.85,
+        "preference" => 0.75,
+        "fact" => 0.7,
+        _ => 0.6, // note / context / anything else
+    };
+    let verify_adj: f32 = match o.verify_state.as_str() {
+        "verified" => 1.1,
+        "stale" => 0.7,
+        "invalidated" | "unprovable" => 0.5,
+        _ => 1.0, // unanchored (the common default) — no adjustment
+    };
+    (type_w * verify_adj).clamp(0.3, 1.2)
+}
+
 #[derive(Clone)]
 pub struct StatefulMemoryService {
     pub state: Arc<DaemonState>,
@@ -541,23 +563,52 @@ impl StatefulMemoryService {
         }
     }
 
+    /// HyDE query expansion (Phase 6.5, opt-in via `search.hyde`): generate a
+    /// short hypothetical answer with the fast model and append it to the query
+    /// so dense retrieval can match answer-shaped text. Returns the original
+    /// query unchanged when disabled, on the Easy tier, or on any LLM failure
+    /// (never blocks or errors retrieval). Runtime behavior is eval-gated.
+    async fn maybe_hyde(
+        &self,
+        query: &str,
+        project_name: &str,
+        tier: crate::query_router::QueryTier,
+    ) -> String {
+        let cfg = statefulmemory_core::config::load_resolved(Some(project_name));
+        if !cfg.search.hyde || matches!(tier, crate::query_router::QueryTier::Easy) {
+            return query.to_string();
+        }
+        let prompt = format!(
+            "Write a concise, factual passage (2-3 sentences) that would directly \
+             answer the following question, as if quoted from documentation or a \
+             decision record. Output only the passage.\n\nQuestion: {query}"
+        );
+        match self
+            .state
+            .claude_client
+            .ask(&prompt, cfg.rerank.model.cli_model_id())
+            .await
+        {
+            Ok(doc) if !doc.trim().is_empty() => format!("{query}\n{}", doc.trim()),
+            _ => query.to_string(),
+        }
+    }
+
     fn embed_query_cached(&self, query: &str) -> Option<Vec<f32>> {
         let key = {
             use sha2::{Digest, Sha256};
             hex::encode(Sha256::digest(query.as_bytes()))
         };
-        if let Some(v) = self.state.query_vec_cache.lock().get(&key).cloned() {
+        if let Some(v) = self.state.query_vec_cache.get(&key) {
             return Some(v);
         }
-        let embedder = self.state.query_embedder.read();
-        let embedder = embedder.as_ref()?;
-        let mut vs = embedder.embed(&[query]).ok()?;
-        let v = vs.pop()?;
-        let mut cache = self.state.query_vec_cache.lock();
-        if cache.len() >= 256 {
-            cache.clear();
-        }
-        cache.insert(key, v.clone());
+        let v = {
+            let embedder = self.state.query_embedder.read();
+            let embedder = embedder.as_ref()?;
+            let mut vs = embedder.embed(&[query]).ok()?;
+            vs.pop()?
+        };
+        self.state.query_vec_cache.put(key, v.clone());
         Some(v)
     }
 
@@ -600,8 +651,9 @@ impl StatefulMemoryService {
         project_name: &str,
         tier: crate::query_router::QueryTier,
     ) -> Result<Vec<Observation>> {
-        const RRF_DEPTH: i32 = statefulmemory_retrieval::hybrid::DEFAULT_CANDIDATE_DEPTH;
-        const RRF_K: u32 = statefulmemory_retrieval::hybrid::DEFAULT_RRF_K;
+        // Deepened candidate pool (was DEFAULT_CANDIDATE_DEPTH=30). Scored
+        // fusion over a wider pool lifts MRR; capped by read_q::CANDIDATE_CAP.
+        const RRF_DEPTH: i32 = 60;
 
         let cfg = statefulmemory_core::config::load_resolved(Some(project_name));
         let decay_lambda = cfg.search.decay_lambda;
@@ -622,14 +674,18 @@ impl StatefulMemoryService {
             None
         };
 
-        let bm25_hits = read_q::search(conn, &search_q, type_filter, scope_filter, RRF_DEPTH)?;
+        // BM25 lane with real (column-weighted) scores.
+        let bm25_scored =
+            read_q::search_scored(conn, &search_q, type_filter, scope_filter, RRF_DEPTH)?;
         let fact_ids = if tier.use_fact_expand() {
             fact_parent_ids(conn, &search_q, RRF_DEPTH as i64)
         } else {
             Vec::new()
         };
 
-        let dense_hits = if !tier.use_dense() {
+        // Dense lane with real distances. The dense reader doesn't apply
+        // type/scope, so filter here.
+        let dense_scored: Vec<(Observation, f64)> = if !tier.use_dense() {
             Vec::new()
         } else {
             match self.embed_query_cached(&search_q) {
@@ -639,86 +695,135 @@ impl StatefulMemoryService {
                     );
                     Vec::new()
                 }
-                Some(q_vec) => match read_q::search_dense(conn, &q_vec, RRF_DEPTH as i64) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "dense search failed — using BM25 (+ facts)");
-                        Vec::new()
+                Some(q_vec) => {
+                    let mut hits = match read_q::search_dense_scored(conn, &q_vec, RRF_DEPTH as i64)
+                    {
+                        Ok(h) => h,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "dense search failed — using BM25 (+ facts)");
+                            Vec::new()
+                        }
+                    };
+                    // Phase 2.5 (opt-in): fuse in chunk-based max-pool hits so a
+                    // long observation can surface on its best passage, not
+                    // just the mean-pooled whole-document vector. Merge by
+                    // obs id, keeping the smaller (better) distance.
+                    if cfg.embed.chunk_long_content {
+                        match read_q::search_dense_chunks_scored(conn, &q_vec, RRF_DEPTH as i64) {
+                            Ok(chunk_hits) if !chunk_hits.is_empty() => {
+                                let mut best: std::collections::HashMap<i64, (Observation, f64)> =
+                                    std::collections::HashMap::new();
+                                for (o, d) in hits.into_iter().chain(chunk_hits) {
+                                    best.entry(o.id)
+                                        .and_modify(|(_, existing)| {
+                                            if d < *existing {
+                                                *existing = d;
+                                            }
+                                        })
+                                        .or_insert((o, d));
+                                }
+                                hits = best.into_values().collect();
+                                hits.sort_by(|a, b| {
+                                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::debug!(error = %e, "chunked dense search failed (ignored)");
+                            }
+                        }
                     }
-                },
+                    hits.into_iter()
+                        .filter(|(o, _)| {
+                            if let Some(t) = type_filter {
+                                if o.r#type != t {
+                                    return false;
+                                }
+                            }
+                            if let Some(s) = scope_filter {
+                                if o.scope != s {
+                                    return false;
+                                }
+                            }
+                            true
+                        })
+                        .collect()
+                }
             }
         };
 
-        if dense_hits.is_empty() && fact_ids.is_empty() {
-            let mut hits: Vec<Observation> = bm25_hits.into_iter().take(limit as usize).collect();
-            if decay_lambda > 0.0 {
-                apply_time_decay(&mut hits, decay_lambda);
-            }
-            if let Some(ref range) = time_range {
-                hits = crate::query_expand::soft_filter_by_time(hits, range, 1);
-            }
-            // Easy-tier escape hatch: empty BM25 → one dense retry.
-            if hits.is_empty() && matches!(tier, crate::query_router::QueryTier::Easy) {
+        // Nothing matched any lane → Easy-tier dense retry, else empty. When
+        // only BM25 matched, flow continues into the unified scorer below so
+        // the decay base is identical across all paths (Phase 2.3).
+        if bm25_scored.is_empty() && dense_scored.is_empty() && fact_ids.is_empty() {
+            if matches!(tier, crate::query_router::QueryTier::Easy) {
                 if let Some(q_vec) = self.embed_query_cached(query) {
                     if let Ok(dense) = read_q::search_dense(conn, &q_vec, limit as i64) {
                         return Ok(dense.into_iter().take(limit as usize).collect());
                     }
                 }
             }
-            return Ok(hits);
+            return Ok(Vec::new());
         }
 
-        let dense_hits: Vec<Observation> = dense_hits
-            .into_iter()
-            .filter(|o| {
-                if let Some(t) = type_filter {
-                    if o.r#type != t {
-                        return false;
-                    }
-                }
-                if let Some(s) = scope_filter {
-                    if o.scope != s {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
+        // --- Score-based weighted fusion (Phase 2.2) ---
+        // Replaces rank-only RRF: normalize BM25 (adaptive sigmoid, keyed to
+        // query length) + dense (min-max → similarity) into an additive base,
+        // add a fact-parent boost lane, then apply observation salience + time
+        // decay. The shared scorer lives in statefulmemory-retrieval (same code
+        // the eval harness measures).
+        use statefulmemory_retrieval::scoring::{build_score_map, Bm25Norm};
 
-        let bm25_ids: Vec<u64> = bm25_hits.iter().map(|o| o.id as u64).collect();
-        let dense_ids: Vec<u64> = dense_hits.iter().map(|o| o.id as u64).collect();
-        let fused = statefulmemory_retrieval::hybrid::fuse_candidate_trace(
-            &bm25_ids, &dense_ids, &fact_ids, RRF_K,
+        let bm25_list: Vec<(i64, f64)> = bm25_scored.iter().map(|(o, s)| (o.id, *s)).collect();
+        let dense_list: Vec<(i64, f64)> = dense_scored.iter().map(|(o, s)| (o.id, *s)).collect();
+
+        // Fact-parent presence feeds the entity-boost lane (preserving the old
+        // third RRF lane): earlier fact ranks get a larger additive bump.
+        let mut entity_boost: std::collections::HashMap<i64, f32> =
+            std::collections::HashMap::new();
+        for (rank, id) in fact_ids.iter().enumerate() {
+            let b = (0.6 - 0.02 * rank as f32).max(0.2);
+            entity_boost.entry(*id as i64).or_insert(b);
+        }
+
+        let qtok = search_q.split_whitespace().count();
+        let score_map = build_score_map(
+            &bm25_list,
+            &dense_list,
+            &entity_boost,
+            Bm25Norm::AdaptiveSigmoid {
+                query_token_count: qtok,
+            },
         );
 
+        // Hydrate observations for every scored id.
         let mut by_id: std::collections::HashMap<i64, Observation> =
             std::collections::HashMap::new();
-        for o in bm25_hits.into_iter().chain(dense_hits) {
+        for (o, _) in bm25_scored.into_iter().chain(dense_scored) {
             by_id.entry(o.id).or_insert(o);
         }
-
-        let mut scored: Vec<(Observation, f64)> = fused
-            .candidates
-            .into_iter()
-            .filter_map(|candidate| {
-                let oid = candidate.id as i64;
-                let o = if let Some(o) = by_id.remove(&oid) {
-                    o
-                } else {
-                    read_q::get(conn, &ObservationKey::Id(oid)).ok()?
-                };
-                Some((o, candidate.rrf_score))
-            })
-            .collect();
-
-        if decay_lambda > 0.0 {
-            let now = chrono::Utc::now();
-            for (o, score) in &mut scored {
-                let age = age_days_since(&o.created_at, now);
-                *score *= (-decay_lambda * age).exp();
+        for id in &fact_ids {
+            let oid = *id as i64;
+            if let std::collections::hash_map::Entry::Vacant(slot) = by_id.entry(oid) {
+                if let Ok(o) = read_q::get(conn, &ObservationKey::Id(oid)) {
+                    slot.insert(o);
+                }
             }
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         }
+
+        let now = chrono::Utc::now();
+        let mut scored: Vec<(Observation, f32)> = Vec::with_capacity(score_map.len());
+        for (id, mut sc) in score_map.into_iter() {
+            let Some(o) = by_id.remove(&id) else { continue };
+            sc.salience_factor = observation_salience(&o);
+            sc.decay_factor = if decay_lambda > 0.0 {
+                (-decay_lambda * age_days_since(&o.created_at, now)).exp() as f32
+            } else {
+                1.0
+            };
+            scored.push((o, sc.combined()));
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut hits: Vec<Observation> = scored
             .into_iter()
@@ -995,7 +1100,7 @@ fn created_at_epoch(created_at: &str) -> i64 {
 }
 
 /// Age in days since `created_at` (RFC3339 or SQLite `datetime('now')` form).
-fn age_days_since(created_at: &str, now: chrono::DateTime<chrono::Utc>) -> f64 {
+pub(crate) fn age_days_since(created_at: &str, now: chrono::DateTime<chrono::Utc>) -> f64 {
     let parsed = chrono::DateTime::parse_from_rfc3339(created_at)
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .or_else(|_| {
@@ -1013,24 +1118,6 @@ fn age_days_since(created_at: &str, now: chrono::DateTime<chrono::Utc>) -> f64 {
         }
         Err(_) => 0.0,
     }
-}
-
-fn apply_time_decay(hits: &mut Vec<Observation>, decay_lambda: f64) {
-    if decay_lambda <= 0.0 || hits.len() < 2 {
-        return;
-    }
-    let now = chrono::Utc::now();
-    let mut scored: Vec<(Observation, f64)> = hits
-        .drain(..)
-        .enumerate()
-        .map(|(i, o)| {
-            let base = 1.0 / (1.0 + i as f64);
-            let age = age_days_since(&o.created_at, now);
-            (o, base * (-decay_lambda * age).exp())
-        })
-        .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    *hits = scored.into_iter().map(|(o, _)| o).collect();
 }
 
 /// Expand context hits with same-session neighbors; never exceed `limit`.
@@ -1080,18 +1167,27 @@ fn finalize_context_hits(
     max_tokens: u32,
     query: Option<&str>,
 ) -> (Vec<statefulmemory_proto::Observation>, i32) {
+    let cfg = statefulmemory_core::config::load_resolved(Some(project_name));
     let hits = crate::token_budget::apply_max_per_type(hits, max_per_type);
     let mut recent = observations_to_proto(conn, hits);
     filter_context_observations(&mut recent, project_name, include_stale);
-    let (packed, tokens_primary) =
-        crate::token_budget::pack_proto_by_token_budget(recent, max_tokens);
+    let (packed, tokens_primary) = if cfg.search.context_slot_pack {
+        // Slot-based: reserve budget shares for decisions / anchored-code / other.
+        let (decisions, anchored, other, used) =
+            crate::token_budget::pack_proto_by_slots(recent, max_tokens);
+        let mut flat = decisions;
+        flat.extend(anchored);
+        flat.extend(other);
+        (flat, used)
+    } else {
+        crate::token_budget::pack_proto_by_token_budget(recent, max_tokens)
+    };
     let mut recent = packed;
     // Graph expansion (spec: graph-briefing): when enabled + the caller gave a
     // query, append the cue-neighborhood as extra briefing memory, capped to a
     // budget_pct share of max_tokens. Never re-packs the primary hits, so a
     // graph-enabled query cannot displace direct hits.
     if let Some(q) = query {
-        let cfg = statefulmemory_core::config::load_resolved(Some(project_name));
         if cfg.graph.enabled && cfg.graph.budget_pct > 0.0 {
             let budget = (max_tokens as f64 * cfg.graph.budget_pct) as usize;
             if budget > 0 {
@@ -1512,7 +1608,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let mut entities =
             graph_q::entity_lookup(&conn, &r.norm_prefix, (r.limit.clamp(1, u32::MAX)) as usize);
         if !r.kind_filter.is_empty() {
@@ -1537,7 +1633,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let entity = map(graph_q::get_entity_by_id(&conn, r.id))?;
         Ok(Response::new(statefulmemory_proto::GetEntityResponse {
             entity: Some(entity_to_proto(entity)),
@@ -1552,7 +1648,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let hops = r.hops.clamp(1, 2) as u8;
         // relation_filter (CLI `--relation`) narrows to one relation; else an
         // explicit edge_types list; else the default traversal set.
@@ -1610,7 +1706,7 @@ impl StatefulMemory for StatefulMemoryService {
         };
         let mut topic_key = r.topic_key.clone().filter(|s| !s.trim().is_empty());
         if topic_key.is_none() {
-            if let Ok(conn) = project.open_read_conn() {
+            if let Ok(conn) = project.checkout_read() {
                 if let Ok(k) = crate::suggest_topic_key::suggest(&conn, &r.r#type, &r.title, &scope)
                 {
                     topic_key = Some(k);
@@ -1669,7 +1765,7 @@ impl StatefulMemory for StatefulMemoryService {
             {
                 Ok(Some(w)) => warnings_pending.push(w),
                 Ok(None) => {
-                    if let Ok(conn) = project.open_read_conn() {
+                    if let Ok(conn) = project.checkout_read() {
                         if let Ok(fresh) = read_q::get(&conn, &ObservationKey::Id(obs.id)) {
                             obs = fresh;
                         }
@@ -1792,7 +1888,7 @@ impl StatefulMemory for StatefulMemoryService {
 
 
         if let Some(pool) = &self.state.resolve_pool {
-            if let Ok(conn) = project.open_read_conn() {
+            if let Ok(conn) = project.checkout_read() {
                 if let Ok(rels) = statefulmemory_storage::get_relations_for_observation(&conn, obs.id) {
                     for rel in rels
                         .into_iter()
@@ -1844,7 +1940,11 @@ impl StatefulMemory for StatefulMemoryService {
             } else {
                 anchor_strings.clone()
             };
-            let (gtx, grx) = tokio::sync::oneshot::channel();
+            let (gtx, _grx) = tokio::sync::oneshot::channel();
+            // Fire-and-forget (Phase 6.4): the save reply must NOT block on
+            // graph indexing, so graph.enabled can default-on without breaking
+            // the SC-1 50ms save budget. The write thread processes it in a
+            // later batch and logs its own failures; _grx is dropped.
             if let Err(e) = project.write.send(WriteRequest::IndexGraph {
                 observation_id: obs.id,
                 title,
@@ -1854,8 +1954,6 @@ impl StatefulMemory for StatefulMemoryService {
                 reply: gtx,
             }) {
                 tracing::warn!(error = %e, obs_id = obs.id, "graph index enqueue failed");
-            } else if grx.await.ok().and_then(Result::ok).is_none() {
-                tracing::warn!(obs_id = obs.id, "graph index write failed (write thread)");
             }
         }
 
@@ -1892,7 +1990,7 @@ impl StatefulMemory for StatefulMemoryService {
             Some(get_observation_request::Key::SyncId(s)) => ObservationKey::SyncId(s),
             None => return Err(Status::invalid_argument("missing observation key")),
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let obs = map(read_q::get(&conn, &key))?;
         Ok(Response::new(GetObservationResponse {
             observation: Some(obs_to_proto(obs)),
@@ -1957,7 +2055,7 @@ impl StatefulMemory for StatefulMemoryService {
         let deleted_id = match &key {
             ObservationKey::Id(id) => *id,
             ObservationKey::SyncId(sync_id) => {
-                let conn = map(project.open_read_conn())?;
+                let conn = map(project.checkout_read())?;
                 conn.query_row(
                     "SELECT id FROM observations WHERE sync_id = ?1",
                     rusqlite::params![sync_id],
@@ -1997,7 +2095,7 @@ impl StatefulMemory for StatefulMemoryService {
         } else {
             r.limit
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         if r.all_projects {
             let mode = self.resolved_search_mode(r.mode.as_deref(), &r.project_name);
 
@@ -2193,8 +2291,12 @@ impl StatefulMemory for StatefulMemoryService {
             .as_wire()
             .to_string();
         let cfg_fp = format!(
-            "{}|{}|{}|{}",
-            mode_resolved, cfg.search.rerank, cfg.rerank.backend, tier.as_str()
+            "{}|{}|{}|{}|{}",
+            mode_resolved,
+            cfg.search.rerank,
+            cfg.rerank.backend,
+            tier.as_str(),
+            cfg.search.hyde
         );
         let cache_key = crate::search_cache::cache_key(
             &r.project_name,
@@ -2222,48 +2324,47 @@ impl StatefulMemory for StatefulMemoryService {
             }));
         }
 
-        let hits = if self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
-            == statefulmemory_retrieval::hybrid::HybridMode::Hybrid
-            || !matches!(tier, crate::query_router::QueryTier::Easy)
-        {
-            // Easy + hybrid mode still uses tiered path (skips dense inside).
-            map(self.hybrid_search_tiered(
-                &conn,
-                &r.query,
-                r.r#type.as_deref(),
-                r.scope.as_deref(),
-                limit,
-                &r.project_name,
-                tier,
-            ))?
-        } else if matches!(tier, crate::query_router::QueryTier::Easy) {
-            map(read_q::search(
-                &conn,
-                &r.query,
-                r.r#type.as_deref(),
-                r.scope.as_deref(),
-                limit,
-            ))?
-        } else {
-            let expanded = crate::query_expand::expand_query_with_facts(&conn, &r.query, 12);
-            let search_q = if expanded.is_empty() {
-                r.query.as_str()
-            } else {
-                expanded.as_str()
-            };
-            let mut hits = map(read_q::search(
-                &conn,
-                search_q,
-                r.r#type.as_deref(),
-                r.scope.as_deref(),
-                limit,
-            ))?;
-            if let Some(range) =
-                crate::query_expand::infer_time_range(&r.query, chrono::Utc::now())
-            {
-                hits = crate::query_expand::soft_filter_by_time(hits, &range, 1);
-            }
-            hits
+        // HyDE query expansion (Phase 6.5, opt-in) — computed on cache-miss
+        // only so cache hits don't pay the LLM cost. No-op unless search.hyde.
+        let effective_query = self.maybe_hyde(&r.query, &r.project_name, tier).await;
+
+        // Offload CPU-bound retrieval (SQLite + BERT forward) to a blocking
+        // thread so it doesn't starve the async runtime under concurrency
+        // (Phase 1.6b). The service is Clone (Arc<DaemonState>), so the closure
+        // is Send + 'static; it checks out its own pooled read connection.
+        let hits = {
+            let svc = self.clone();
+            let project2 = project.clone();
+            let query2 = effective_query;
+            let type2 = r.r#type.clone();
+            let scope2 = r.scope.clone();
+            let pname2 = r.project_name.clone();
+            let use_tiered = self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
+                == statefulmemory_retrieval::hybrid::HybridMode::Hybrid
+                || !matches!(tier, crate::query_router::QueryTier::Easy);
+            let joined = tokio::task::spawn_blocking(
+                move || -> std::result::Result<Vec<Observation>, statefulmemory_core::error::Error> {
+                    let conn = project2.checkout_read()?;
+                    if use_tiered {
+                        // Easy + hybrid mode still uses the tiered path (skips dense inside).
+                        svc.hybrid_search_tiered(
+                            &conn,
+                            &query2,
+                            type2.as_deref(),
+                            scope2.as_deref(),
+                            limit,
+                            &pname2,
+                            tier,
+                        )
+                    } else {
+                        // BM25-only Easy path.
+                        read_q::search(&conn, &query2, type2.as_deref(), scope2.as_deref(), limit)
+                    }
+                },
+            )
+            .await
+            .map_err(|e| Status::internal(format!("retrieval task failed: {e}")))?;
+            map(joined)?
         };
         let hits = match self.resolved_rerank(r.rerank.as_deref(), &r.project_name) {
             Some(choice) if tier.use_local_rerank() || matches!(choice, RerankChoice::Llm(_)) => {
@@ -2300,7 +2401,7 @@ impl StatefulMemory for StatefulMemoryService {
         } else {
             r.limit
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let (rows, next) = map(read_q::list(
             &conn,
             r.r#type.as_deref(),
@@ -2336,7 +2437,7 @@ impl StatefulMemory for StatefulMemoryService {
         } else {
             r.limit
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let rows = map(read_q::recent(&conn, limit, r.scope.as_deref()))?;
         Ok(Response::new(RecentObservationsResponse {
             observations: observations_to_proto(&conn, rows),
@@ -2361,7 +2462,7 @@ impl StatefulMemory for StatefulMemoryService {
         } else {
             r.recent_limit
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
 
         let cfg = statefulmemory_core::config::load_resolved(Some(&r.project_name));
         let evidence_window = cfg.search.evidence_window;
@@ -2408,20 +2509,28 @@ impl StatefulMemory for StatefulMemoryService {
                 if !matches!(tier, crate::query_router::QueryTier::Easy) {
                     allow_graph_query = Some(q);
                 }
-                let hits = if self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
-                    == statefulmemory_retrieval::hybrid::HybridMode::Hybrid
-                {
-                    map(self.hybrid_search_tiered(
-                        &conn,
-                        q,
-                        None,
-                        None,
-                        limit,
-                        &r.project_name,
-                        tier,
-                    ))?
-                } else {
-                    map(read_q::search(&conn, q, None, None, limit))?
+                // Offload CPU-bound retrieval off the async runtime (Phase 1.6b).
+                let hits = {
+                    let svc = self.clone();
+                    let project2 = project.clone();
+                    let query2 = q.to_string();
+                    let pname2 = r.project_name.clone();
+                    let use_hybrid = self
+                        .resolved_search_mode(r.mode.as_deref(), &r.project_name)
+                        == statefulmemory_retrieval::hybrid::HybridMode::Hybrid;
+                    let joined = tokio::task::spawn_blocking(
+                        move || -> std::result::Result<Vec<Observation>, statefulmemory_core::error::Error> {
+                            let conn = project2.checkout_read()?;
+                            if use_hybrid {
+                                svc.hybrid_search_tiered(&conn, &query2, None, None, limit, &pname2, tier)
+                            } else {
+                                read_q::search(&conn, &query2, None, None, limit)
+                            }
+                        },
+                    )
+                    .await
+                    .map_err(|e| Status::internal(format!("retrieval task failed: {e}")))?;
+                    map(joined)?
                 };
                 let hits = match self.resolved_rerank(r.rerank.as_deref(), &r.project_name) {
                     Some(choice)
@@ -2498,7 +2607,7 @@ impl StatefulMemory for StatefulMemoryService {
             Some(timeline_request::Anchor::SyncId(s)) => ObservationKey::SyncId(s),
             None => return Err(Status::invalid_argument("missing timeline anchor")),
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let (before, anchor, after) = map(read_q::timeline(&conn, &key, r.before, r.after))?;
         Ok(Response::new(TimelineResponse {
             before: before.into_iter().map(obs_to_proto).collect(),
@@ -2522,7 +2631,7 @@ impl StatefulMemory for StatefulMemoryService {
         } else {
             r.scope
         };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let key = map(crate::suggest_topic_key::suggest(
             &conn, &r.r#type, &r.title, &scope,
         ))?;
@@ -2570,7 +2679,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let rows = map(facts_q::facts_for_obs(&conn, r.observation_id))?;
         let facts = rows.into_iter().map(fact_to_proto).collect();
         Ok(Response::new(GetFactsResponse { facts }))
@@ -2586,7 +2695,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let entries = map(read_q::history_chain(&conn, r.observation_id))?;
         let proto_entries = entries
             .into_iter()
@@ -2629,7 +2738,7 @@ impl StatefulMemory for StatefulMemoryService {
             }
         };
 
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let only_missing = r.only_missing;
         let since_clause = if r.since.as_deref().filter(|s| !s.is_empty()).is_some() {
             "AND created_at >= ?1"
@@ -2741,7 +2850,7 @@ impl StatefulMemory for StatefulMemoryService {
             cleared = -1; // actual row count isn't returned; -1 signals "all cleared"
         }
 
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let missing_clause = if r.force {
             ""
         } else {
@@ -2814,7 +2923,7 @@ impl StatefulMemory for StatefulMemoryService {
             }
         };
 
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let pairs = match r.observation_id {
             Some(id) => {
                 let anchors = map(statefulmemory_storage::anchor::anchors_for(&conn, id))?;
@@ -2891,7 +3000,7 @@ impl StatefulMemory for StatefulMemoryService {
         }))?;
         let session = await_write_reply(rx).await?;
         // Build context snapshot using a read connection.
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let (recent, topics) = map(sessions_q::build_context_snapshot(&conn, 10))?;
         let snapshot = ContextSnapshot {
             recent_observations: recent.into_iter().map(obs_to_proto).collect(),
@@ -2969,7 +3078,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let s = map(sessions_q::get(&conn, &r.id))?;
         Ok(Response::new(GetSessionResponse {
             session: Some(session_to_proto(s)),
@@ -2987,7 +3096,7 @@ impl StatefulMemory for StatefulMemoryService {
         let project = map(self.open_project(&r.project_name))?;
         let cur = map(parse_cursor(&r.cursor))?;
         let limit = if r.limit == 0 { 10 } else { r.limit };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let (rows, next) = map(sessions_q::list(&conn, limit, cur.as_ref()))?;
         let next_cursor = match next {
             Some(c) => Some(map(proto_cursor(c))?),
@@ -3010,7 +3119,7 @@ impl StatefulMemory for StatefulMemoryService {
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
         let project = map(self.open_project(&r.project_name))?;
         // FR12.8: refuse if any active observation references the session.
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         if map(sessions_q::has_observations(&conn, &r.id))? {
             return Err(Status::failed_precondition(format!(
                 "session '{}' still has observations; delete or move them first",
@@ -3081,7 +3190,7 @@ impl StatefulMemory for StatefulMemoryService {
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.limit == 0 { 10 } else { r.limit };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let rows = map(prompts_q::search(&conn, &r.query, limit))?;
         Ok(Response::new(SearchPromptsResponse {
             prompts: rows.into_iter().map(prompt_to_proto).collect(),
@@ -3099,7 +3208,7 @@ impl StatefulMemory for StatefulMemoryService {
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
         let limit = if r.limit == 0 { 10 } else { r.limit };
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let rows = map(prompts_q::recent(&conn, limit))?;
         Ok(Response::new(RecentPromptsResponse {
             prompts: rows.into_iter().map(prompt_to_proto).collect(),
@@ -3467,7 +3576,7 @@ impl StatefulMemory for StatefulMemoryService {
         };
         for p in projects {
             let state = map(self.state.registry.get_or_open(&p))?;
-            let conn = map(state.open_read_conn())?;
+            let conn = map(state.checkout_read())?;
             let s = map(stats_q::count_for(&conn, &state.normalized))?;
             out.push(stats_response::ProjectStats {
                 project: s.project,
@@ -3524,9 +3633,8 @@ impl StatefulMemory for StatefulMemoryService {
         let auth_ctx = req.extensions().get::<crate::auth::AuthCtx>().cloned();
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, true)?;
-        Err(Status::unimplemented(
-            "SyncImport: implemented in spec-task-5",
-        ))
+        let resp = crate::sync_import::handle(&self.state, r).await?;
+        Ok(Response::new(resp))
     }
     async fn sync_export_json(
         &self,
@@ -3604,7 +3712,7 @@ impl StatefulMemory for StatefulMemoryService {
         let inner = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &inner.project_name, false)?;
         let project = map(self.open_project(&inner.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let rels = map(statefulmemory_storage::relations::get_relations_for_observation(
             &conn,
             inner.observation_id,
@@ -3667,7 +3775,7 @@ impl StatefulMemory for StatefulMemoryService {
                     .map_err(|error| Status::internal(format!("doctor write enqueue: {error}")))?;
                 await_write_reply(receiver).await?;
             }
-            let conn = map(project.open_read_conn())?;
+            let conn = map(project.checkout_read())?;
             for mut finding in map(statefulmemory_storage::doctor::audit_and_repair(
                 &conn,
                 false,
@@ -3698,7 +3806,7 @@ impl StatefulMemory for StatefulMemoryService {
         let r = req.into_inner();
         self.authorize_project(auth_ctx.as_ref(), &r.project_name, false)?;
         let project = map(self.open_project(&r.project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let scanned_len = {
             let mut st = conn
                 .prepare("SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL")
@@ -3810,7 +3918,7 @@ mod tests {
             resolve_pool: None,
             verify_pool: None,
             search_cache: Arc::new(crate::search_cache::SearchCache::default()),
-            query_vec_cache: Arc::new(Mutex::new(HashMap::new())),
+            query_vec_cache: Arc::new(crate::query_vec_cache::QueryVecCache::default()),
             laya: None,
         });
         (StatefulMemoryService::new(state), store)

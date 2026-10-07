@@ -16,6 +16,11 @@ pub const HAIKU_MODEL: &str = "fast";
 pub const SONNET_MODEL: &str = "capable";
 
 /// Abstract completion client. Real impl shells out; mock returns canned output.
+// `async_trait` expands each method to a `#[must_use]` fn returning a pinned
+// boxed Future (itself already `#[must_use]`), which trips clippy's
+// `double_must_use` on 1.99+. The attribute lives in the macro expansion, so
+// the only place to silence it is the trait it is attached to.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ClaudeClient: Send + Sync {
     /// Send a prompt. `model` is a role (`fast` / `capable`), a legacy

@@ -25,3 +25,6 @@ thiserror.workspace = true
 tiny_http.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

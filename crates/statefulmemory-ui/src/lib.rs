@@ -158,6 +158,7 @@ pub fn bind(
             script: "",
             style: "",
         },
+        false,
     )
 }
 
@@ -166,6 +167,7 @@ pub fn bind_with_assets(
     project_name: impl Into<String>,
     backend: Arc<dyn UiBackend>,
     assets: UiAssets,
+    remote: bool,
 ) -> Result<RunningUi, UiError> {
     let address = config.bind_address();
     let server = Server::http(&address).map_err(|error| UiError::Bind {
@@ -191,6 +193,7 @@ pub fn bind_with_assets(
         project_name,
         auth,
         backend,
+        remote,
         html: assets.html,
         script: assets.script,
         style: assets.style,
@@ -207,6 +210,9 @@ pub(crate) struct UiState {
     pub(crate) project_name: String,
     pub(crate) auth: AuthState,
     pub(crate) backend: Arc<dyn UiBackend>,
+    /// True when the gateway proxies a remote TCP+TLS team daemon (vs local UDS).
+    /// Surfaced read-only via `/api/meta` so the dashboard can label the source.
+    pub(crate) remote: bool,
     pub(crate) html: &'static str,
     pub(crate) script: &'static str,
     pub(crate) style: &'static str,

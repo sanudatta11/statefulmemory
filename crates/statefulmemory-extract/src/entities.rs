@@ -32,6 +32,8 @@ use crate::Fact;
 
 /// Trait for entity extractors. Returns canonical lowercased entity names
 /// for a single fact (deduped, ordered by first appearance).
+// See `claude_cli::ClaudeClient` for why `double_must_use` is allowed here.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait EntityExtractor: Send + Sync {
     async fn extract(&self, fact: &Fact) -> Result<Vec<String>>;

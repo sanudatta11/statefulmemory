@@ -411,36 +411,55 @@ fn target_selected(t: &Target, selected: &[AgentId]) -> bool {
     t.agents.iter().any(|a| selected.contains(a))
 }
 
-fn stdio_entry(command: &str) -> Value {
+/// Default MCP launch args written into agent configs (local UDS mode).
+fn default_mcp_args() -> Vec<String> {
+    vec!["mcp".to_string()]
+}
+
+fn stdio_entry(command: &str, args: &[String]) -> Value {
     json!({
         "type": "stdio",
         "command": command,
-        "args": ["mcp"],
+        "args": args,
     })
 }
 
-fn opencode_entry(command: &str) -> Value {
+fn opencode_entry(command: &str, args: &[String]) -> Value {
+    let mut cmd = vec![command.to_string()];
+    cmd.extend(args.iter().cloned());
     json!({
         "type": "local",
-        "command": [command, "mcp"],
+        "command": cmd,
         "enabled": true,
         "timeout": 30000,
     })
 }
 
-fn zcode_entry(command: &str) -> Value {
+fn zcode_entry(command: &str, args: &[String]) -> Value {
     json!({
         "type": "stdio",
         "command": command,
-        "args": ["mcp"],
+        "args": args,
     })
 }
 
-/// Register statefulmemory MCP with selected agent configs.
+/// Register statefulmemory MCP with selected agent configs (local UDS mode).
 pub fn install_for(
     home: &Path,
     cwd: &Path,
     selected: &[AgentId],
+) -> Vec<Result<McpAction, (String, PathBuf, String)>> {
+    install_for_with_args(home, cwd, selected, &default_mcp_args())
+}
+
+/// Register statefulmemory MCP with selected agent configs, baking `mcp_args` into
+/// each entry's launch args. `["mcp"]` = local; append `--remote <addr> --ca
+/// <pem> --token-env <VAR>` for a shared/remote team daemon (Phase 4.2b).
+pub fn install_for_with_args(
+    home: &Path,
+    cwd: &Path,
+    selected: &[AgentId],
+    mcp_args: &[String],
 ) -> Vec<Result<McpAction, (String, PathBuf, String)>> {
     let command = resolve_statefulmemory_command();
     let mut out = Vec::new();
@@ -452,7 +471,7 @@ pub fn install_for(
         if should_skip(t, &path) {
             continue;
         }
-        match upsert_target(&path, t.schema, &command) {
+        match upsert_target(&path, t.schema, &command, mcp_args) {
             Ok(changed) => out.push(Ok(McpAction {
                 label: t.label.to_string(),
                 path,
@@ -732,13 +751,13 @@ fn upsert_map_entry(map: &mut Value, name: &str, entry: Value) -> std::io::Resul
     }
 }
 
-fn upsert_target(path: &Path, schema: Schema, command: &str) -> std::io::Result<bool> {
+fn upsert_target(path: &Path, schema: Schema, command: &str, args: &[String]) -> std::io::Result<bool> {
     match schema {
         Schema::McpServers => {
             let mut root = read_json_object(path)?;
             let original = root.clone();
             let servers = ensure_object(&mut root, "mcpServers")?;
-            upsert_map_entry(servers, MCP_SERVER_NAME, stdio_entry(command))?;
+            upsert_map_entry(servers, MCP_SERVER_NAME, stdio_entry(command, args))?;
             if root == original {
                 return Ok(false);
             }
@@ -749,7 +768,7 @@ fn upsert_target(path: &Path, schema: Schema, command: &str) -> std::io::Result<
             let mut root = read_json_object(path)?;
             let original = root.clone();
             let servers = ensure_object(&mut root, "servers")?;
-            upsert_map_entry(servers, MCP_SERVER_NAME, stdio_entry(command))?;
+            upsert_map_entry(servers, MCP_SERVER_NAME, stdio_entry(command, args))?;
             if root == original {
                 return Ok(false);
             }
@@ -761,7 +780,7 @@ fn upsert_target(path: &Path, schema: Schema, command: &str) -> std::io::Result<
             let original = root.clone();
             let mcp = ensure_object(&mut root, "mcp")?;
             // Prefer nested mcp.servers when that layout already exists (v2).
-            let entry = opencode_entry(command);
+            let entry = opencode_entry(command, args);
             if mcp.get("servers").and_then(|v| v.as_object()).is_some() {
                 let servers = ensure_object(mcp, "servers")?;
                 upsert_map_entry(servers, MCP_SERVER_NAME, entry)?;
@@ -779,14 +798,14 @@ fn upsert_target(path: &Path, schema: Schema, command: &str) -> std::io::Result<
             let original = root.clone();
             let mcp = ensure_object(&mut root, "mcp")?;
             let servers = ensure_object(mcp, "servers")?;
-            upsert_map_entry(servers, MCP_SERVER_NAME, zcode_entry(command))?;
+            upsert_map_entry(servers, MCP_SERVER_NAME, zcode_entry(command, args))?;
             if root == original {
                 return Ok(false);
             }
             write_json(path, &root)?;
             Ok(true)
         }
-        Schema::CodexToml => upsert_codex_toml(path, command),
+        Schema::CodexToml => upsert_codex_toml(path, command, args),
     }
 }
 
@@ -803,7 +822,7 @@ fn write_toml(path: &Path, table: &toml::Table) -> std::io::Result<()> {
     Ok(())
 }
 
-fn upsert_codex_toml(path: &Path, command: &str) -> std::io::Result<bool> {
+fn upsert_codex_toml(path: &Path, command: &str, args: &[String]) -> std::io::Result<bool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -837,7 +856,7 @@ fn upsert_codex_toml(path: &Path, command: &str) -> std::io::Result<bool> {
     entry.insert("command".into(), toml::Value::String(command.into()));
     entry.insert(
         "args".into(),
-        toml::Value::Array(vec![toml::Value::String("mcp".into())]),
+        toml::Value::Array(args.iter().map(|a| toml::Value::String(a.clone())).collect()),
     );
     let entry_val = match servers_tbl.get(MCP_SERVER_NAME) {
         Some(toml::Value::Table(existing)) => {
@@ -845,7 +864,7 @@ fn upsert_codex_toml(path: &Path, command: &str) -> std::io::Result<bool> {
             merged.insert("command".into(), toml::Value::String(command.into()));
             merged.insert(
                 "args".into(),
-                toml::Value::Array(vec![toml::Value::String("mcp".into())]),
+                toml::Value::Array(args.iter().map(|a| toml::Value::String(a.clone())).collect()),
             );
             toml::Value::Table(merged)
         }
@@ -998,10 +1017,10 @@ mod tests {
     fn mcp_servers_upsert_and_remove() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mcp.json");
-        assert!(upsert_target(&path, Schema::McpServers, "/bin/statefulmemory").unwrap());
+        assert!(upsert_target(&path, Schema::McpServers, "/bin/statefulmemory", &["mcp".to_string()]).unwrap());
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["statefulmemory"]["args"][0], "mcp");
-        assert!(!upsert_target(&path, Schema::McpServers, "/bin/statefulmemory").unwrap());
+        assert!(!upsert_target(&path, Schema::McpServers, "/bin/statefulmemory", &["mcp".to_string()]).unwrap());
         assert!(remove_target(&path, Schema::McpServers).unwrap());
         assert!(!path.exists());
     }
@@ -1015,7 +1034,7 @@ mod tests {
             "{\n  // keep this setting\n  \"theme\": \"dark\",\n  \"mcp\": {\"other\": {}},\n}\n",
         )
         .unwrap();
-        assert!(upsert_target(&path, Schema::OpenCodeMcp, "statefulmemory").unwrap());
+        assert!(upsert_target(&path, Schema::OpenCodeMcp, "statefulmemory", &["mcp".to_string()]).unwrap());
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["mcp"]["statefulmemory"]["command"][1], "mcp");
@@ -1027,7 +1046,7 @@ mod tests {
         let path = dir.path().join("mcp.json");
         let original = "{ this is not valid json";
         fs::write(&path, original).unwrap();
-        assert!(upsert_target(&path, Schema::McpServers, "statefulmemory").is_err());
+        assert!(upsert_target(&path, Schema::McpServers, "statefulmemory", &["mcp".to_string()]).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 
@@ -1035,7 +1054,7 @@ mod tests {
     fn opencode_flat_and_nested() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("opencode.json");
-        assert!(upsert_target(&path, Schema::OpenCodeMcp, "statefulmemory").unwrap());
+        assert!(upsert_target(&path, Schema::OpenCodeMcp, "statefulmemory", &["mcp".to_string()]).unwrap());
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["mcp"]["statefulmemory"]["type"], "local");
         assert_eq!(v["mcp"]["statefulmemory"]["command"][1], "mcp");
@@ -1047,7 +1066,7 @@ mod tests {
             r#"{"mcp":{"servers":{"other":{"type":"local","command":["x"]}}}}"#,
         )
         .unwrap();
-        assert!(upsert_target(&path2, Schema::OpenCodeMcp, "statefulmemory").unwrap());
+        assert!(upsert_target(&path2, Schema::OpenCodeMcp, "statefulmemory", &["mcp".to_string()]).unwrap());
         let v2: Value = serde_json::from_str(&fs::read_to_string(&path2).unwrap()).unwrap();
         assert!(v2["mcp"]["servers"]["statefulmemory"].is_object());
         assert!(v2["mcp"]["servers"]["other"].is_object());
@@ -1057,7 +1076,7 @@ mod tests {
     fn zcode_nested_servers() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
-        assert!(upsert_target(&path, Schema::ZcodeMcpServers, "statefulmemory").unwrap());
+        assert!(upsert_target(&path, Schema::ZcodeMcpServers, "statefulmemory", &["mcp".to_string()]).unwrap());
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["mcp"]["servers"]["statefulmemory"]["type"], "stdio");
     }
@@ -1066,7 +1085,7 @@ mod tests {
     fn vscode_servers_key() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mcp.json");
-        assert!(upsert_target(&path, Schema::VsCodeServers, "statefulmemory").unwrap());
+        assert!(upsert_target(&path, Schema::VsCodeServers, "statefulmemory", &["mcp".to_string()]).unwrap());
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(v["servers"]["statefulmemory"].is_object());
         assert!(v.get("mcpServers").is_none());
@@ -1076,7 +1095,7 @@ mod tests {
     fn codex_toml_round_trip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        assert!(upsert_target(&path, Schema::CodexToml, "/usr/local/bin/statefulmemory").unwrap());
+        assert!(upsert_target(&path, Schema::CodexToml, "/usr/local/bin/statefulmemory", &["mcp".to_string()]).unwrap());
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("[mcp_servers.statefulmemory]"));
         assert!(text.contains("command = \"/usr/local/bin/statefulmemory\""));

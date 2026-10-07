@@ -63,6 +63,8 @@ pub struct Fact {
 /// Pluggable extractor. P2 ships a single Haiku-backed implementation
 /// (spec-task-14); the trait keeps tests mockable and leaves room for a
 /// stronger model swap later (e.g. claude-4.6-sonnet for stubborn windows).
+// See `claude_cli::ClaudeClient` for why `double_must_use` is allowed here.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Extractor: Send + Sync {
     /// Extract facts from one window of consecutive turns. The window is the

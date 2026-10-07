@@ -24,7 +24,6 @@ pub mod rrf;
 pub mod runner;
 pub mod sampling;
 pub mod scorecard;
-pub mod scoring;
 pub mod sharding;
 pub mod vec_index;
 

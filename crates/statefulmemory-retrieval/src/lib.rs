@@ -22,3 +22,4 @@ pub mod local_rerank;
 pub mod ppr;
 pub mod rerank;
 pub mod rrf;
+pub mod scoring;

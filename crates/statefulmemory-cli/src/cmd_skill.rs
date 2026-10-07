@@ -427,7 +427,30 @@ pub async fn dispatch(_fmt: Formatter, args: InstallArgs) -> ExitCode {
     }
 
     // ── MCP registration (detected / selected agents only) ─────────────────
-    for result in crate::mcp_install::install_for(&home, &cwd, selected) {
+    // Remote install (Phase 4.2b): bake `mcp --remote <addr> --ca <pem>
+    // --token-env <VAR>` into each agent entry so they launch against a shared
+    // team KB. The token stays in the named env var (never written to config).
+    let mcp_args: Vec<String> = match args.remote.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(addr) => {
+            let mut a = vec!["mcp".to_string(), "--remote".to_string(), addr.to_string()];
+            if let Some(ca) = args.ca.as_ref() {
+                a.push("--ca".to_string());
+                a.push(ca.display().to_string());
+            }
+            if let Some(te) = args.token_env.as_deref() {
+                a.push("--token-env".to_string());
+                a.push(te.to_string());
+            }
+            if args.ca.is_none() || args.token_env.is_none() {
+                eprintln!(
+                    "  warn: --remote without --ca/--token-env; the registered MCP will fall back to local UDS at runtime until both are provided"
+                );
+            }
+            a
+        }
+        None => vec!["mcp".to_string()],
+    };
+    for result in crate::mcp_install::install_for_with_args(&home, &cwd, selected, &mcp_args) {
         match result {
             Ok(action) if action.changed => {
                 installed.push(format!("{:<24} {}", action.label, action.path.display()));

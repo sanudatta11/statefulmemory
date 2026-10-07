@@ -1,10 +1,14 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use statefulmemory_client::StatefulMemoryClient;
+use statefulmemory_client::{channel, AuthClient, AuthInterceptor, ClientError, Endpoint, StatefulMemoryClient};
 use statefulmemory_proto as p;
 use statefulmemory_proto::stateful_memory_visualization_client::StatefulMemoryVisualizationClient;
 use thiserror::Error;
+use tonic::service::interceptor::InterceptedService;
 use tonic::{transport::Channel, Code, Status};
+
+/// Visualization client over the same auth-interceptor transport as [`AuthClient`].
+type VizClient = StatefulMemoryVisualizationClient<InterceptedService<Channel, AuthInterceptor>>;
 
 #[derive(Debug, Clone, Error)]
 #[error("{message}")]
@@ -28,6 +32,68 @@ impl BackendError {
     }
 }
 
+/// Reference to an observation by numeric id or sync_id. Mirrors the proto
+/// `oneof key` used by Update/Delete/Timeline so the http layer can hand a
+/// resolved key to the backend.
+pub enum ObsRef {
+    Id(i64),
+    SyncId(String),
+}
+
+impl ObsRef {
+    fn update_key(self) -> p::update_observation_request::Key {
+        match self {
+            ObsRef::Id(id) => p::update_observation_request::Key::Id(id),
+            ObsRef::SyncId(sync_id) => p::update_observation_request::Key::SyncId(sync_id),
+        }
+    }
+
+    fn delete_key(self) -> p::delete_observation_request::Key {
+        match self {
+            ObsRef::Id(id) => p::delete_observation_request::Key::Id(id),
+            ObsRef::SyncId(sync_id) => p::delete_observation_request::Key::SyncId(sync_id),
+        }
+    }
+
+    fn timeline_anchor(self) -> p::timeline_request::Anchor {
+        match self {
+            ObsRef::Id(id) => p::timeline_request::Anchor::Id(id),
+            ObsRef::SyncId(sync_id) => p::timeline_request::Anchor::SyncId(sync_id),
+        }
+    }
+}
+
+/// Owned inputs for `SaveObservation`. Keeps the trait method readable instead
+/// of a long positional argument list.
+#[derive(Default)]
+pub struct SaveObservationInput {
+    pub session_id: String,
+    pub r#type: String,
+    pub title: String,
+    pub content: String,
+    pub scope: String,
+    pub topic_key: Option<String>,
+    pub tool_name: Option<String>,
+    pub created_by: Option<String>,
+    pub anchors: Vec<String>,
+}
+
+/// Optional patch fields for `UpdateObservation`. Any `Some` field is applied;
+/// `None` leaves the stored value untouched (same semantics as the proto).
+#[derive(Default)]
+pub struct UpdateObservationInput {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub topic_key: Option<String>,
+    pub scope: Option<String>,
+    pub r#type: Option<String>,
+    pub code_anchor: Option<String>,
+}
+
+// See `statefulmemory-extract::claude_cli::ClaudeClient` for why
+// `double_must_use` is allowed on an `async_trait` trait. Every method here
+// expands to one, so this silences 39 diagnostics at the trait.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait UiBackend: Send + Sync {
     async fn search(
@@ -141,20 +207,333 @@ pub trait UiBackend: Send + Sync {
             "project list is unavailable",
         ))
     }
+
+    async fn save_observation(
+        &self,
+        _project_name: &str,
+        _input: SaveObservationInput,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "saving observations is unavailable",
+        ))
+    }
+
+    async fn update_observation(
+        &self,
+        _project_name: &str,
+        _key: ObsRef,
+        _patch: UpdateObservationInput,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "updating observations is unavailable",
+        ))
+    }
+
+    async fn delete_observation(
+        &self,
+        _project_name: &str,
+        _key: ObsRef,
+        _hard: bool,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "deleting observations is unavailable",
+        ))
+    }
+
+    async fn context(
+        &self,
+        _project_name: &str,
+        _query: Option<String>,
+        _recent_limit: i32,
+        _mode: String,
+        _include_stale: bool,
+        _max_tokens: Option<i32>,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "context is unavailable",
+        ))
+    }
+
+    async fn timeline(
+        &self,
+        _project_name: &str,
+        _anchor: ObsRef,
+        _before: i32,
+        _after: i32,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "timeline is unavailable",
+        ))
+    }
+
+    async fn recent_observations(
+        &self,
+        _project_name: &str,
+        _limit: i32,
+        _scope: Option<String>,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "recent observations are unavailable",
+        ))
+    }
+
+    async fn get_facts(
+        &self,
+        _project_name: &str,
+        _observation_id: i64,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "facts are unavailable",
+        ))
+    }
+
+    async fn observation_history(
+        &self,
+        _project_name: &str,
+        _observation_id: i64,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "observation history is unavailable",
+        ))
+    }
+
+    async fn verify_anchors(
+        &self,
+        _project_name: &str,
+        _observation_id: Option<i64>,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "anchor verification is unavailable",
+        ))
+    }
+
+    async fn list_sessions(
+        &self,
+        _project_name: &str,
+        _limit: i32,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "session list is unavailable",
+        ))
+    }
+
+    async fn get_session(
+        &self,
+        _project_name: &str,
+        _id: &str,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "session detail is unavailable",
+        ))
+    }
+
+    async fn save_session_summary(
+        &self,
+        _project_name: &str,
+        _id: &str,
+        _summary: &str,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "session summary save is unavailable",
+        ))
+    }
+
+    async fn delete_session(
+        &self,
+        _project_name: &str,
+        _id: &str,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "session delete is unavailable",
+        ))
+    }
+
+    async fn start_session(
+        &self,
+        _project_name: &str,
+        _id: &str,
+        _directory: &str,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "session start is unavailable",
+        ))
+    }
+
+    async fn end_session(
+        &self,
+        _project_name: &str,
+        _id: &str,
+        _summary: Option<String>,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "session end is unavailable",
+        ))
+    }
+
+    async fn list_projects(&self) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "project list is unavailable",
+        ))
+    }
+
+    async fn current_project(&self, _directory: &str) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "current project is unavailable",
+        ))
+    }
+
+    async fn merge_projects(&self, _from: &str, _to: &str) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "project merge is unavailable",
+        ))
+    }
+
+    async fn delete_project(
+        &self,
+        _project_name: &str,
+        _hard: bool,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "project delete is unavailable",
+        ))
+    }
+
+    async fn consolidate_projects(&self, _dry_run: bool) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "project consolidation is unavailable",
+        ))
+    }
+
+    async fn prune_projects(&self, _dry_run: bool) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "project prune is unavailable",
+        ))
+    }
+
+    async fn doctor(
+        &self,
+        _project_name: Option<String>,
+        _auto_repair: bool,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "doctor is unavailable",
+        ))
+    }
+
+    async fn daemon_stats(&self, _project_name: Option<String>) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "stats are unavailable",
+        ))
+    }
+
+    async fn daemon_status(&self) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "daemon status is unavailable",
+        ))
+    }
+
+    async fn reextract_observations(
+        &self,
+        _project_name: &str,
+        _since: Option<String>,
+        _only_missing: bool,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "re-extraction is unavailable",
+        ))
+    }
+
+    async fn reindex_observations(
+        &self,
+        _project_name: &str,
+        _force: bool,
+    ) -> Result<Value, BackendError> {
+        Err(BackendError::new(
+            501,
+            "not_implemented",
+            "re-indexing is unavailable",
+        ))
+    }
 }
 
 #[derive(Clone)]
 pub struct GrpcBackend {
-    client: StatefulMemoryClient<Channel>,
-    visualization: StatefulMemoryVisualizationClient<Channel>,
+    client: AuthClient,
+    visualization: VizClient,
 }
 
 impl GrpcBackend {
-    pub fn new(channel: Channel) -> Self {
-        Self {
-            client: StatefulMemoryClient::new(channel.clone()),
-            visualization: StatefulMemoryVisualizationClient::new(channel),
-        }
+    /// Dial the daemon described by `endpoint` (local UDS or remote TCP+TLS+token)
+    /// and build both the primary and visualization clients over one
+    /// auth-interceptor transport. For UDS the interceptor is a no-op; for TCP it
+    /// injects the bearer token on every call (Phase 5.5 remote KB).
+    pub async fn connect(endpoint: &Endpoint) -> Result<Self, ClientError> {
+        let (ch, interceptor) = match endpoint {
+            Endpoint::Uds(path) => (channel::connect_uds(path)?, AuthInterceptor::none()),
+            Endpoint::Tcp {
+                addr,
+                ca_pem,
+                token,
+                domain,
+            } => (
+                channel::connect_tcp(addr, ca_pem, domain).await?,
+                AuthInterceptor::bearer(token),
+            ),
+        };
+        Ok(Self {
+            client: StatefulMemoryClient::with_interceptor(ch.clone(), interceptor.clone()),
+            visualization: StatefulMemoryVisualizationClient::with_interceptor(ch, interceptor),
+        })
     }
 }
 
@@ -539,6 +918,608 @@ impl UiBackend for GrpcBackend {
             .into_inner();
         Ok(response.projects.iter().map(summary_value).collect())
     }
+
+    async fn save_observation(
+        &self,
+        project_name: &str,
+        input: SaveObservationInput,
+    ) -> Result<Value, BackendError> {
+        let code_anchor = input.anchors.first().cloned();
+        let response = self
+            .client
+            .clone()
+            .save_observation(p::SaveObservationRequest {
+                project_name: project_name.to_string(),
+                sync_id: None,
+                session_id: input.session_id,
+                r#type: input.r#type,
+                title: input.title,
+                content: input.content,
+                tool_name: input.tool_name,
+                scope: input.scope,
+                created_by: input.created_by,
+                topic_key: input.topic_key,
+                code_anchor,
+                anchors: input.anchors,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "observation": response
+                .observation
+                .as_ref()
+                .map(|observation| observation_value(observation, project_name)),
+            "similar_observations": response
+                .similar_observations
+                .iter()
+                .map(|observation| observation_value(observation, project_name))
+                .collect::<Vec<_>>(),
+            "warnings": response.warnings,
+        }))
+    }
+
+    async fn update_observation(
+        &self,
+        project_name: &str,
+        key: ObsRef,
+        patch: UpdateObservationInput,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .update_observation(p::UpdateObservationRequest {
+                project_name: project_name.to_string(),
+                key: Some(key.update_key()),
+                title: patch.title,
+                content: patch.content,
+                topic_key: patch.topic_key,
+                scope: patch.scope,
+                r#type: patch.r#type,
+                code_anchor: patch.code_anchor,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "observation": response
+                .observation
+                .as_ref()
+                .map(|observation| observation_value(observation, project_name)),
+        }))
+    }
+
+    async fn delete_observation(
+        &self,
+        project_name: &str,
+        key: ObsRef,
+        hard: bool,
+    ) -> Result<Value, BackendError> {
+        self.client
+            .clone()
+            .delete_observation(p::DeleteObservationRequest {
+                project_name: project_name.to_string(),
+                key: Some(key.delete_key()),
+                hard,
+            })
+            .await
+            .map_err(map_status)?;
+        Ok(json!({ "deleted": true }))
+    }
+
+    async fn context(
+        &self,
+        project_name: &str,
+        query: Option<String>,
+        recent_limit: i32,
+        mode: String,
+        include_stale: bool,
+        max_tokens: Option<i32>,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .context(p::ContextRequest {
+                project_name: project_name.to_string(),
+                recent_limit,
+                mode: Some(mode),
+                rerank: None,
+                query,
+                anchor: None,
+                include_stale,
+                max_tokens,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "snapshot": response
+                .snapshot
+                .as_ref()
+                .map(|snapshot| context_snapshot_value(snapshot, project_name)),
+            "tokens_used": response.tokens_used,
+        }))
+    }
+
+    async fn timeline(
+        &self,
+        project_name: &str,
+        anchor: ObsRef,
+        before: i32,
+        after: i32,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .timeline(p::TimelineRequest {
+                project_name: project_name.to_string(),
+                anchor: Some(anchor.timeline_anchor()),
+                before,
+                after,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "before": response
+                .before
+                .iter()
+                .map(|observation| observation_value(observation, project_name))
+                .collect::<Vec<_>>(),
+            "anchor": response
+                .anchor
+                .as_ref()
+                .map(|observation| observation_value(observation, project_name)),
+            "after": response
+                .after
+                .iter()
+                .map(|observation| observation_value(observation, project_name))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn recent_observations(
+        &self,
+        project_name: &str,
+        limit: i32,
+        scope: Option<String>,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .recent_observations(p::RecentObservationsRequest {
+                project_name: project_name.to_string(),
+                limit,
+                scope,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "observations": response
+                .observations
+                .iter()
+                .map(|observation| observation_value(observation, project_name))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn get_facts(
+        &self,
+        project_name: &str,
+        observation_id: i64,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .get_facts(p::GetFactsRequest {
+                project_name: project_name.to_string(),
+                observation_id,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "facts": response.facts.iter().map(fact_value).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn observation_history(
+        &self,
+        project_name: &str,
+        observation_id: i64,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .get_observation_history(p::GetObservationHistoryRequest {
+                project_name: project_name.to_string(),
+                observation_id,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "entries": response
+                .entries
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "observation": entry
+                            .observation
+                            .as_ref()
+                            .map(|observation| observation_value(observation, project_name)),
+                        "superseded_by_id": entry.superseded_by_id,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn verify_anchors(
+        &self,
+        project_name: &str,
+        observation_id: Option<i64>,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .verify_anchors(p::VerifyAnchorsRequest {
+                project_name: project_name.to_string(),
+                observation_id,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "verified": response.verified,
+            "stale": response.stale,
+            "invalidated": response.invalidated,
+            "unprovable": response.unprovable,
+            "unanchored": response.unanchored,
+            "changed_ids": response.changed_ids,
+            "results": response
+                .results
+                .iter()
+                .map(|result| {
+                    json!({
+                        "id": result.id,
+                        "state": result.state,
+                        "title": result.title,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn list_sessions(
+        &self,
+        project_name: &str,
+        limit: i32,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .list_sessions(p::ListSessionsRequest {
+                project_name: project_name.to_string(),
+                limit,
+                cursor: None,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "sessions": response.sessions.iter().map(session_value).collect::<Vec<_>>(),
+            "next_cursor": response.next_cursor.map(|cursor| cursor.token),
+        }))
+    }
+
+    async fn get_session(&self, project_name: &str, id: &str) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .get_session(p::GetSessionRequest {
+                project_name: project_name.to_string(),
+                id: id.to_string(),
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({ "session": response.session.as_ref().map(session_value) }))
+    }
+
+    async fn save_session_summary(
+        &self,
+        project_name: &str,
+        id: &str,
+        summary: &str,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .save_session_summary(p::SaveSessionSummaryRequest {
+                project_name: project_name.to_string(),
+                id: id.to_string(),
+                summary: summary.to_string(),
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({ "session": response.session.as_ref().map(session_value) }))
+    }
+
+    async fn delete_session(&self, project_name: &str, id: &str) -> Result<Value, BackendError> {
+        self.client
+            .clone()
+            .delete_session(p::DeleteSessionRequest {
+                project_name: project_name.to_string(),
+                id: id.to_string(),
+            })
+            .await
+            .map_err(map_status)?;
+        Ok(json!({ "deleted": true }))
+    }
+
+    async fn start_session(
+        &self,
+        project_name: &str,
+        id: &str,
+        directory: &str,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .start_session(p::StartSessionRequest {
+                project_name: project_name.to_string(),
+                id: id.to_string(),
+                directory: directory.to_string(),
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "session": response.session.as_ref().map(session_value),
+            "context": response
+                .context
+                .as_ref()
+                .map(|snapshot| context_snapshot_value(snapshot, project_name)),
+        }))
+    }
+
+    async fn end_session(
+        &self,
+        project_name: &str,
+        id: &str,
+        summary: Option<String>,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .end_session(p::EndSessionRequest {
+                project_name: project_name.to_string(),
+                id: id.to_string(),
+                summary,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({ "session": response.session.as_ref().map(session_value) }))
+    }
+
+    async fn list_projects(&self) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .list_projects(p::ListProjectsRequest {})
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "projects": response.projects.iter().map(project_info_value).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn current_project(&self, directory: &str) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .current_project(p::CurrentProjectRequest {
+                directory: directory.to_string(),
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "normalized_name": response.normalized_name,
+            "display_name": response.display_name,
+            "source": response.source,
+        }))
+    }
+
+    async fn merge_projects(&self, from: &str, to: &str) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .merge_projects(p::MergeProjectsRequest {
+                from: from.to_string(),
+                to: to.to_string(),
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "observations_migrated": response.observations_migrated,
+            "sessions_migrated": response.sessions_migrated,
+            "prompts_migrated": response.prompts_migrated,
+        }))
+    }
+
+    async fn delete_project(
+        &self,
+        project_name: &str,
+        hard: bool,
+    ) -> Result<Value, BackendError> {
+        self.client
+            .clone()
+            .delete_project(p::DeleteProjectRequest {
+                project_name: project_name.to_string(),
+                hard,
+            })
+            .await
+            .map_err(map_status)?;
+        Ok(json!({ "deleted": true }))
+    }
+
+    async fn consolidate_projects(&self, dry_run: bool) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .consolidate_projects(p::ConsolidateProjectsRequest { dry_run })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "candidates": response
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    json!({
+                        "from": candidate.from,
+                        "to": candidate.to,
+                        "similarity": candidate.similarity,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn prune_projects(&self, dry_run: bool) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .prune_projects(p::PruneProjectsRequest { dry_run })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({ "would_remove": response.would_remove }))
+    }
+
+    async fn doctor(
+        &self,
+        project_name: Option<String>,
+        auto_repair: bool,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .doctor(p::DoctorRequest {
+                project_name,
+                auto_repair,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "findings": response
+                .findings
+                .iter()
+                .map(|finding| {
+                    json!({
+                        "code": finding.code,
+                        "severity": finding.severity,
+                        "message": finding.message,
+                        "remedy": finding.remedy,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn daemon_stats(&self, project_name: Option<String>) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .stats(p::StatsRequest { project_name })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "projects": response
+                .projects
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "project": entry.project,
+                        "observations": entry.observations,
+                        "soft_deleted_observations": entry.soft_deleted_observations,
+                        "sessions": entry.sessions,
+                        "prompts": entry.prompts,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn daemon_status(&self) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .daemon_status(p::DaemonStatusRequest {})
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "version": response.version,
+            "pid": response.pid,
+            "started_at": response.started_at,
+            "read_only_mode": response.read_only_mode,
+            "in_flight_rpcs": response.in_flight_rpcs,
+            "cached_projects": response.cached_projects,
+            "cache_hit_ratio": response.cache_hit_ratio,
+        }))
+    }
+
+    async fn reextract_observations(
+        &self,
+        project_name: &str,
+        since: Option<String>,
+        only_missing: bool,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .reextract_observations(p::ReextractObservationsRequest {
+                project_name: project_name.to_string(),
+                since,
+                only_missing,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({ "queued": response.queued, "skipped": response.skipped }))
+    }
+
+    async fn reindex_observations(
+        &self,
+        project_name: &str,
+        force: bool,
+    ) -> Result<Value, BackendError> {
+        let response = self
+            .client
+            .clone()
+            .reindex_observations(p::ReindexObservationsRequest {
+                project_name: project_name.to_string(),
+                force,
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        Ok(json!({
+            "queued": response.queued,
+            "skipped": response.skipped,
+            "cleared": response.cleared,
+        }))
+    }
 }
 
 fn summary_value(summary: &p::VisualizationProjectSummary) -> Value {
@@ -623,6 +1604,9 @@ fn candidate_value(candidate: &p::VisualizationCandidate) -> Value {
         "fused_rank": candidate.fused_rank,
         "final_rank": candidate.final_rank,
         "score": candidate.score,
+        // Per-signal score breakdown (Phase 2.2b): bm25/sem/entity/salience/
+        // decay/combined. Empty map when the daemon can't score (no embedder).
+        "components": candidate.components,
     })
 }
 
@@ -706,6 +1690,51 @@ fn relation_value(relation: &p::ObservationRelation) -> Value {
         "relation_type": relation.relation_type,
         "confidence": relation.confidence,
         "created_at": relation.created_at,
+    })
+}
+
+fn session_value(session: &p::Session) -> Value {
+    json!({
+        "id": session.id,
+        "directory": session.directory,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "summary": session.summary,
+    })
+}
+
+fn topic_value(topic: &p::TopicSummary) -> Value {
+    json!({
+        "topic_key": topic.topic_key,
+        "scope": topic.scope,
+        "latest_title": topic.latest_title,
+        "updated_at": topic.updated_at,
+    })
+}
+
+fn context_snapshot_value(snapshot: &p::ContextSnapshot, project_name: &str) -> Value {
+    json!({
+        "recent_observations": snapshot
+            .recent_observations
+            .iter()
+            .map(|observation| observation_value(observation, project_name))
+            .collect::<Vec<_>>(),
+        "active_topics": snapshot
+            .active_topics
+            .iter()
+            .map(topic_value)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_info_value(project: &p::ProjectInfo) -> Value {
+    json!({
+        "normalized_name": project.normalized_name,
+        "display_name": project.display_name,
+        "observation_count": project.observation_count,
+        "session_count": project.session_count,
+        "prompt_count": project.prompt_count,
+        "created_at": project.created_at,
     })
 }
 

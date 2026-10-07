@@ -36,7 +36,7 @@ pub fn get(conn: &Connection, key: &ObservationKey) -> Result<Observation> {
         }
     );
     let mut stmt = conn
-        .prepare(&sql)
+        .prepare_cached(&sql)
         .map_err(|e| Error::internal(format!("prepare get: {e}")))?;
     let result = match key {
         ObservationKey::Id(id) => stmt.query_row(params![id], Observation::from_row),
@@ -84,7 +84,7 @@ pub fn search(
     }
     sql.push_str(" ORDER BY ranked.relevance_rank ASC");
     let mut stmt = conn
-        .prepare(&sql)
+        .prepare_cached(&sql)
         .map_err(|e| Error::internal(format!("prepare search: {e}")))?;
     let bind_refs: Vec<&dyn ToSql> = bind.iter().map(|b| &**b as &dyn ToSql).collect();
     let rows = stmt
@@ -97,22 +97,32 @@ pub fn search(
     Ok(out)
 }
 
-/// Dense (cosine) top-K against the V4 vec0 vtable. Returns observations
-/// in ascending distance (most similar first). Empty result on:
-/// - empty `observations_vec` (no embeddings landed yet, falling-back
-///   caller treats as a hint to use BM25 only),
-/// - query vector dim != 384 (caller's bug; we surface as
+/// Supported embedding dimensions and their vec0 table names (Phase 6.3).
+/// Mirrors `write::vec_table_names` — kept duplicated rather than shared
+/// across the read/write module boundary since each only needs the name
+/// strings, not any shared state.
+fn vec_table_names(dim: usize) -> Result<(&'static str, &'static str)> {
+    match dim {
+        384 => Ok(("observations_vec", "observations_vec_i8")),
+        768 => Ok(("observations_vec_768", "observations_vec_768_i8")),
+        other => Err(Error::invalid(format!(
+            "unsupported embedding dimension {other} (supported: 384, 768)"
+        ))),
+    }
+}
+
+/// Dense (cosine) top-K against the vec0 vtable (V4 for 384-dim, V16 for
+/// 768-dim — see [`vec_table_names`]). Returns observations in ascending
+/// distance (most similar first). Empty result on:
+/// - empty vec table (no embeddings landed yet, falling-back caller treats
+///   as a hint to use BM25 only),
+/// - unsupported query vector dim (caller's bug; surfaced as
 ///   `InvalidArgument` so it's loud),
 /// - any sqlite-vec error (logged, returned as Internal).
 ///
 /// Spec: retrieval-promotion SC-3, P8.
 pub fn search_dense(conn: &Connection, q_vec: &[f32], limit: i64) -> Result<Vec<Observation>> {
-    if q_vec.len() != 384 {
-        return Err(Error::invalid(format!(
-            "search_dense expects 384-dim query vector, got {}",
-            q_vec.len()
-        )));
-    }
+    let (vec_table, _) = vec_table_names(q_vec.len())?;
     let limit = limit.clamp(1, MAX_LIMIT as i64);
 
     // Detect whether this DB is running in int8-quantized mode (Spec 1a).
@@ -138,7 +148,6 @@ pub fn search_dense(conn: &Connection, q_vec: &[f32], limit: i64) -> Result<Vec<
         .unwrap_or(false);
 
     if has_quantized && maybe_all_quantized {
-        // Brute-force cosine similarity over int8 BLOBs.
         return search_dense_quantized(conn, q_vec, limit);
     }
 
@@ -152,18 +161,18 @@ pub fn search_dense(conn: &Connection, q_vec: &[f32], limit: i64) -> Result<Vec<
     // `distance` column on the vtable rows.
     let sql = format!(
         "SELECT {SELECT_COLS} FROM observations o
-         JOIN observations_vec v ON o.id = v.rowid
+         JOIN {vec_table} v ON o.id = v.rowid
          WHERE v.embedding MATCH ?1 AND k = ?2
            AND o.deleted_at IS NULL
          ORDER BY v.distance ASC"
     );
 
-    let mut stmt = match conn.prepare(&sql) {
+    let mut stmt = match conn.prepare_cached(&sql) {
         Ok(s) => s,
         Err(e) => {
-            // Most common cause: V4 hasn't run yet (no observations_vec
-            // table). The hybrid caller treats Ok(empty) as a fall-back
-            // signal, so surface that here too.
+            // Most common cause: the migration for this dim hasn't run yet
+            // (no vec table). The hybrid caller treats Ok(empty) as a
+            // fall-back signal, so surface that here too.
             tracing::warn!(error = %e, "search_dense prepare failed (vec table missing?) — returning empty");
             return Ok(Vec::new());
         }
@@ -179,8 +188,78 @@ pub fn search_dense(conn: &Connection, q_vec: &[f32], limit: i64) -> Result<Vec<
 }
 
 /// Brute-force cosine top-K over int8 quantized embeddings stored in
-/// `observation_embedding_meta.quantized_blob + scale` (Spec 1a).
+/// `observation_embedding_meta.quantized_blob + scale` (Spec 1a), OR — when
+/// the ANN index has rows (Phase 6.2, V14) — the native sqlite-vec int8
+/// column with `distance_metric=cosine`, which is scale-invariant per vector.
+/// Tries the ANN index first; falls back to the brute-force scan when it's
+/// empty (pre-reindex, or V14 hasn't run on an older DB).
 fn search_dense_quantized(
+    conn: &Connection,
+    q_vec: &[f32],
+    limit: i64,
+) -> Result<Vec<Observation>> {
+    match search_dense_quantized_ann(conn, q_vec, limit) {
+        Ok(Some(hits)) => return Ok(hits),
+        Ok(None) => {} // ANN table empty — fall through to brute-force.
+        Err(e) => {
+            tracing::debug!(error = %e, "quantized ANN search failed — falling back to brute-force");
+        }
+    }
+    search_dense_quantized_brute_force(conn, q_vec, limit)
+}
+
+/// ANN path: query the dimension-appropriate int8 vec0 table (V14 for
+/// 384-dim, V16 for 768-dim). Returns `Ok(None)` when the table has no rows
+/// for this project (so the caller falls back), `Ok(Some)` on a successful
+/// ANN hit list (possibly empty if the query matched nothing).
+fn search_dense_quantized_ann(
+    conn: &Connection,
+    q_vec: &[f32],
+    limit: i64,
+) -> Result<Option<Vec<Observation>>> {
+    let (_, vec_i8_table) = vec_table_names(q_vec.len())?;
+    let has_rows: bool = conn
+        .query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {vec_i8_table} LIMIT 1)"),
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::internal(format!("{vec_i8_table} probe: {e}")))?;
+    if !has_rows {
+        return Ok(None);
+    }
+
+    // Quantize the query vector with a fixed unit scale: BGE query embeddings
+    // are L2-normalized like the stored vectors, so a shared scale keeps the
+    // query in the same int8 range without needing per-query calibration.
+    // Cosine distance is scale-invariant per side anyway (see V14 migration).
+    let q_int8 = statefulmemory_embed::quantize::f32_to_int8(q_vec, 1.0);
+    let q_blob: Vec<u8> = q_int8.iter().map(|&x| x as u8).collect();
+
+    let sql = format!(
+        "SELECT {SELECT_COLS} FROM observations o
+         JOIN {vec_i8_table} v ON o.id = v.rowid
+         WHERE v.embedding MATCH vec_int8(?1) AND k = ?2
+           AND o.deleted_at IS NULL
+         ORDER BY v.distance ASC"
+    );
+    let mut stmt = conn
+        .prepare_cached(&sql)
+        .map_err(|e| Error::internal(format!("prepare search_dense_quantized_ann: {e}")))?;
+    let rows = stmt
+        .query_map(params![q_blob, limit], Observation::from_row)
+        .map_err(|e| Error::internal(format!("search_dense_quantized_ann query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("search_dense_quantized_ann row: {e}")))?);
+    }
+    Ok(Some(out))
+}
+
+/// Brute-force cosine top-K over int8 quantized embeddings stored in
+/// `observation_embedding_meta.quantized_blob + scale` (Spec 1a). Fallback
+/// path when the ANN index (V14) is empty.
+fn search_dense_quantized_brute_force(
     conn: &Connection,
     q_vec: &[f32],
     limit: i64,
@@ -192,7 +271,7 @@ fn search_dense_quantized(
     let mut candidates: Vec<(i64, f32)> = Vec::new(); // (obs_id, cosine_sim)
 
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT observation_id, quantized_blob, scale \
              FROM observation_embedding_meta \
              WHERE quantized = 1 AND quantized_blob IS NOT NULL AND scale IS NOT NULL",
@@ -254,6 +333,223 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     } else {
         dot / (norm_a * norm_b)
     }
+}
+
+/// Candidate-pool cap for scored retrieval (hybrid fusion depth). Higher than
+/// [`MAX_LIMIT`] because this bounds an internal candidate pool, not a
+/// user-facing page size.
+pub const CANDIDATE_CAP: i32 = 200;
+
+/// Column-weighted BM25 search returning `(observation, bm25_score)` pairs for
+/// score-based fusion. The returned score is the raw fts5 `bm25()` value where
+/// MORE NEGATIVE = more relevant (fusion callers flip the sign). Column weights
+/// boost `title` + `topic_key` over `content`/`tool_name`/`type`, mirroring the
+/// eval-tuned weighting. `depth` is a candidate-pool size clamped to
+/// [`CANDIDATE_CAP`], not a page size.
+pub fn search_scored(
+    conn: &Connection,
+    query: &str,
+    type_filter: Option<&str>,
+    scope_filter: Option<&str>,
+    depth: i32,
+) -> Result<Vec<(Observation, f64)>> {
+    let depth = depth.clamp(1, CANDIDATE_CAP);
+    let safe_query = sanitize_fts5_query(query);
+    // Score inside a subquery that exposes only rowid + bm25_score, so the
+    // outer SELECT_COLS stay unambiguous (observations + observations_fts both
+    // have a `type` column). Weights are positional over observations_fts
+    // columns: (title, content, tool_name, type, topic_key, key_expand).
+    let mut sql = format!(
+        "SELECT {SELECT_COLS}, ranked.bm25_score FROM observations \
+          JOIN ( \
+              SELECT rowid, \
+                     bm25(observations_fts, 5.0, 1.0, 0.5, 0.5, 2.0, 1.0) AS bm25_score \
+              FROM observations_fts \
+              WHERE observations_fts MATCH ?1 \
+              ORDER BY bm25_score ASC LIMIT ?2 \
+          ) AS ranked ON ranked.rowid = observations.id \
+          WHERE observations.deleted_at IS NULL"
+    );
+    let mut bind: Vec<Box<dyn ToSql>> = vec![Box::new(safe_query), Box::new(depth)];
+    if let Some(t) = type_filter {
+        bind.push(Box::new(t.to_string()));
+        sql.push_str(&format!(" AND observations.type = ?{}", bind.len()));
+    }
+    if let Some(s) = scope_filter {
+        bind.push(Box::new(s.to_string()));
+        sql.push_str(&format!(" AND observations.scope = ?{}", bind.len()));
+    }
+    sql.push_str(" ORDER BY ranked.bm25_score ASC");
+
+    let mut stmt = conn
+        .prepare_cached(&sql)
+        .map_err(|e| Error::internal(format!("prepare search_scored: {e}")))?;
+    let bind_refs: Vec<&dyn ToSql> = bind.iter().map(|b| &**b as &dyn ToSql).collect();
+    let rows = stmt
+        .query_map(params_from_iter(bind_refs), |row| {
+            let obs = Observation::from_row(row)?;
+            let score: f64 = row.get("bm25_score")?;
+            Ok((obs, score))
+        })
+        .map_err(|e| Error::internal(format!("search_scored query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("search_scored row: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// Dense (cosine) top-K like [`search_dense`], but returns `(observation,
+/// distance)` where SMALLER distance = more similar (so fusion can normalize).
+/// For the int8-quantized path, distance is `1.0 - cosine_similarity`.
+pub fn search_dense_scored(
+    conn: &Connection,
+    q_vec: &[f32],
+    depth: i64,
+) -> Result<Vec<(Observation, f64)>> {
+    let (vec_table, _) = vec_table_names(q_vec.len())?;
+    let depth = depth.clamp(1, CANDIDATE_CAP as i64);
+
+    let maybe_all_quantized: bool = conn
+        .query_row(
+            "SELECT COUNT(*) = 0 FROM observation_embedding_meta \
+             WHERE (quantized IS NULL OR quantized = 0) AND observation_id IS NOT NULL",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    let has_quantized: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM observation_embedding_meta WHERE quantized = 1",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+
+    if has_quantized && maybe_all_quantized {
+        // Reuse the brute-force path, then recompute distance as 1 - sim via a
+        // second pass. search_dense_quantized returns observations ordered by
+        // similarity; recompute a monotonic distance for scoring.
+        let obs = search_dense_quantized(conn, q_vec, depth)?;
+        // Rank-derived pseudo-distance preserves order (0.0 best). Exact cosine
+        // isn't re-exposed here; order is what fusion normalization needs.
+        let out = obs
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| (o, i as f64))
+            .collect();
+        return Ok(out);
+    }
+
+    let mut blob = Vec::with_capacity(q_vec.len() * 4);
+    for f in q_vec {
+        blob.extend_from_slice(&f.to_le_bytes());
+    }
+    let sql = format!(
+        "SELECT {SELECT_COLS}, v.distance AS dense_distance FROM observations o \
+         JOIN {vec_table} v ON o.id = v.rowid \
+         WHERE v.embedding MATCH ?1 AND k = ?2 \
+           AND o.deleted_at IS NULL \
+         ORDER BY v.distance ASC"
+    );
+    let mut stmt = match conn.prepare_cached(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "search_dense_scored prepare failed (vec table missing?) — returning empty");
+            return Ok(Vec::new());
+        }
+    };
+    let rows = stmt
+        .query_map(params![blob, depth], |row| {
+            let obs = Observation::from_row(row)?;
+            let dist: f64 = row.get("dense_distance")?;
+            Ok((obs, dist))
+        })
+        .map_err(|e| Error::internal(format!("search_dense_scored query: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| Error::internal(format!("search_dense_scored row: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// Max-pool dense search over per-chunk vectors (Phase 2.5, opt-in): queries
+/// `chunk_vectors` (V15) for the top chunk candidates, then keeps
+/// only the single BEST (smallest-distance) chunk per parent `obs_id` — so a
+/// long observation surfaces on its most-relevant passage rather than a
+/// diluted whole-document mean. Returns `(observation, best_chunk_distance)`
+/// pairs, deduped by observation, ordered by ascending distance.
+///
+/// Returns an empty result (not an error) when no chunk rows exist yet —
+/// callers should fall back to the whole-document `search_dense_scored`.
+pub fn search_dense_chunks_scored(
+    conn: &Connection,
+    q_vec: &[f32],
+    depth: i64,
+) -> Result<Vec<(Observation, f64)>> {
+    if q_vec.len() != 384 {
+        return Err(Error::invalid(format!(
+            "search_dense_chunks_scored expects 384-dim query vector, got {}",
+            q_vec.len()
+        )));
+    }
+    // Over-fetch chunk candidates (several chunks can map to one obs) before
+    // dedup-by-obs_id down to `depth` observations.
+    let chunk_k = (depth.clamp(1, CANDIDATE_CAP as i64)) * 4;
+
+    let mut blob = Vec::with_capacity(q_vec.len() * 4);
+    for f in q_vec {
+        blob.extend_from_slice(&f.to_le_bytes());
+    }
+    let sql = "SELECT c.obs_id AS obs_id, v.distance AS dist \
+         FROM chunk_vectors v \
+         JOIN observations_chunks c ON c.id = v.rowid \
+         WHERE v.embedding MATCH ?1 AND k = ?2 \
+         ORDER BY v.distance ASC";
+    let mut stmt = match conn.prepare_cached(sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(error = %e, "search_dense_chunks_scored prepare failed (chunk vec table missing?) — returning empty");
+            return Ok(Vec::new());
+        }
+    };
+    let rows = stmt
+        .query_map(params![blob, chunk_k], |row| {
+            let obs_id: i64 = row.get("obs_id")?;
+            let dist: f64 = row.get("dist")?;
+            Ok((obs_id, dist))
+        })
+        .map_err(|e| Error::internal(format!("search_dense_chunks_scored query: {e}")))?;
+
+    // Max-pool: first occurrence per obs_id is the best (rows are already
+    // distance-ascending), so a simple first-insert-wins dedup is correct.
+    let mut seen = std::collections::HashSet::new();
+    let mut best: Vec<(i64, f64)> = Vec::new();
+    for r in rows {
+        let (obs_id, dist) = r.map_err(|e| Error::internal(format!("search_dense_chunks_scored row: {e}")))?;
+        if seen.insert(obs_id) {
+            best.push((obs_id, dist));
+        }
+    }
+    best.truncate(depth.clamp(1, CANDIDATE_CAP as i64) as usize);
+
+    let mut out = Vec::with_capacity(best.len());
+    for (obs_id, dist) in best {
+        let obs: Option<Observation> = conn
+            .query_row(
+                &format!(
+                    "SELECT {SELECT_COLS} FROM observations WHERE id = ?1 AND deleted_at IS NULL"
+                ),
+                params![obs_id],
+                Observation::from_row,
+            )
+            .optional()
+            .map_err(|e| Error::internal(format!("search_dense_chunks_scored fetch: {e}")))?;
+        if let Some(o) = obs {
+            out.push((o, dist));
+        }
+    }
+    Ok(out)
 }
 
 /// Cross-project search via ATTACH on up to 32 most-recently-active projects.
@@ -438,7 +734,7 @@ pub fn recent(
         )
     };
     let mut stmt = conn
-        .prepare(&sql)
+        .prepare_cached(&sql)
         .map_err(|e| Error::internal(format!("prepare recent: {e}")))?;
     let bind_refs: Vec<&dyn ToSql> = bound.iter().map(|b| &**b as &dyn ToSql).collect();
     let row_iter = stmt
@@ -481,7 +777,7 @@ pub fn recent_active(
 ) -> Result<(Vec<Observation>, Vec<ActiveTopic>)> {
     let recents = recent(conn, limit, None)?;
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT topic_key, scope, title, updated_at FROM observations
               WHERE topic_key IS NOT NULL AND deleted_at IS NULL
               GROUP BY topic_key
@@ -525,7 +821,7 @@ pub fn timeline(
     let anchor = get(conn, key)?;
     let before = if before_n > 0 {
         let mut stmt = conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT {SELECT_COLS} FROM observations
                   WHERE deleted_at IS NULL
                     AND (created_at < ?1 OR (created_at = ?1 AND id < ?2))
@@ -549,7 +845,7 @@ pub fn timeline(
     };
     let after = if after_n > 0 {
         let mut stmt = conn
-            .prepare(&format!(
+            .prepare_cached(&format!(
                 "SELECT {SELECT_COLS} FROM observations
                   WHERE deleted_at IS NULL
                     AND (created_at > ?1 OR (created_at = ?1 AND id > ?2))
@@ -623,7 +919,7 @@ pub fn history_chain(conn: &Connection, anchor_id: i64) -> Result<Vec<HistoryEnt
         cols = SELECT_COLS,
     );
     let mut stmt = conn
-        .prepare(&sql)
+        .prepare_cached(&sql)
         .map_err(|e| Error::internal(format!("history_chain prepare: {e}")))?;
     let rows = stmt
         .query_map(params![anchor_id], |row| {
@@ -753,7 +1049,7 @@ pub fn neighbors_in_session(
           ORDER BY id ASC"
     );
     let mut stmt = conn
-        .prepare(&sql)
+        .prepare_cached(&sql)
         .map_err(|e| Error::internal(format!("neighbors_in_session prepare: {e}")))?;
     let rows = stmt
         .query_map(params![lo, hi, session_id], Observation::from_row)
@@ -770,7 +1066,7 @@ pub fn search_by_anchor(conn: &Connection, anchor: &str, limit: i32) -> Result<V
     let limit = limit.clamp(1, MAX_LIMIT);
     let prefix = format!("{}%", anchor);
     let mut stmt = conn
-        .prepare(&format!(
+        .prepare_cached(&format!(
             "SELECT {SELECT_COLS} FROM observations \
              WHERE (code_anchor = ?1 OR code_anchor LIKE ?2) AND deleted_at IS NULL \
              ORDER BY updated_at DESC LIMIT ?3"
@@ -860,6 +1156,47 @@ mod tests {
             hits.iter().map(|hit| hit.id).collect::<Vec<_>>(),
             expected
         );
+    }
+
+    #[test]
+    fn search_scored_returns_scores_in_rank_order() {
+        let (_d, mut c) = make_conn();
+        save(&mut c, "alpha", "note");
+        save(&mut c, "alpha beta gamma", "note");
+        let hits = search_scored(&c, "alpha", None, None, 60).unwrap();
+        assert_eq!(hits.len(), 2);
+        // bm25(): more negative = more relevant; ORDER BY ASC → best first.
+        assert!(
+            hits[0].1 <= hits[1].1,
+            "scores ascending (most-negative/best first): {:?}",
+            hits.iter().map(|h| h.1).collect::<Vec<_>>()
+        );
+        assert!(hits
+            .iter()
+            .all(|(o, _)| o.title.contains("alpha") || o.content.contains("alpha")));
+    }
+
+    #[test]
+    fn search_dense_scored_orders_by_ascending_distance() {
+        let (_d, mut c) = make_conn();
+        save(&mut c, "first", "note");
+        save(&mut c, "second", "note");
+        save(&mut c, "third", "note");
+        let ids: Vec<i64> = c
+            .prepare("SELECT id FROM observations ORDER BY id ASC")
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let q = unit_vector(0);
+        insert_embedding(&c, ids[0], &q, "bge-small-en-v1.5");
+        insert_embedding(&c, ids[1], &unit_vector(8), "bge-small-en-v1.5");
+        insert_embedding(&c, ids[2], &unit_vector(64), "bge-small-en-v1.5");
+        let hits = search_dense_scored(&c, &q, 3).unwrap();
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].0.id, ids[0], "exact match → smallest distance first");
+        assert!(hits[0].1 <= hits[1].1 && hits[1].1 <= hits[2].1, "distances ascending");
     }
 
     #[test]
@@ -1090,8 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn search_dense_returns_empty_when_no_embeddings() {
-        // Empty observations_vec — the hybrid caller treats Ok(empty) as
+    fn search_dense_returns_empty_when_no_embeddings() {        // Empty observations_vec — the hybrid caller treats Ok(empty) as
         // "fall back to BM25 only".
         let (_d, c) = make_conn();
         let q = unit_vector(1);

@@ -45,6 +45,9 @@ pub struct BoundedRerankResult {
     pub timed_out: bool,
 }
 
+// See `statefulmemory-extract::claude_cli::ClaudeClient` for why
+// `double_must_use` is allowed on an `async_trait` trait.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Reranker: Send + Sync {
     /// Rerank `candidates` against `question`, returning the top `top_k` in
@@ -221,17 +224,18 @@ async fn rerank_with_model(
     Ok((result, t0.elapsed()))
 }
 
-/// Build the rerank prompt. We truncate each candidate to its first three
-/// lines so the prompt stays under ~6KB even with 30 candidates — Haiku
-/// with full evidence-window expansion would otherwise blow past the
+/// Build the rerank prompt. Each candidate is previewed to a generous window
+/// (first 12 lines / ~900 chars) so the reranker actually sees the evidence it
+/// must judge — the earlier 3-line/250-char cut discarded most of the body and
+/// hurt selection quality. Still bounded so ~30 candidates stay well under the
 /// context budget.
 pub fn build_rerank_prompt(candidates: &[String], question: &str, top_k: usize) -> String {
     let memories = candidates
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let preview: String = m.lines().take(3).collect::<Vec<_>>().join(" ");
-            let preview: String = preview.chars().take(250).collect();
+            let preview: String = m.lines().take(12).collect::<Vec<_>>().join(" ");
+            let preview: String = preview.chars().take(900).collect();
             format!("[{}] {}", i + 1, preview)
         })
         .collect::<Vec<_>>()
@@ -252,6 +256,19 @@ pub fn build_rerank_prompt(candidates: &[String], question: &str, top_k: usize) 
          Respond with ONLY the comma-separated integers. No prose, no\n\
          explanation, no formatting."
     )
+}
+
+/// Rerank-ambiguity gate (port of the eval `top2_delta` heuristic): when the
+/// top-2 fused scores are far apart there's a clear winner and reranking rarely
+/// changes the top-k, so callers can skip the LLM round-trip (cutting the ~12s
+/// p50 rerank cost on easy queries). Returns `true` when reranking is
+/// worthwhile — i.e. the top-2 gap is within `min_delta` (ambiguous) and there
+/// are at least two candidates. Scores must be sorted descending.
+pub fn rerank_is_worthwhile(sorted_desc_scores: &[f64], min_delta: f64) -> bool {
+    match sorted_desc_scores {
+        [a, b, ..] => (a - b) <= min_delta,
+        _ => false, // 0 or 1 candidate: nothing to reorder
+    }
 }
 
 /// Tolerant parser for rerank output. Walks the response and extracts every
@@ -330,8 +347,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_rerank_limits_candidate_input() {
-        struct CannedClient;
+    async fn bounded_rerank_limits_candidate_input() {        struct CannedClient;
         #[async_trait::async_trait]
         impl ClaudeClient for CannedClient {
             async fn ask(&self, _prompt: &str, _model: &str) -> Result<String> {
@@ -352,5 +368,16 @@ mod tests {
         .await;
         assert!(!result.timed_out);
         assert_eq!(result.hits, vec!["candidate-0", "candidate-1"]);
+    }
+
+    #[test]
+    fn ambiguity_gate_skips_clear_winners() {
+        // Wide top-2 gap → not worthwhile (skip rerank).
+        assert!(!rerank_is_worthwhile(&[0.9, 0.3, 0.2], 0.15));
+        // Close top-2 → worthwhile (ambiguous, rerank helps).
+        assert!(rerank_is_worthwhile(&[0.42, 0.40, 0.1], 0.15));
+        // Too few candidates → nothing to reorder.
+        assert!(!rerank_is_worthwhile(&[0.9], 0.15));
+        assert!(!rerank_is_worthwhile(&[], 0.15));
     }
 }

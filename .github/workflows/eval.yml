@@ -203,6 +203,15 @@ jobs:
           esac
           cat ./eval/scorecard.json
 
+      # Regression gate (Stage 0b): fail the run if accuracy drops > 1 pt or
+      # retrieval p95 blows the CI budget vs the committed baseline. The gate
+      # script seeds eval/baselines/gate-locomo.json on first run and fails
+      # loudly so a reviewer commits the baseline before it goes live. Skipped
+      # for the 1-query smoke fixture (not a meaningful score).
+      - name: Enforce scorecard regression gate
+        if: success() && inputs.dataset != 'smoke'
+        run: node .github/scripts/eval-gate.mjs ./eval/scorecard.json eval/baselines/gate-locomo.json
+
       - name: Upload Scorecard Artifact
         if: success()
         uses: actions/upload-artifact@v5

@@ -230,6 +230,26 @@ fn resolve_model_paths() -> Result<(PathBuf, PathBuf, PathBuf)> {
     })
 }
 
+/// Pick the inference device. CPU by default; the Metal GPU when the crate is
+/// built with `--features metal` (falls back to CPU if Metal init fails). The
+/// `accelerate` / `mkl` features change the CPU BLAS backend at link time and
+/// keep the device on CPU, so they need no code path here.
+fn select_device() -> Device {
+    #[cfg(feature = "metal")]
+    {
+        match Device::new_metal(0) {
+            Ok(d) => {
+                tracing::info!("BGE-small using Metal GPU");
+                return d;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Metal unavailable — falling back to CPU");
+            }
+        }
+    }
+    Device::Cpu
+}
+
 impl BgeSmallEmbedder {
     /// Load BGE-small-en-v1.5.
     ///
@@ -268,7 +288,7 @@ impl BgeSmallEmbedder {
             }));
         }
 
-        let device = Device::Cpu;
+        let device = select_device();
         // SAFETY: `from_mmaped_safetensors` is unsafe only because mapping
         // a file the OS later truncates would yield UB. We control the
         // path (HF cache) and never overwrite it during a process lifetime.

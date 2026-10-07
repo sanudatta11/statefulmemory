@@ -3,7 +3,6 @@
 //! `MemoryServer` hosts the eight `memory_*` tools via rmcp's `#[tool_router]`.
 //! Each tool maps onto an existing daemon gRPC RPC through [`LazyClient`].
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
@@ -17,6 +16,7 @@ use crate::client::LazyClient;
 use crate::error::McpError;
 use crate::render;
 use crate::scope::resolve_project;
+use statefulmemory_client::Endpoint;
 use crate::tools::{
     AddArgs, ContextArgs, DecideArgs, FactsArgs, GraphQueryArgs, HealthArgs, RecentArgs, SearchArgs,
 };
@@ -37,19 +37,19 @@ pub struct MemoryServer {
 }
 
 impl MemoryServer {
-    pub fn new(socket_path: PathBuf, base_project: String, client_info: String) -> Self {
-        Self::with_recovery(socket_path, base_project, client_info, None)
+    pub fn new(endpoint: Endpoint, base_project: String, client_info: String) -> Self {
+        Self::with_recovery(endpoint, base_project, client_info, None)
     }
 
     pub fn with_recovery(
-        socket_path: PathBuf,
+        endpoint: Endpoint,
         base_project: String,
         client_info: String,
         recover: Option<Arc<dyn crate::client::Recovery>>,
     ) -> Self {
         let client = match recover {
-            Some(r) => LazyClient::with_recovery(socket_path, r),
-            None => LazyClient::new(socket_path),
+            Some(r) => LazyClient::with_recovery(endpoint, r),
+            None => LazyClient::new(endpoint),
         };
         Self {
             client: Arc::new(client),
@@ -92,12 +92,12 @@ fn clamp_limit(limit: Option<i32>, default: i32) -> i32 {
 /// `recover` is optional mid-session daemon repair (probe + respawn). The
 /// CLI passes `EnsureRecovery`; tests may pass `None`.
 pub async fn serve(
-    socket_path: PathBuf,
+    endpoint: Endpoint,
     project: String,
     client_info: String,
     recover: Option<Arc<dyn crate::client::Recovery>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let server = MemoryServer::with_recovery(socket_path, project, client_info, recover);
+    let server = MemoryServer::with_recovery(endpoint, project, client_info, recover);
 
     let (to_server, server_read) = tokio::io::duplex(64 * 1024);
     let (server_write, from_server) = tokio::io::duplex(64 * 1024);
@@ -218,6 +218,8 @@ impl MemoryServer {
     /// first; only call memory_health if a tool errors.
     /// A result carrying `supersedes_ids` is the in-force value; superseded
     /// values are intentionally withheld from search results.
+    /// Pass `all_projects: true` to search the cross-project (whole-machine)
+    /// knowledge base instead of only the current project.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn memory_search(
         &self,
@@ -236,7 +238,7 @@ impl MemoryServer {
             query: args.query,
             r#type: args.type_,
             scope: args.scope,
-            all_projects: false,
+            all_projects: args.all_projects.unwrap_or(false),
             limit: clamp_limit(args.limit, 10),
             mode: Some(mode),
             rerank: args.rerank,
@@ -554,6 +556,7 @@ impl MemoryServer {
             Err(err) => {
                 return Ok(CallToolResult::structured(json!({
                     "status": "unhealthy",
+                    "transport": endpoint_descriptor(self.client.endpoint()),
                     "checks": [{
                         "key": err.key(),
                         "ok": false,
@@ -614,6 +617,7 @@ impl MemoryServer {
         Ok(CallToolResult::structured(json!({
             "status": if healthy { "healthy" } else { "degraded" },
             "project": project,
+            "transport": endpoint_descriptor(self.client.endpoint()),
             "checks": checks,
         })))
     }
@@ -627,6 +631,22 @@ fn pick_entity<'a>(
         return Some(exact);
     }
     entities.iter().min_by_key(|e| e.name.len())
+}
+
+/// Non-secret description of the daemon transport for memory_health — never
+/// includes the bearer token or CA bytes.
+fn endpoint_descriptor(ep: &Endpoint) -> serde_json::Value {
+    match ep {
+        Endpoint::Uds(path) => json!({
+            "kind": "local-uds",
+            "socket": path.display().to_string(),
+        }),
+        Endpoint::Tcp { addr, domain, .. } => json!({
+            "kind": "remote-tcp",
+            "addr": addr,
+            "domain": domain,
+        }),
+    }
 }
 
 #[tool_handler]
@@ -649,10 +669,11 @@ impl ServerHandler for MemoryServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn server() -> MemoryServer {
         MemoryServer::new(
-            PathBuf::from("/nonexistent/statefulmemory-test.sock"),
+            Endpoint::Uds(PathBuf::from("/nonexistent/statefulmemory-test.sock")),
             "test-project".to_string(),
             "test-client@0".to_string(),
         )

@@ -5,8 +5,10 @@
 //! 2. `~/.statefulmemory/config.json` (if present).
 //! 3. Built-in defaults.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -222,8 +224,11 @@ mod tests {
             !g.edge_types.iter().any(|t| t == "co_occurs"),
             "co_occurs is export-only (dumps keep it; default query set excludes it)"
         );
-        // Toggle fields that gate graph behavior stay conservative by default.
-        assert!(!GraphConfig::default().enabled, "graph default off");
+        // Toggle fields that gate graph behavior.
+        assert!(
+            GraphConfig::default().enabled,
+            "graph default on (Phase 6.4; save-path indexing is fire-and-forget)"
+        );
     }
 }
 
@@ -329,6 +334,19 @@ pub struct EmbedConfig {
     /// (384 bytes vs 1,536 bytes per obs). Dense search falls back to
     /// brute-force cosine in Rust rather than the vec0 vtable.
     pub quantize: bool,
+    /// When true, content longer than `chunk_words` also gets split into
+    /// overlapping word-chunks, each embedded + stored separately
+    /// (`observations_chunks` / `observations_vec_chunks`, V15), so dense
+    /// search can max-pool chunk similarity for long observations instead of
+    /// relying solely on the mean-pooled whole-document vector. Default
+    /// false (opt-in; adds extra embed + write work per long observation).
+    pub chunk_long_content: bool,
+    /// Word-count threshold above which content is chunked (roughly maps to
+    /// BGE-small's ~512 token window; words-not-tokens is a cheap proxy).
+    pub chunk_words: usize,
+    /// Overlap (in words) between consecutive chunks, so a fact split across
+    /// a chunk boundary still has a chance to land fully inside one chunk.
+    pub chunk_overlap_words: usize,
 }
 
 impl Default for EmbedConfig {
@@ -336,6 +354,9 @@ impl Default for EmbedConfig {
         Self {
             workers: 2,
             quantize: false,
+            chunk_long_content: false,
+            chunk_words: 350,
+            chunk_overlap_words: 50,
         }
     }
 }
@@ -375,7 +396,8 @@ pub struct SearchConfig {
     /// request omits an explicit `--rerank` / wire `rerank` field.
     pub rerank: bool,
     /// Time-decay lambda for hybrid scores: `exp(-lambda * age_days)`.
-    /// `0.0` (default) disables decay. Eval harness uses `0.005`.
+    /// Default `0.005` (half-life ≈138 days), matching the eval-tuned value;
+    /// `0.0` disables decay.
     pub decay_lambda: f64,
     /// When > 0, `context` expands each hit with ±N same-session neighbors.
     pub evidence_window: u32,
@@ -384,6 +406,14 @@ pub struct SearchConfig {
     pub max_per_type: u32,
     /// `"adaptive"` (default) routes Easy/Normal/Hard; `"off"` always hybrid.
     pub router: String,
+    /// When true, `context` packs the briefing with the slot-based packer
+    /// (decisions / anchored-code / other budget shares) instead of the plain
+    /// greedy token-budget packer. Default false (greedy, relevance-ordered).
+    pub context_slot_pack: bool,
+    /// When true, short/hard queries are expanded with an LLM-generated
+    /// hypothetical answer (HyDE) before retrieval, to lift dense recall.
+    /// Default false (opt-in; adds an LLM call to the query path).
+    pub hyde: bool,
 }
 
 impl Default for SearchConfig {
@@ -391,10 +421,12 @@ impl Default for SearchConfig {
         Self {
             mode: "hybrid".into(),
             rerank: true,
-            decay_lambda: 0.0,
+            decay_lambda: 0.005,
             evidence_window: 0,
             max_per_type: 0,
             router: "adaptive".into(),
+            context_slot_pack: false,
+            hyde: false,
         }
     }
 }
@@ -489,7 +521,7 @@ pub struct GraphConfig {
 impl Default for GraphConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             hops: 2,
             boost: 0.15,
             edge_types: vec!["mentions".into(), "fixes".into(), "contradicts".into()],
@@ -678,12 +710,47 @@ pub fn statefulmemory_project_config_path(project: &str) -> PathBuf {
         .join(format!("{project}.config.toml"))
 }
 
-/// Resolve `StatefulMemoryConfig` per the 3-level precedence (SC-6).
-///
-/// `project_name` is `None` when the daemon resolves at startup before any
-/// save context is known; the daemon re-resolves with the project name at
-/// save time so per-project overrides take effect for that observation.
-pub fn load_resolved(project_name: Option<&str>) -> StatefulMemoryConfig {
+// ---- Resolved-config cache (perf) -------------------------------------------
+//
+// `load_resolved` is called many times per request (and inside the write txn
+// via `should_supersede`). The expensive part is the file read + TOML parse of
+// the global + per-project layers; the env-override layer is cheap and must
+// stay dynamic (operators and tests change env between calls). So we cache the
+// FILE-merged config keyed by (global config path, project) and re-validate it
+// by each file's (mtime, len) stamp, re-applying env overrides fresh on every
+// call. Writing a config file changes its stamp, which invalidates the entry.
+
+/// `(mtime, len)` fingerprint of a config file; `None` = absent/unreadable.
+type FileStamp = Option<(SystemTime, u64)>;
+
+fn file_stamp(path: &Path) -> FileStamp {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+struct CachedFiles {
+    files_cfg: StatefulMemoryConfig,
+    global_stamp: FileStamp,
+    project_stamp: FileStamp,
+}
+
+fn config_cache() -> &'static Mutex<HashMap<String, CachedFiles>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedFiles>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Clear the resolved-config cache. Belt-and-suspenders invalidation for
+/// in-process writers (stamp-based invalidation already covers file changes).
+pub fn clear_statefulmemory_config_cache() {
+    config_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
+}
+
+/// Layers 1+2 only (global TOML + per-project overlay), deserialized to
+/// `StatefulMemoryConfig` BEFORE env overrides. This is the cacheable part.
+fn load_merged_files(project_name: Option<&str>) -> StatefulMemoryConfig {
     // Layer 1: global TOML.
     let mut merged = toml::Value::Table(toml::value::Table::new());
     let global_path = statefulmemory_global_config_path();
@@ -728,15 +795,66 @@ pub fn load_resolved(project_name: Option<&str>) -> StatefulMemoryConfig {
     }
 
     // Deserialize the merged value, ignoring unknown keys (forward-compat).
-    let mut cfg: StatefulMemoryConfig = match merged.try_into::<StatefulMemoryConfig>() {
+    match merged.try_into::<StatefulMemoryConfig>() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, "merged statefulmemory config deserialize failed — using defaults");
             StatefulMemoryConfig::default()
         }
+    }
+}
+
+/// Resolve `StatefulMemoryConfig` per the 3-level precedence (SC-6).
+///
+/// `project_name` is `None` when the daemon resolves at startup before any
+/// save context is known; the daemon re-resolves with the project name at
+/// save time so per-project overrides take effect for that observation.
+///
+/// The file layers (global + per-project TOML) are cached per project and
+/// re-validated by each file's `(mtime, len)` stamp, so repeated calls avoid
+/// re-reading and re-parsing TOML. Env overrides are applied fresh every call.
+pub fn load_resolved(project_name: Option<&str>) -> StatefulMemoryConfig {
+    let global_path = statefulmemory_global_config_path();
+    let global_stamp = file_stamp(&global_path);
+    let project_stamp = match project_name {
+        Some(name) => file_stamp(&statefulmemory_project_config_path(name)),
+        None => None,
+    };
+    // Key on the resolved global path (encodes data_dir) + project, so a
+    // changed STATEFULMEMORY_DATA_DIR never serves another dir's config.
+    let key = format!("{}|{}", global_path.display(), project_name.unwrap_or(""));
+
+    // Fast path: cached file-layer config whose stamps still match.
+    let cached = {
+        let guard = config_cache().lock().unwrap_or_else(|p| p.into_inner());
+        guard.get(&key).and_then(|e| {
+            if e.global_stamp == global_stamp && e.project_stamp == project_stamp {
+                Some(e.files_cfg.clone())
+            } else {
+                None
+            }
+        })
     };
 
-    // Layer 3: env vars (highest).
+    let files_cfg = match cached {
+        Some(c) => c,
+        None => {
+            let c = load_merged_files(project_name);
+            let mut guard = config_cache().lock().unwrap_or_else(|p| p.into_inner());
+            guard.insert(
+                key,
+                CachedFiles {
+                    files_cfg: c.clone(),
+                    global_stamp,
+                    project_stamp,
+                },
+            );
+            c
+        }
+    };
+
+    // Layer 3: env vars (highest) — always applied fresh.
+    let mut cfg = files_cfg;
     apply_statefulmemory_env_overrides(&mut cfg);
     cfg
 }
@@ -818,6 +936,19 @@ fn apply_statefulmemory_env_overrides(cfg: &mut StatefulMemoryConfig) {
     if let Ok(v) = std::env::var("STATEFULMEMORY_EMBED_QUANTIZE") {
         cfg.embed.quantize = parse_bool_env(&v);
     }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_EMBED_CHUNK_LONG_CONTENT") {
+        cfg.embed.chunk_long_content = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_EMBED_CHUNK_WORDS") {
+        if let Ok(n) = v.parse::<usize>() {
+            cfg.embed.chunk_words = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_EMBED_CHUNK_OVERLAP_WORDS") {
+        if let Ok(n) = v.parse::<usize>() {
+            cfg.embed.chunk_overlap_words = n;
+        }
+    }
     if let Ok(v) = std::env::var("STATEFULMEMORY_CONFLICT_ENABLED") {
         cfg.conflict.enabled = parse_bool_env(&v);
     }
@@ -864,6 +995,12 @@ fn apply_statefulmemory_env_overrides(cfg: &mut StatefulMemoryConfig) {
         } else {
             tracing::warn!(value = %v, "ignoring STATEFULMEMORY_SEARCH_MAX_PER_TYPE: not an integer");
         }
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_SEARCH_CONTEXT_SLOT_PACK") {
+        cfg.search.context_slot_pack = parse_bool_env(&v);
+    }
+    if let Ok(v) = std::env::var("STATEFULMEMORY_SEARCH_HYDE") {
+        cfg.search.hyde = parse_bool_env(&v);
     }
     if let Ok(v) = std::env::var("STATEFULMEMORY_GRAPH_ENABLED") {
         cfg.graph.enabled = parse_bool_env(&v);
@@ -1019,6 +1156,8 @@ pub fn ensure_config_toml(statefulmemory_dir: &std::path::Path) -> Result<Bootst
     let serialized = toml::to_string_pretty(&merged)
         .map_err(|e| Error::internal(format!("serialize config.toml: {e}")))?;
     std::fs::write(&path, serialized)?;
+    // A fresh config.toml may change what load_resolved returns in-process.
+    clear_statefulmemory_config_cache();
 
     let search_mode = merged
         .get("search")
@@ -1372,6 +1511,46 @@ model = "sonnet"
     fn conflict_config_default_is_enabled() {
         let c = StatefulMemoryConfig::default();
         assert!(c.conflict.enabled);
+    }
+
+    #[test]
+    fn config_cache_reflects_file_create_and_delete() {
+        // The resolved-config cache must invalidate when the config file
+        // appears or disappears (present<->absent stamp change), and env
+        // overrides must still apply fresh on top of a cached file layer.
+        let _g = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let dir = fresh_data_dir();
+        super::clear_statefulmemory_config_cache();
+
+        // No file → defaults (extract disabled).
+        assert!(!load_resolved(None).extract.enabled);
+
+        // Write a global config enabling extract → cache must pick it up.
+        std::fs::write(dir.path().join("config.toml"), "[extract]\nenabled = true\n").unwrap();
+        assert!(
+            load_resolved(None).extract.enabled,
+            "cache must reflect a newly-written config file"
+        );
+
+        // Env override still applies fresh over the cached file layer.
+        std::env::set_var("STATEFULMEMORY_EXTRACT_ENABLED", "0");
+        assert!(
+            !load_resolved(None).extract.enabled,
+            "env override must apply over a cache hit"
+        );
+        std::env::remove_var("STATEFULMEMORY_EXTRACT_ENABLED");
+
+        // Delete the file → back to defaults (present → absent stamp change).
+        std::fs::remove_file(dir.path().join("config.toml")).unwrap();
+        assert!(
+            !load_resolved(None).extract.enabled,
+            "cache must reflect config file deletion"
+        );
+
+        std::env::remove_var("STATEFULMEMORY_DATA_DIR");
     }
 
     #[test]

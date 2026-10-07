@@ -55,7 +55,7 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
             return Err(Status::invalid_argument("observation_id must be positive"));
         }
         let project = map(self.open_project(&project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let observation = map(read_q::get(
             &conn,
             &ObservationKey::Id(request.observation_id),
@@ -152,7 +152,7 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
         let project_name = project_name(&request.project_name)?;
         self.authorize_project(auth.as_ref(), &project_name, false)?;
         let project = map(self.open_project(&project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let health = map(statefulmemory_storage::doctor::project_health_snapshot(
             &conn,
             &project_name,
@@ -202,49 +202,102 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
         }
         self.authorize_project(auth.as_ref(), &project_name, false)?;
         let project = map(self.open_project(&project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let limit = bounded_limit(request.limit, 15, 50);
         let mode = request.mode.clone().unwrap_or_else(|| "hybrid".into());
-        let bm25 = map(read_q::search(&conn, &query, None, None, 30))?;
-        let bm25_ids = bm25.iter().map(|item| item.id as u64).collect::<Vec<_>>();
-        let mut dense = Vec::new();
+
+        // Mirror the production scorer (Phase 2.2) so the explain trace reflects
+        // the real ranking: column-weighted BM25 + dense distances fused via
+        // build_score_map (adaptive sigmoid), then observation salience + decay.
+        let bm25_scored = map(read_q::search_scored(&conn, &query, None, None, 60))?;
+        let bm25_ids = bm25_scored.iter().map(|(o, _)| o.id as u64).collect::<Vec<_>>();
+        let mut dense_scored: Vec<(statefulmemory_storage::Observation, f64)> = Vec::new();
         if mode.eq_ignore_ascii_case("hybrid") {
             let embedder = self.state.query_embedder.read().clone();
             if let Some(embedder) = embedder {
                 if let Ok(mut vectors) = embedder.embed(&[query.as_str()]) {
                     if let Some(vector) = vectors.pop() {
-                        dense = map(read_q::search_dense(&conn, &vector, 30))?;
+                        dense_scored =
+                            read_q::search_dense_scored(&conn, &vector, 60).unwrap_or_default();
                     }
                 }
             }
         }
-        let dense_ids = dense.iter().map(|item| item.id as u64).collect::<Vec<_>>();
-        let fused = statefulmemory_retrieval::rrf::rrf_fuse_scored(
-            &[bm25_ids.clone(), dense_ids.clone()],
-            60,
+        let dense_ids = dense_scored.iter().map(|(o, _)| o.id as u64).collect::<Vec<_>>();
+
+        let bm25_list: Vec<(i64, f64)> = bm25_scored.iter().map(|(o, s)| (o.id, *s)).collect();
+        let dense_list: Vec<(i64, f64)> = dense_scored.iter().map(|(o, s)| (o.id, *s)).collect();
+        let qtok = query.split_whitespace().count();
+        let empty_boost: std::collections::HashMap<i64, f32> = std::collections::HashMap::new();
+        let score_map = statefulmemory_retrieval::scoring::build_score_map(
+            &bm25_list,
+            &dense_list,
+            &empty_boost,
+            statefulmemory_retrieval::scoring::Bm25Norm::AdaptiveSigmoid {
+                query_token_count: qtok,
+            },
         );
+
+        let decay_lambda = statefulmemory_core::config::load_resolved(Some(&project_name))
+            .search
+            .decay_lambda;
+        let now = chrono::Utc::now();
+        let mut by_id: std::collections::HashMap<i64, statefulmemory_storage::Observation> =
+            std::collections::HashMap::new();
+        for (o, _) in bm25_scored.iter().chain(dense_scored.iter()) {
+            by_id.entry(o.id).or_insert_with(|| o.clone());
+        }
+
         let bm25_ranks = ranks(&bm25_ids);
         let dense_ranks = ranks(&dense_ids);
-        let mut candidates = Vec::new();
-        for (index, (observation_id, score)) in fused.into_iter().enumerate() {
-            let fused_rank = index as i32 + 1;
+
+        // Score every candidate, capturing the per-signal breakdown, then sort
+        // by combined score (production ordering).
+        let mut scored: Vec<VisualizationCandidate> = Vec::new();
+        for (id, mut sc) in score_map.into_iter() {
+            if let Some(o) = by_id.get(&id) {
+                sc.salience_factor = crate::service::observation_salience(o);
+                sc.decay_factor = if decay_lambda > 0.0 {
+                    (-decay_lambda * crate::service::age_days_since(&o.created_at, now)).exp() as f32
+                } else {
+                    1.0
+                };
+            }
+            let combined = sc.combined() as f64;
+            let oid = id as u64;
             let mut sources = Vec::new();
-            if bm25_ranks.contains_key(&observation_id) {
+            if bm25_ranks.contains_key(&oid) {
                 sources.push("bm25".into());
             }
-            if dense_ranks.contains_key(&observation_id) {
+            if dense_ranks.contains_key(&oid) {
                 sources.push("dense".into());
             }
-            candidates.push(VisualizationCandidate {
-                observation_id: observation_id as i64,
+            let components = std::collections::HashMap::from([
+                ("bm25".to_string(), sc.bm25 as f64),
+                ("sem".to_string(), sc.sem as f64),
+                ("entity".to_string(), sc.entity_boost as f64),
+                ("salience".to_string(), sc.salience_factor as f64),
+                ("decay".to_string(), sc.decay_factor as f64),
+                ("combined".to_string(), combined),
+            ]);
+            scored.push(VisualizationCandidate {
+                observation_id: id,
                 sources,
-                bm25_rank: *bm25_ranks.get(&observation_id).unwrap_or(&0),
-                dense_rank: *dense_ranks.get(&observation_id).unwrap_or(&0),
-                fused_rank,
-                final_rank: fused_rank,
-                score,
+                bm25_rank: *bm25_ranks.get(&oid).unwrap_or(&0),
+                dense_rank: *dense_ranks.get(&oid).unwrap_or(&0),
+                fused_rank: 0,
+                final_rank: 0,
+                score: combined,
+                components,
             });
         }
+        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        let mut candidates = scored;
+        for (index, candidate) in candidates.iter_mut().enumerate() {
+            candidate.fused_rank = index as i32 + 1;
+            candidate.final_rank = candidate.fused_rank;
+        }
+
         let mut results = Vec::new();
         for candidate in candidates.iter().take(limit) {
             if let Ok(observation) =
@@ -276,7 +329,7 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
         let project_name = project_name(&request.project_name)?;
         self.authorize_project(auth.as_ref(), &project_name, false)?;
         let project = map(self.open_project(&project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let status_filter = if request.status.trim().is_empty() {
             None
         } else {
@@ -333,7 +386,7 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
         let project_name = project_name(&request.project_name)?;
         self.authorize_project(auth.as_ref(), &project_name, false)?;
         let project = map(self.open_project(&project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let stats = map(graph_q::stats(&conn))?;
         let coverage = map(graph_q::coverage(&conn))?;
         Ok(Response::new(GetGraphStatsResponse {
@@ -393,7 +446,7 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
         let project_name = project_name(&request.project_name)?;
         self.authorize_project(auth.as_ref(), &project_name, false)?;
         let project = map(self.open_project(&project_name))?;
-        let conn = map(project.open_read_conn())?;
+        let conn = map(project.checkout_read())?;
         let summary = map(stats_q::project_summary(&conn, &project_name))?;
         Ok(Response::new(GetProjectSummaryResponse {
             summary: Some(summary_proto(summary)),
@@ -414,7 +467,7 @@ impl StatefulMemoryVisualization for StatefulMemoryService {
                 Ok(project) => project,
                 Err(_) => continue,
             };
-            let conn = match project.open_read_conn() {
+            let conn = match project.checkout_read() {
                 Ok(conn) => conn,
                 Err(_) => continue,
             };

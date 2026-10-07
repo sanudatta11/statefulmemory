@@ -48,7 +48,7 @@ impl Default for RetrievalConfig {
             evidence_window: 0,
             rerank: false,
             production_profile: false,
-            decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
+            decay_lambda: statefulmemory_retrieval::scoring::DEFAULT_DECAY_LAMBDA,
         }
     }
 }
@@ -72,7 +72,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             evidence_window: 6,
             rerank: true,
             production_profile: false,
-            decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
+            decay_lambda: statefulmemory_retrieval::scoring::DEFAULT_DECAY_LAMBDA,
         },
         BenchmarkKind::Longmemeval => RetrievalConfig {
             mode: RetrievalMode::HybridRerank,
@@ -80,7 +80,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             evidence_window: 6,
             rerank: true,
             production_profile: false,
-            decay_lambda: crate::scoring::DEFAULT_DECAY_LAMBDA,
+            decay_lambda: statefulmemory_retrieval::scoring::DEFAULT_DECAY_LAMBDA,
         },
         BenchmarkKind::Beam1m | BenchmarkKind::Beam10m => RetrievalConfig {
             mode: RetrievalMode::Hybrid,

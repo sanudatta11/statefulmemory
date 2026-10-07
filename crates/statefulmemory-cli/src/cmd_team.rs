@@ -27,7 +27,7 @@ use crate::formatter::{Formatter, Render};
 
 pub async fn dispatch(client: Option<&mut Client>, fmt: Formatter, verb: TeamVerb) -> ExitCode {
     let result: Result<(), TeamError> = match verb {
-        TeamVerb::InitCa(a) => init_ca(&a.dir, a.force).map_err(TeamError::Init),
+        TeamVerb::InitCa(a) => init_ca(&a.dir, a.force, &a.san).map_err(TeamError::Init),
         TeamVerb::TokenCreate(a) => match client {
             Some(c) => token_create(c, fmt, a).await,
             None => Err(TeamError::ClientUnavailable),
@@ -112,7 +112,7 @@ const SERVER_KEY_PEM: &str = "server-key.pem";
 
 /// Generate a self-signed CA + leaf cert (FR10, SC-20). Writes three PEM
 /// files into `dir`. Refuses to overwrite any existing PEM unless `force`.
-pub fn init_ca(dir: &Path, force: bool) -> Result<(), InitCaError> {
+pub fn init_ca(dir: &Path, force: bool, sans: &[String]) -> Result<(), InitCaError> {
     fs::create_dir_all(dir)?;
     let ca_path = dir.join(CA_PEM);
     let server_path = dir.join(SERVER_PEM);
@@ -137,14 +137,21 @@ pub fn init_ca(dir: &Path, force: bool) -> Result<(), InitCaError> {
         .self_signed(&ca_key)
         .map_err(|e| InitCaError::Rcgen(e.to_string()))?;
 
-    // 2. Leaf, signed by the CA. SAN = localhost (TCP-mode binds locally
-    //    by default; ops can re-issue with their own SANs later).
+    // 2. Leaf, signed by the CA. SANs default to localhost (loopback demo /
+    //    TCP-mode default bind); pass hostnames/IPs via `--san` for off-box
+    //    remote access so clients can validate against the daemon's address.
+    let sans: Vec<String> = if sans.is_empty() {
+        vec!["localhost".to_string()]
+    } else {
+        sans.to_vec()
+    };
+    let common_name = sans[0].clone();
     let leaf_key = KeyPair::generate().map_err(|e| InitCaError::Rcgen(e.to_string()))?;
-    let mut leaf_params = CertificateParams::new(vec!["localhost".to_string()])
-        .map_err(|e| InitCaError::Rcgen(e.to_string()))?;
+    let mut leaf_params =
+        CertificateParams::new(sans).map_err(|e| InitCaError::Rcgen(e.to_string()))?;
     leaf_params
         .distinguished_name
-        .push(DnType::CommonName, "localhost");
+        .push(DnType::CommonName, common_name);
     let leaf_cert = leaf_params
         .signed_by(&leaf_key, &ca_cert, &ca_key)
         .map_err(|e| InitCaError::Rcgen(e.to_string()))?;
@@ -239,7 +246,7 @@ mod tests {
     fn init_ca_writes_three_pem_files() {
         let td = TempDir::new().unwrap();
         let dir = td.path().join("certs");
-        init_ca(&dir, false).expect("init_ca");
+        init_ca(&dir, false, &[]).expect("init_ca");
         assert!(dir.join(CA_PEM).is_file(), "ca.pem missing");
         assert!(dir.join(SERVER_PEM).is_file(), "server.pem missing");
         assert!(dir.join(SERVER_KEY_PEM).is_file(), "server-key.pem missing");
@@ -260,9 +267,9 @@ mod tests {
         let td = TempDir::new().unwrap();
         let dir = td.path().to_path_buf();
         // First call writes the files.
-        init_ca(&dir, false).expect("first init_ca");
+        init_ca(&dir, false, &[]).expect("first init_ca");
         // Second call without --force must refuse.
-        let err = init_ca(&dir, false).expect_err("second init_ca should refuse");
+        let err = init_ca(&dir, false, &[]).expect_err("second init_ca should refuse");
         match err {
             InitCaError::Exists(p) => assert!(
                 p.ends_with(CA_PEM) || p.ends_with(SERVER_PEM) || p.ends_with(SERVER_KEY_PEM)
@@ -270,7 +277,7 @@ mod tests {
             other => panic!("expected Exists, got {other:?}"),
         }
         // With --force, second call succeeds.
-        init_ca(&dir, true).expect("init_ca --force");
+        init_ca(&dir, true, &[]).expect("init_ca --force");
     }
 
     #[test]
@@ -278,7 +285,18 @@ mod tests {
         let td = TempDir::new().unwrap();
         let dir = td.path().join("nested").join("certs");
         assert!(!dir.exists());
-        init_ca(&dir, false).unwrap();
+        init_ca(&dir, false, &[]).unwrap();
         assert!(dir.is_dir());
+    }
+
+    #[test]
+    fn init_ca_accepts_custom_sans() {
+        // Off-box deployment: a non-localhost SAN must produce a valid leaf.
+        let td = TempDir::new().unwrap();
+        let dir = td.path().to_path_buf();
+        init_ca(&dir, false, &["memory.corp.example".to_string(), "10.0.0.5".to_string()])
+            .expect("init_ca with custom SANs");
+        let leaf = std::fs::read_to_string(dir.join(SERVER_PEM)).unwrap();
+        assert!(leaf.contains("BEGIN CERTIFICATE"), "leaf PEM written");
     }
 }

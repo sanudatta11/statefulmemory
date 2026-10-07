@@ -183,13 +183,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let project = statefulmemory_storage::ProjectState {
-            normalized: "verify".into(),
-            display_name: "verify".into(),
+        let project = statefulmemory_storage::ProjectState::new(
+            "verify".into(),
+            "verify".into(),
             db_path,
             write,
-            read_in_flight: parking_lot::Mutex::new(0),
-        };
+            4,
+        );
         let verdicts = vec![AnchorVerdict {
             observation_id: 1,
             state: VerifyState::Stale,

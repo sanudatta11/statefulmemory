@@ -12,6 +12,7 @@
 //! See spec retrieval-upgrade-v1 §3.
 
 pub mod cache;
+pub mod chunker;
 pub mod embedder;
 pub mod quantize;
 

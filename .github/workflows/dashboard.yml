@@ -1,0 +1,59 @@
+name: Dashboard (UI SPA)
+
+# Builds and tests the React dashboard, and fails if the committed
+# dashboard/dist/ (embedded into the statefulmemory binary via include_str!)
+# has drifted from a fresh build of dashboard/src. Keeps the embedded assets
+# honest without forcing a Node toolchain into the pure `cargo build`.
+on:
+  push:
+    paths:
+      - "dashboard/**"
+      - ".github/workflows/dashboard.yml"
+  pull_request:
+    paths:
+      - "dashboard/**"
+      - ".github/workflows/dashboard.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    name: Build + test dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Node toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # vite pins the output filenames (assets/app.js / app.css), so a fresh
+      # build is reproducible. If the committed dist/ differs, the embedded
+      # assets are stale — fail so the author rebuilds + commits dist/.
+      - name: Fail if committed dist/ is stale
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dashboard/dist is out of date — run 'npm run build' in dashboard/ and commit the result"
+            git --no-pager diff --stat -- dist
+            exit 1
+          fi

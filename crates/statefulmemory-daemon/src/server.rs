@@ -124,6 +124,7 @@ pub async fn run(cfg: Config) -> Result<()> {
             cfg.write_batch_max,
             cfg.write_batch_window,
         )
+        .with_read_pool_size(cfg.read_pool_size)
         .with_conflict_classifier(conflict_classifier),
     );
     // Replace the plain registry with the judge-enabled one.
@@ -185,7 +186,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         resolve_pool,
         verify_pool,
         search_cache: Arc::new(crate::search_cache::SearchCache::default()),
-        query_vec_cache: Arc::new(Mutex::new(HashMap::new())),
+        query_vec_cache: Arc::new(crate::query_vec_cache::QueryVecCache::default()),
         laya: crate::laya::LayaClient::try_from_config(&statefulmemory_cfg.laya),
     });
 
@@ -237,8 +238,30 @@ fn spawn_embedder_load(state: Arc<DaemonState>, registry: Arc<ProjectRegistry>, 
         Ok(embedder) => {
             tracing::info!(workers, "spawning embed worker pool");
             let shared = Arc::new(embedder);
-            let pool =
-                crate::embed_worker::EmbedWorkerPool::spawn(shared.clone(), registry, workers);
+            // Warm-up: one dummy forward so the first real query doesn't pay
+            // cold-start (allocator / lazy-init). Best-effort — ignore errors.
+            if let Err(e) = statefulmemory_embed::Embedder::embed(shared.as_ref(), &["warm up"]) {
+                tracing::debug!(error = %e, "embedder warm-up embed failed (ignored)");
+            }
+            // On-disk embedding cache (Phase 1.6c): reused across workers so
+            // reindex / duplicate content skips the BERT forward. Best-effort —
+            // the data dir already exists (ensure_dirs at startup); on open
+            // failure the pool runs without a cache.
+            let embed_cache = match statefulmemory_embed::cache::EmbeddingCache::open(
+                &statefulmemory_core::paths::data_dir(),
+            ) {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "embedding cache unavailable — embedding without it");
+                    None
+                }
+            };
+            let pool = crate::embed_worker::EmbedWorkerPool::spawn(
+                shared.clone(),
+                registry,
+                workers,
+                embed_cache,
+            );
             *state.query_embedder.write() = Some(shared);
             *state.embed_pool.write() = Some(pool);
             tracing::info!("BGE-small embedder ready");

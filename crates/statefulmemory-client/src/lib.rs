@@ -16,9 +16,11 @@
 //! interceptor via `StatefulMemoryClient::with_interceptor`.
 
 pub mod channel;
+pub mod endpoint;
 pub mod ensure;
 pub mod interceptor;
 
+pub use endpoint::{connect, AuthClient, AuthInterceptor, Endpoint};
 pub use ensure::{
     ensure_running, poll_socket, probe, AutoSpawnConfig, AutoSpawnError, EnsureOutcome,
 };
@@ -43,6 +45,9 @@ pub enum ClientError {
 
     #[error("connect: {0}")]
     Connect(#[source] tonic::transport::Error),
+
+    #[error("client configuration: {0}")]
+    Config(String),
 }
 
 /// Run an RPC closure once, retrying a single time if the first attempt fails

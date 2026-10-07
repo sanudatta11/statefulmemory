@@ -5,8 +5,10 @@
 //! injected into the write thread at daemon startup.
 //!
 //! When the configured judge returns an error (timeout, model unavailable,
-//! parse failure) the write path falls back to the existing BM25-title-match
-//! heuristic — unconditional supersession — and logs a warning.
+//! parse failure) — or no judge is wired at all — the write path applies a
+//! conservative, type-aware fallback: last-writer-wins for the single-valued
+//! `decision` / `policy` types, and keep-both for every other type (see
+//! `write::SUPERSEDE_ON_FALLBACK_TYPES`). Judge errors are logged as warnings.
 
 use anyhow::Result;
 
@@ -34,7 +36,9 @@ pub trait ConflictClassifier: Send + Sync {
     /// Implementations MUST:
     /// - Return `Ok(verdict)` when they have a confident classification.
     /// - Return `Err` on timeout, transport failure, or ambiguous response.
-    ///   The caller falls back to heuristic supersession on any error.
+    ///   The caller then applies a conservative type-aware fallback — keep-both
+    ///   for most types, last-writer-wins only for `decision` / `policy`
+    ///   (see `write::should_supersede`).
     fn classify(
         &self,
         old_title: &str,

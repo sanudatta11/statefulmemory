@@ -6,7 +6,9 @@
 //! SC-17 (collision), SC-25 (eviction churn ≤ 10/min), OQ-6 (idle eviction).
 
 use std::collections::{HashMap, VecDeque};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,22 +23,146 @@ use statefulmemory_core::project as project_name;
 
 use crate::write::{spawn_write_thread, WriteHandle};
 
+/// Default number of warm read connections retained per project when the
+/// registry is built without [`ProjectRegistry::with_read_pool_size`]. Matches
+/// the daemon `Config::read_pool_size` default so tests/eval and the daemon
+/// behave the same.
+pub const DEFAULT_READ_POOL_SIZE: usize = 4;
+
 /// One project's runtime state, owned by `ProjectRegistry`.
 pub struct ProjectState {
     pub normalized: String,
     pub display_name: String,
     pub db_path: PathBuf,
     pub write: WriteHandle,
-    /// Number of in-flight read connections. Used to defer eviction (OQ-6).
-    pub read_in_flight: parking_lot::Mutex<usize>,
+    /// Pool of warm read-only connections (bounded). Checked out per read RPC
+    /// and returned on guard drop, so pragmas + SQL compilation amortize across
+    /// requests instead of being paid on every `open_read`.
+    read_pool: Arc<ReadPool>,
 }
 
 impl ProjectState {
-    /// Open a fresh read-only connection for this project. Caller is responsible
-    /// for closing when done — this is a short-lived "borrow" with `read_in_flight`
-    /// counters maintained at the registry layer (see `Registry::checkout_read`).
+    /// Build a project state with a bounded warm read-connection pool.
+    pub fn new(
+        normalized: String,
+        display_name: String,
+        db_path: PathBuf,
+        write: WriteHandle,
+        read_pool_size: usize,
+    ) -> Self {
+        let read_pool = ReadPool::new(db_path.clone(), read_pool_size.max(1));
+        ProjectState {
+            normalized,
+            display_name,
+            db_path,
+            write,
+            read_pool,
+        }
+    }
+
+    /// Open a fresh (unpooled) read-only connection for this project. Used by
+    /// callers that need to own the `Connection` (eval harness, background
+    /// workers). Hot read RPC paths should prefer [`Self::checkout_read`].
     pub fn open_read_conn(&self) -> Result<Connection> {
         crate::db::open_read(&self.db_path)
+    }
+
+    /// Borrow a warm read connection from the pool. The returned guard derefs
+    /// to `&Connection` and returns the connection to the pool when dropped.
+    /// While a guard is live, `read_in_flight` is non-zero so eviction defers
+    /// (OQ-6).
+    pub fn checkout_read(&self) -> Result<PooledReadConn> {
+        self.read_pool.checkout()
+    }
+
+    /// Number of read connections currently checked out of the pool. Used by
+    /// the registry to defer eviction while reads are in flight.
+    pub fn read_in_flight(&self) -> usize {
+        self.read_pool.in_flight()
+    }
+}
+
+/// Bounded pool of warm read-only connections for one project DB.
+///
+/// `checkout` reuses an idle connection or opens a fresh one; the guard returns
+/// it to `idle` on drop (dropping it if `idle` is already at `max`, so the pool
+/// never retains more than `max` connections but also never blocks a read).
+struct ReadPool {
+    db_path: PathBuf,
+    idle: Mutex<Vec<Connection>>,
+    max: usize,
+    in_flight: AtomicUsize,
+}
+
+impl ReadPool {
+    fn new(db_path: PathBuf, max: usize) -> Arc<Self> {
+        Arc::new(ReadPool {
+            db_path,
+            idle: Mutex::new(Vec::with_capacity(max)),
+            max,
+            in_flight: AtomicUsize::new(0),
+        })
+    }
+
+    fn checkout(self: &Arc<Self>) -> Result<PooledReadConn> {
+        let reused = self.idle.lock().pop();
+        let conn = match reused {
+            Some(c) => c,
+            None => crate::db::open_read(&self.db_path)?,
+        };
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        Ok(PooledReadConn {
+            pool: Arc::clone(self),
+            conn: Some(conn),
+        })
+    }
+
+    fn checkin(&self, conn: Connection) {
+        {
+            let mut idle = self.idle.lock();
+            if idle.len() < self.max {
+                idle.push(conn);
+            }
+            // else: pool is full — drop the overflow connection.
+        }
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+}
+
+/// RAII guard for a pooled read connection. Derefs to the underlying
+/// `rusqlite::Connection` (so existing `&conn` call sites coerce unchanged) and
+/// returns the connection to its pool on drop.
+pub struct PooledReadConn {
+    pool: Arc<ReadPool>,
+    conn: Option<Connection>,
+}
+
+impl Deref for PooledReadConn {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn
+            .as_ref()
+            .expect("pooled connection present until drop")
+    }
+}
+
+impl DerefMut for PooledReadConn {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn
+            .as_mut()
+            .expect("pooled connection present until drop")
+    }
+}
+
+impl Drop for PooledReadConn {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            self.pool.checkin(conn);
+        }
     }
 }
 
@@ -58,6 +184,8 @@ pub struct ProjectRegistry {
     inner: Arc<Mutex<RegistryInner>>,
     write_batch_max: usize,
     write_batch_window: Duration,
+    /// Warm read connections retained per project (see [`ReadPool`]).
+    read_pool_size: usize,
     /// Optional LLM-based conflict classifier injected at daemon startup.
     /// Passed into each project's write thread when the thread is spawned.
     conflict_classifier: Option<std::sync::Arc<dyn crate::conflict_judge::ConflictClassifier>>,
@@ -87,8 +215,16 @@ impl ProjectRegistry {
             })),
             write_batch_max,
             write_batch_window,
+            read_pool_size: DEFAULT_READ_POOL_SIZE,
             conflict_classifier: None,
         }
+    }
+
+    /// Set the per-project warm read-connection pool size. Must be called
+    /// before any `get_or_open` for projects opened afterward to take effect.
+    pub fn with_read_pool_size(mut self, size: usize) -> Self {
+        self.read_pool_size = size.max(1);
+        self
     }
 
     /// Attach a conflict classifier to all new project write threads.
@@ -163,13 +299,13 @@ impl ProjectRegistry {
             self.write_batch_window,
             self.conflict_classifier.clone(),
         )?;
-        let state = Arc::new(ProjectState {
-            normalized: normalized.clone(),
-            display_name: display_name.to_string(),
+        let state = Arc::new(ProjectState::new(
+            normalized.clone(),
+            display_name.to_string(),
             db_path,
             write,
-            read_in_flight: parking_lot::Mutex::new(0),
-        });
+            self.read_pool_size,
+        ));
 
         // Insert + evict.
         let mut inner = self.inner.lock();
@@ -315,7 +451,7 @@ impl RegistryInner {
         let snapshot: Vec<String> = self.lru.iter().cloned().collect();
         for candidate in snapshot {
             if let Some(state) = self.map.get(&candidate) {
-                let in_flight = *state.read_in_flight.lock();
+                let in_flight = state.read_in_flight();
                 if in_flight == 0 {
                     self.lru.retain(|n| n != &candidate);
                     self.map.remove(&candidate);
@@ -406,5 +542,63 @@ mod tests {
         // Unknown project (no config) returns Ok(None).
         let unknown = r.get_repo_path("does-not-exist").unwrap();
         assert!(unknown.is_none());
+    }
+
+    #[test]
+    fn checkout_read_returns_usable_connection_and_tracks_in_flight() {
+        let (_guard, _d) = isolated_data_dir();
+        let r = ProjectRegistry::new(8, 32, Duration::from_millis(5)).with_read_pool_size(2);
+        let s = r.get_or_open("pool-proj").unwrap();
+
+        let conn = s.checkout_read().unwrap();
+        // A trivial query proves the connection is live and pragmas applied
+        // (open_read runs the full pragma set).
+        let n: i64 = conn.query_row("SELECT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(s.read_in_flight(), 1, "one checkout in flight");
+
+        drop(conn);
+        assert_eq!(s.read_in_flight(), 0, "returned to pool on drop");
+        assert_eq!(s.read_pool.idle.lock().len(), 1, "connection retained as idle");
+    }
+
+    #[test]
+    fn checkout_read_reuses_idle_connection() {
+        let (_guard, _d) = isolated_data_dir();
+        let r = ProjectRegistry::new(8, 32, Duration::from_millis(5)).with_read_pool_size(2);
+        let s = r.get_or_open("reuse-proj").unwrap();
+
+        // First checkout opens fresh; dropping returns it to idle.
+        drop(s.checkout_read().unwrap());
+        assert_eq!(s.read_pool.idle.lock().len(), 1);
+
+        // Second checkout drains the idle pool (reuse) rather than opening anew.
+        let c = s.checkout_read().unwrap();
+        assert_eq!(s.read_pool.idle.lock().len(), 0, "idle conn was reused");
+        let n: i64 = c.query_row("SELECT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(s.read_in_flight(), 1);
+    }
+
+    #[test]
+    fn pool_is_bounded_but_never_blocks() {
+        let (_guard, _d) = isolated_data_dir();
+        let r = ProjectRegistry::new(8, 32, Duration::from_millis(5)).with_read_pool_size(1);
+        let s = r.get_or_open("bound-proj").unwrap();
+
+        // Two simultaneous checkouts exceed max=1 — the pool opens an overflow
+        // connection rather than blocking the second reader.
+        let c1 = s.checkout_read().unwrap();
+        let c2 = s.checkout_read().unwrap();
+        assert_eq!(s.read_in_flight(), 2, "both live, neither blocked");
+
+        drop(c1); // idle 0 -> 1 (retained)
+        drop(c2); // idle already at max=1 -> overflow conn dropped
+        assert_eq!(s.read_in_flight(), 0);
+        assert_eq!(
+            s.read_pool.idle.lock().len(),
+            1,
+            "pool retains at most read_pool_size idle connections"
+        );
     }
 }

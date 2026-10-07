@@ -90,6 +90,16 @@ pub enum WriteRequest {
         quantize: bool,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Insert chunk texts + their embeddings for one observation (Phase 2.5,
+    /// opt-in via `embed.chunk_long_content`). Replaces any prior chunks for
+    /// `obs_id` (re-embeds/re-chunks overwrite cleanly). Never on the hot
+    /// save path — queued by the embed worker alongside InsertEmbedding.
+    InsertChunks {
+        obs_id: i64,
+        /// `(chunk_text, embedding)` pairs, in chunk order.
+        chunks: Vec<(String, Vec<f32>)>,
+        reply: oneshot::Sender<Result<()>>,
+    },
     /// Insert a batch of atomic facts extracted from an observation. Written
     /// asynchronously by the extract worker (config-gated). Spec:
     /// retrieval-promotion SC-8, P6.
@@ -369,6 +379,16 @@ fn process_batch(
                 reply,
             } => {
                 let r = handle_insert_embedding(&tx, obs_id, &embedding, &model, quantize);
+                replies.push(Box::new(move || {
+                    let _ = reply.send(r);
+                }));
+            }
+            WriteRequest::InsertChunks {
+                obs_id,
+                chunks,
+                reply,
+            } => {
+                let r = handle_insert_chunks(&tx, obs_id, &chunks);
                 replies.push(Box::new(move || {
                     let _ = reply.send(r);
                 }));
@@ -933,6 +953,23 @@ fn handle_delete_prompt(tx: &rusqlite::Transaction<'_>, key: &PromptKey) -> Resu
 /// Insert (or replace) one observation's dense embedding. The vec0 vtable
 /// expects a contiguous f32 little-endian byte blob; we slice
 /// `embedding.as_bytes()`-equivalent into a Vec<u8> here.
+/// Supported embedding dimensions and their vec0 table names (Phase 6.3).
+/// 384 = bge-small (V4/V14, the default); 768 = a bge-base/m3-class upgrade
+/// tier (V16). Dimension is read from the vector's actual length — the
+/// caller's configured model determines which dimension it produces, and
+/// `pragmas::check_embed_model_compat` already refuses to start a project
+/// against a model whose name doesn't match what's stored, so a project
+/// never has rows in both dimensions' tables at once.
+fn vec_table_names(dim: usize) -> Result<(&'static str, &'static str)> {
+    match dim {
+        384 => Ok(("observations_vec", "observations_vec_i8")),
+        768 => Ok(("observations_vec_768", "observations_vec_768_i8")),
+        other => Err(Error::invalid(format!(
+            "unsupported embedding dimension {other} (supported: 384, 768)"
+        ))),
+    }
+}
+
 fn handle_insert_embedding(
     tx: &rusqlite::Transaction<'_>,
     obs_id: i64,
@@ -940,14 +977,11 @@ fn handle_insert_embedding(
     model: &str,
     quantize: bool,
 ) -> Result<()> {
-    if embedding.len() != 384 {
-        return Err(Error::invalid(format!(
-            "embedding dim mismatch: got {}, expected 384",
-            embedding.len()
-        )));
-    }
+    let dim = embedding.len();
+    let (vec_table, vec_i8_table) = vec_table_names(dim)?;
     if quantize {
-        // Store int8 representation. Skip observations_vec.
+        // Store int8 representation (shared helper: same math feeds both the
+        // legacy blob fallback and the ANN index below).
         let scale = statefulmemory_embed::quantize::calibrate_scale(&[embedding]);
         let int8: Vec<i8> = statefulmemory_embed::quantize::f32_to_int8(embedding, scale);
         // Store raw bytes: i8 → u8 reinterpret (safe, same bit pattern).
@@ -956,9 +990,24 @@ fn handle_insert_embedding(
             "INSERT OR REPLACE INTO observation_embedding_meta \
                 (observation_id, model, dim, created_at, quantized, quantized_blob, scale) \
              VALUES (?1, ?2, ?3, datetime('now'), 1, ?4, ?5)",
-            params![obs_id, model, 384i64, blob, scale],
+            params![obs_id, model, dim as i64, blob.clone(), scale],
         )
         .map_err(|e| Error::internal(format!("insert quantized meta: {e}")))?;
+
+        // ANN index (Phase 6.2): also write into the native int8 vec0 column
+        // (distance_metric=cosine, scale-invariant per vector — see V14) so
+        // dense search can use the index instead of a brute-force Rust scan.
+        // `vec_int8(?)` wraps the blob with the SQLITE_SUBTYPE sqlite-vec
+        // needs to parse it as int8 rather than the float32 default; a bare
+        // blob param has no subtype and would be rejected / misread.
+        // Best-effort: V14/V16 may not have run yet on a DB opened by an
+        // older binary mid-rollout — log and continue rather than failing.
+        if let Err(e) = tx.execute(
+            &format!("INSERT OR REPLACE INTO {vec_i8_table}(rowid, embedding) VALUES (?1, vec_int8(?2))"),
+            params![obs_id, blob],
+        ) {
+            tracing::debug!(obs_id, dim, error = %e, "ANN int8 index insert failed (ANN index unavailable, legacy blob still written)");
+        }
         return Ok(());
     }
     let mut blob = Vec::with_capacity(embedding.len() * 4);
@@ -966,17 +1015,60 @@ fn handle_insert_embedding(
         blob.extend_from_slice(&f.to_le_bytes());
     }
     tx.execute(
-        "INSERT OR REPLACE INTO observations_vec(rowid, embedding) VALUES (?1, ?2)",
+        &format!("INSERT OR REPLACE INTO {vec_table}(rowid, embedding) VALUES (?1, ?2)"),
         params![obs_id, blob],
     )
-    .map_err(|e| Error::internal(format!("insert observations_vec: {e}")))?;
+    .map_err(|e| Error::internal(format!("insert {vec_table}: {e}")))?;
     tx.execute(
         "INSERT OR REPLACE INTO observation_embedding_meta \
             (observation_id, model, dim, created_at) \
          VALUES (?1, ?2, ?3, datetime('now'))",
-        params![obs_id, model, 384i64],
+        params![obs_id, model, dim as i64],
     )
     .map_err(|e| Error::internal(format!("insert observation_embedding_meta: {e}")))?;
+    Ok(())
+}
+
+/// Replace an observation's chunk vectors (Phase 2.5, opt-in). Deletes any
+/// prior chunks for `obs_id` first (cascades to `chunk_vectors` via
+/// the V15 trigger), then inserts the new set. Empty `chunks` just clears —
+/// used when a re-embedded observation no longer needs chunking (shrunk below
+/// the threshold).
+fn handle_insert_chunks(
+    tx: &rusqlite::Transaction<'_>,
+    obs_id: i64,
+    chunks: &[(String, Vec<f32>)],
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM observations_chunks WHERE obs_id = ?1",
+        params![obs_id],
+    )
+    .map_err(|e| Error::internal(format!("delete prior chunks: {e}")))?;
+
+    for (idx, (text, embedding)) in chunks.iter().enumerate() {
+        if embedding.len() != 384 {
+            return Err(Error::invalid(format!(
+                "chunk embedding dim mismatch: got {}, expected 384",
+                embedding.len()
+            )));
+        }
+        tx.execute(
+            "INSERT INTO observations_chunks (obs_id, chunk_idx, text) VALUES (?1, ?2, ?3)",
+            params![obs_id, idx as i64, text],
+        )
+        .map_err(|e| Error::internal(format!("insert observations_chunks: {e}")))?;
+        let chunk_id = tx.last_insert_rowid();
+
+        let mut blob = Vec::with_capacity(embedding.len() * 4);
+        for f in embedding {
+            blob.extend_from_slice(&f.to_le_bytes());
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO chunk_vectors(rowid, embedding) VALUES (?1, ?2)",
+            params![chunk_id, blob],
+        )
+        .map_err(|e| Error::internal(format!("insert chunk_vectors: {e}")))?;
+    }
     Ok(())
 }
 
@@ -996,6 +1088,20 @@ fn handle_insert_facts(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
         .map_err(|e| Error::internal(format!("prepare insert_fact: {e}")))?;
+    // Fact-level supersession (Phase 3.2): a newly-inserted fact with the same
+    // (subject, predicate) but a DIFFERENT object supersedes prior active facts
+    // across the project, so the stale value stops surfacing via the fact lane
+    // (search_facts filters superseded_by IS NULL). Same-object re-extractions
+    // are left alone (not a contradiction). Case-insensitive, trimmed match.
+    let mut supersede_stmt = tx
+        .prepare(
+            "UPDATE facts SET superseded_by = ?1 \
+             WHERE id != ?1 AND superseded_by IS NULL \
+               AND lower(trim(subject)) = lower(trim(?2)) \
+               AND lower(trim(predicate)) = lower(trim(?3)) \
+               AND lower(trim(object)) != lower(trim(?4))",
+        )
+        .map_err(|e| Error::internal(format!("prepare supersede_fact: {e}")))?;
     let mut expand_parts: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for f in facts {
@@ -1010,6 +1116,10 @@ fn handle_insert_facts(
             f.extracted_by,
         ])
         .map_err(|e| Error::internal(format!("insert fact: {e}")))?;
+        let new_id = tx.last_insert_rowid();
+        supersede_stmt
+            .execute(params![new_id, f.subject, f.predicate, f.object])
+            .map_err(|e| Error::internal(format!("supersede prior facts: {e}")))?;
         for term in [f.subject.as_str(), f.object.as_str()] {
             let t = term.trim();
             if t.len() < 2 {
@@ -1183,20 +1293,37 @@ const OBSERVATION_SELECT_FIELDS_BY_SYNC: &str = "
       FROM observations WHERE sync_id = ?1
 ";
 
-/// Find the top BM25 hit for `input.title` among active observations of the
-/// same type and scope, excluding the newly-inserted row `new_id`.
-/// Returns the conflicting observation's id if one is found.
+/// Find a supersession candidate for the newly-inserted row `new_id` among
+/// active observations of the same `(scope, type)`.
+///
+/// Two detectors, in priority order:
+/// 1. **Title phrase (BM25 top-1).** Exact FTS5 phrase match on the title —
+///    catches re-saves that keep the same title.
+/// 2. **Topic-key equality.** When the new save carries a `topic_key`, match
+///    any other active row with the same `(scope, type, topic_key)`. This
+///    catches a *reworded* update whose title (and body) changed but whose
+///    stable topic key did not — the title-phrase detector would miss it.
+///
+/// Returns the candidate observation's id, if any.
+///
+/// NOTE: in the normal save flow the topic-key branch is largely subsumed by
+/// the step-2 in-place topic upsert in [`handle_save_observation`] (a matching
+/// `(topic_key, scope)` row is updated in place and we return before conflict
+/// detection ever runs), so today it mainly hardens the function against future
+/// flow changes and is exercised directly in unit tests. True reworded-update
+/// detection for the *no-topic-key* case needs dense-embedding neighbors, which
+/// the write thread does not hold — tracked as a follow-up.
 fn find_conflict_candidate(
     tx: &rusqlite::Transaction<'_>,
     new_id: i64,
     input: &SaveObservationInput,
 ) -> Result<Option<i64>> {
-    // Build a phrase query: title:"<escaped title>"
+    // 1. Title-phrase query: title:"<escaped title>"
     // Double any literal double-quotes in the title so they don't break the
     // FTS5 phrase syntax (FTS5 uses "" as an escape for a literal quote).
     let escaped = input.title.replace('"', "\"\"");
     let query = format!("title:\"{}\"", escaped);
-    let result: Option<i64> = tx
+    let by_title: Option<i64> = tx
         .query_row(
             "SELECT o.id
                FROM observations o
@@ -1212,8 +1339,50 @@ fn find_conflict_candidate(
             |row| row.get(0),
         )
         .optional()
-        .map_err(|e| Error::internal(format!("conflict scan: {e}")))?;
-    Ok(result)
+        .map_err(|e| Error::internal(format!("conflict scan (title): {e}")))?;
+    if by_title.is_some() {
+        return Ok(by_title);
+    }
+
+    // 2. Topic-key equality fallback — a reworded update with a stable
+    //    topic_key but a changed title that the phrase detector missed.
+    if let Some(topic_key) = &input.topic_key {
+        let by_topic: Option<i64> = tx
+            .query_row(
+                "SELECT id
+                   FROM observations
+                  WHERE topic_key = ?1
+                    AND scope = ?2
+                    AND type = ?3
+                    AND id != ?4
+                    AND deleted_at IS NULL
+                  ORDER BY updated_at DESC
+                  LIMIT 1",
+                params![topic_key, &input.scope, &input.r#type, new_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| Error::internal(format!("conflict scan (topic_key): {e}")))?;
+        return Ok(by_topic);
+    }
+
+    Ok(None)
+}
+
+/// Observation types for which an *unresolved* supersession decision falls
+/// back to last-writer-wins — the newer row supersedes the older. These types
+/// are single-valued by design ("the current decision", "the current policy"),
+/// so retaining a stale prior value is worse than dropping it. Every OTHER
+/// type falls back to KEEP-BOTH, so a transient judge error or an unwired judge
+/// can never silently delete history we did not positively classify as
+/// superseded (Phase 3.1).
+const SUPERSEDE_ON_FALLBACK_TYPES: &[&str] = &["decision", "policy"];
+
+/// Conservative supersession decision used whenever the LLM conflict judge is
+/// unavailable (no classifier wired, judge disabled, old row vanished, or the
+/// call errored/timed out). See [`SUPERSEDE_ON_FALLBACK_TYPES`].
+fn fallback_supersede(obs_type: &str) -> bool {
+    SUPERSEDE_ON_FALLBACK_TYPES.contains(&obs_type)
 }
 
 /// Decide whether to supersede `old_id` given the new `input`.
@@ -1222,9 +1391,39 @@ fn find_conflict_candidate(
 ///    true for this project, ask the LLM. `Supersedes` → supersede;
 ///    `ConflictsWith` → keep both and record `conflicts_with`;
 ///    `Compatible` or `NotConflict` → keep both.
-/// 2. On any error (timeout, network, parse) fall back to heuristic
-///    (supersede unconditionally, matching pre-Spec-4 behavior).
-/// 3. If no classifier is wired, always supersede (current default).
+/// 2. If no classifier is wired, the judge is disabled, the old row vanished
+///    mid-txn, or the LLM errors/times out, defer to [`fallback_supersede`]:
+///    last-writer-wins ONLY for the single-valued `decision` / `policy` types,
+///    keep-both for everything else. Before Phase 3.1 this fallback superseded
+///    unconditionally and could drop correct history on a transient error.
+///
+/// Decide whether `new_id` supersedes `old_id` on save.
+///
+/// Phase 3.1b: the LLM judge call that used to run HERE, synchronously inside
+/// the `BEGIN IMMEDIATE` write transaction, has been removed. Holding the
+/// per-project write lock for up to `conflict.timeout_secs` on every
+/// title-collision was the actual latency risk 3.1b exists to close.
+///
+/// New behavior: when a classifier is configured and enabled, a detected
+/// candidate is ALWAYS kept (both rows survive the save, `false`) and a
+/// `conflicts_with` relation is recorded in-txn. The daemon already drains
+/// every `conflicts_with` relation on the saved observation into
+/// `ResolveWorkerPool` right after commit (see the resolve-pool block in
+/// `service.rs`), and `resolve_worker::resolve_pair` → `apply_verdict` makes
+/// the real (and more capable — it supports KeepNew/KeepOld/KeepBoth/
+/// Synthesize) judgment call off the hot path, with durable retry, defaulting
+/// to KeepBoth on any ambiguity or error. So no judgment quality is lost —
+/// it moves to where the system was already set up to do it asynchronously.
+///
+/// When no classifier is configured, or `conflict.enabled` is false, there is
+/// no async judge to hand off to either, so the type-aware fallback decides
+/// synchronously (Goal 1: keep-both for everything except decision/policy).
+///
+/// `SaveObservation.superseded_ids` is consequently eventually-consistent for
+/// LLM-judged collisions: a conflicting save's response will NOT include the
+/// old id in `superseded_ids` (it hasn't been judged yet); the resolution
+/// lands moments later via the resolve worker. This is the documented
+/// contract change the deferred Phase 3.1 goal 2 called out.
 fn should_supersede(
     old_id: i64,
     new_id: i64,
@@ -1232,78 +1431,26 @@ fn should_supersede(
     input: &SaveObservationInput,
     classifier: Option<&dyn crate::conflict_judge::ConflictClassifier>,
 ) -> bool {
-    use crate::conflict_judge::ConflictVerdict;
+    if classifier.is_none() {
+        return fallback_supersede(&input.r#type); // no judge: type-aware fallback
+    }
 
-    let classifier = match classifier {
-        Some(c) => c,
-        None => return true, // no judge: heuristic supersession
-    };
-
-    // Re-resolve project config so per-project overrides apply. We pass the
-    // project name from the normalized DB path; storage doesn't know it, but
-    // the write thread was spawned with it as `project_id`. Rather than
-    // threading the name here we just call load_resolved(None) — that gives
-    // the global config, which is sufficient for the default-on judge.
     let cfg = statefulmemory_core::config::load_resolved(None);
     if !cfg.conflict.enabled {
-        return true; // feature disabled: heuristic
+        return fallback_supersede(&input.r#type); // feature disabled: type-aware fallback
     }
 
-    // Fetch the old observation's title + content for the judge prompt.
-    let old: Option<(String, String)> = tx
-        .query_row(
-            "SELECT title, content FROM observations WHERE id = ?1",
-            params![old_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .unwrap_or(None);
-    let (old_title, old_content) = match old {
-        Some(p) => p,
-        None => return true, // old row missing (race): supersede to be safe
-    };
-
-    match classifier.classify(&old_title, &old_content, &input.title, &input.content) {
-        Ok(ConflictVerdict::Supersedes) => {
-            let _ = crate::relations::add_relation(tx, new_id, old_id, "supersedes", 0.95);
-            true
-        }
-        Ok(ConflictVerdict::ConflictsWith) => {
-            let _ = crate::relations::add_relation(tx, new_id, old_id, "conflicts_with", 0.95);
-            tracing::debug!(
-                old_id,
-                new_title = %input.title,
-                "conflict judge: keeping both (ConflictsWith)"
-            );
-            false
-        }
-        Ok(ConflictVerdict::Compatible) => {
-            let _ = crate::relations::add_relation(tx, new_id, old_id, "compatible", 0.85);
-            tracing::debug!(
-                old_id,
-                new_title = %input.title,
-                "conflict judge: NOT superseding (Compatible)"
-            );
-            false
-        }
-        Ok(ConflictVerdict::NotConflict) => {
-            let _ = crate::relations::add_relation(tx, new_id, old_id, "not_conflict", 0.85);
-            tracing::debug!(
-                old_id,
-                new_title = %input.title,
-                "conflict judge: NOT superseding (NotConflict)"
-            );
-            false
-        }
-        Err(e) => {
-            tracing::warn!(
-                old_id,
-                error = %e,
-                "conflict judge error; falling back to heuristic supersession"
-            );
-            true
-        }
-    }
+    // A classifier is configured and enabled: defer the judgment to the async
+    // resolve worker. Record the pending relation now (same transaction as
+    // the save, so it's never lost) and keep both rows.
+    let _ = crate::relations::add_relation(tx, new_id, old_id, "conflicts_with", 0.95);
+    tracing::debug!(
+        old_id,
+        new_id,
+        new_title = %input.title,
+        "conflict candidate detected — deferring judgment to the async resolve worker"
+    );
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,8 +1475,7 @@ mod tests {
         (dir, conn)
     }
 
-    fn save_input(content: &str) -> SaveObservationInput {
-        SaveObservationInput {
+    fn save_input(content: &str) -> SaveObservationInput {        SaveObservationInput {
             sync_id: None,
             session_id: "s1".into(),
             r#type: "note".into(),
@@ -1343,6 +1489,16 @@ mod tests {
             dedupe_window_secs: 60 * 60 * 24 * 30,
             max_content_chars: 50_000,
             skip_supersede: false,
+        }
+    }
+
+    /// `save_input` with an explicit type + title (distinct content keeps the
+    /// normalized hashes apart so hash-dedupe never masks the behavior).
+    fn typed_input(ty: &str, title: &str, content: &str) -> SaveObservationInput {
+        SaveObservationInput {
+            r#type: ty.into(),
+            title: title.into(),
+            ..save_input(content)
         }
     }
 
@@ -1372,6 +1528,50 @@ mod tests {
         ) -> anyhow::Result<crate::conflict_judge::ConflictVerdict> {
             Ok(crate::conflict_judge::ConflictVerdict::ConflictsWith)
         }
+    }
+
+    /// Counts `.classify()` invocations. Used to prove the write-path hot
+    /// path (Phase 3.1b) never calls the LLM judge synchronously.
+    struct CountingClassifier(std::sync::atomic::AtomicUsize);
+    impl crate::conflict_judge::ConflictClassifier for CountingClassifier {
+        fn classify(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<crate::conflict_judge::ConflictVerdict> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::conflict_judge::ConflictVerdict::Supersedes)
+        }
+    }
+
+    #[test]
+    fn should_supersede_never_calls_classifier_synchronously() {
+        // Phase 3.1b: the whole point of the change — a conflict candidate
+        // with a classifier configured must defer to the async resolve
+        // worker (recording `conflicts_with` + returning false) WITHOUT
+        // invoking the LLM classifier on the write-thread hot path.
+        std::env::set_var("STATEFULMEMORY_CONFLICT_ENABLED", "true");
+        let (_d, mut conn) = open_test_db();
+        let classifier = CountingClassifier(std::sync::atomic::AtomicUsize::new(0));
+        let mut a = save_input("use redis for sessions");
+        a.title = "session store".into();
+        a.sync_id = Some("sync-old-2".into());
+        let mut b = save_input("use postgres for sessions");
+        b.title = "session store".into();
+        b.sync_id = Some("sync-new-2".into());
+        let tx = conn.transaction().unwrap();
+        handle_save_observation(&tx, a, Some(&classifier)).unwrap();
+        let o2 = handle_save_observation(&tx, b, Some(&classifier)).unwrap();
+        tx.commit().unwrap();
+        std::env::remove_var("STATEFULMEMORY_CONFLICT_ENABLED");
+        assert_eq!(
+            classifier.0.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "classifier.classify() must NOT be called on the write-thread hot path"
+        );
+        assert_eq!(o2.deleted_at, None, "both rows kept — judgment deferred");
     }
 
     #[test]
@@ -1407,6 +1607,172 @@ mod tests {
         assert_eq!(o1.deleted_at, None);
         assert_eq!(o2.deleted_at, None);
         assert_eq!(n_rel, 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 3.1 — non-destructive supersession fallback (goal 1)
+    // ---------------------------------------------------------------------
+
+    /// Goal 1(a): with NO classifier wired, a same-title conflict for a
+    /// non-decision/policy type must KEEP BOTH rows rather than drop history.
+    #[test]
+    fn fallback_without_classifier_keeps_both_for_non_decision_types() {
+        for ty in ["note", "fact", "pattern", "preference", "context"] {
+            let (_d, mut conn) = open_test_db();
+            let tx = conn.transaction().unwrap();
+            // Same title + type + scope so `find_conflict_candidate` surfaces
+            // the older row; distinct content avoids hash-dedupe.
+            let a = typed_input(ty, "shared conflict title", "the original value");
+            let b = typed_input(ty, "shared conflict title", "a reworded value");
+            let _o1 = handle_save_observation(&tx, a, None).unwrap();
+            let o2 = handle_save_observation(&tx, b, None).unwrap();
+            let n_active: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM observations WHERE deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            tx.commit().unwrap();
+            assert_eq!(
+                n_active, 2,
+                "type `{ty}`: both rows must stay active without a classifier"
+            );
+            assert!(
+                o2.superseded_ids.is_empty(),
+                "type `{ty}`: new obs must not supersede on fallback"
+            );
+        }
+    }
+
+    /// Goal 1(b): with NO classifier wired, `decision` and `policy` are
+    /// single-valued (last-writer-wins) so the older row is still superseded.
+    #[test]
+    fn fallback_without_classifier_supersedes_decision_and_policy() {
+        for ty in ["decision", "policy"] {
+            let (_d, mut conn) = open_test_db();
+            let tx = conn.transaction().unwrap();
+            let a = typed_input(ty, "shared conflict title", "the original value");
+            let b = typed_input(ty, "shared conflict title", "the revised value");
+            let o1 = handle_save_observation(&tx, a, None).unwrap();
+            let o2 = handle_save_observation(&tx, b, None).unwrap();
+            let n_active: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM observations WHERE deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let old_deleted: Option<String> = tx
+                .query_row(
+                    "SELECT deleted_at FROM observations WHERE id = ?1",
+                    params![o1.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            tx.commit().unwrap();
+            assert_eq!(n_active, 1, "type `{ty}`: older row must be superseded");
+            assert!(
+                old_deleted.is_some(),
+                "type `{ty}`: old row must be soft-deleted"
+            );
+            assert_eq!(
+                o2.superseded_ids,
+                vec![o1.id],
+                "type `{ty}`: new obs records the superseded id"
+            );
+        }
+    }
+
+    /// `fallback_supersede` is the single source of truth for the type set.
+    #[test]
+    fn fallback_supersede_type_set() {
+        assert!(fallback_supersede("decision"));
+        assert!(fallback_supersede("policy"));
+        for ty in ["note", "fact", "pattern", "preference", "context", "resolution"] {
+            assert!(!fallback_supersede(ty), "type `{ty}` must keep both on fallback");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 3.1 — semantic candidate detection (goal 3)
+    // ---------------------------------------------------------------------
+
+    /// Baseline: the title-phrase detector still finds a same-title candidate.
+    #[test]
+    fn find_conflict_candidate_matches_on_title_phrase() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let mut a = save_input("body one");
+        a.title = "database choice".into();
+        let o1 = handle_save_observation(&tx, a, None).unwrap();
+
+        let mut input = save_input("body two");
+        input.title = "database choice".into();
+        // new_id is a not-yet-present id, so the old row is the only candidate.
+        let found = find_conflict_candidate(&tx, o1.id + 1000, &input).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(found, Some(o1.id));
+    }
+
+    /// Goal 3: a reworded update whose title changed is still detected via
+    /// `topic_key` equality when the title-phrase match misses.
+    #[test]
+    fn find_conflict_candidate_falls_back_to_topic_key_on_title_miss() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let mut old = save_input("use redis for sessions");
+        old.title = "use redis for sessions".into();
+        old.topic_key = Some("arch/session-store".into());
+        let o1 = handle_save_observation(&tx, old, None).unwrap();
+
+        // Reworded save: same topic_key, a title that cannot phrase-match.
+        let mut input = save_input("switched to postgres");
+        input.title = "session storage moved off redis".into();
+        input.topic_key = Some("arch/session-store".into());
+
+        let found = find_conflict_candidate(&tx, o1.id + 1000, &input).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            found,
+            Some(o1.id),
+            "topic_key equality must surface the reworded prior row"
+        );
+    }
+
+    /// A reworded title with NO topic_key and no phrase overlap yields no
+    /// candidate — the detector stays conservative (dense neighbors deferred).
+    #[test]
+    fn find_conflict_candidate_no_match_without_topic_key_or_title_overlap() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let mut old = save_input("use redis for sessions");
+        old.title = "use redis for sessions".into();
+        let o1 = handle_save_observation(&tx, old, None).unwrap();
+
+        let mut input = save_input("switched to postgres");
+        input.title = "session storage moved off redis".into();
+        let found = find_conflict_candidate(&tx, o1.id + 1000, &input).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(found, None);
+    }
+
+    /// `topic_key` candidate detection is scoped by `(scope, type)`: a row with
+    /// the same topic_key but a different type is not a candidate.
+    #[test]
+    fn find_conflict_candidate_topic_key_respects_type_and_scope() {
+        let (_d, mut conn) = open_test_db();
+        let tx = conn.transaction().unwrap();
+        let mut old = typed_input("note", "redis note", "redis body");
+        old.topic_key = Some("arch/store".into());
+        let o1 = handle_save_observation(&tx, old, None).unwrap();
+
+        // Same topic_key, different type → not a candidate.
+        let mut diff_type = typed_input("decision", "pg decision", "pg body");
+        diff_type.topic_key = Some("arch/store".into());
+        let found = find_conflict_candidate(&tx, o1.id + 1000, &diff_type).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(found, None, "topic_key match must be gated by type");
     }
 
     #[test]
@@ -1992,6 +2358,57 @@ mod tests {
     }
 
     #[test]
+    fn insert_facts_supersedes_prior_contradicting_fact() {
+        // Phase 3.2: a newer fact with the same (subject, predicate) but a
+        // different object supersedes the stale one; same-object re-extraction
+        // does not.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("t.db");
+        let mut conn = crate::db::open_write(&path).unwrap();
+        conn.execute("INSERT INTO sessions (id, directory) VALUES ('s1','/tmp')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO observations (sync_id, session_id, type, title, content) VALUES ('o1','s1','note','t','c')",
+            [],
+        )
+        .unwrap();
+        let obs1 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO observations (sync_id, session_id, type, title, content) VALUES ('o2','s1','note','t2','c2')",
+            [],
+        )
+        .unwrap();
+        let obs2 = conn.last_insert_rowid();
+
+        let mk = |object: &str| NewFact {
+            subject: "team".into(),
+            predicate: "prefers".into(),
+            object: object.into(),
+            temporal: None,
+            salience: Some(0.9),
+            extracted_by: "haiku".into(),
+        };
+        for (obs, obj) in [(obs1, "diesel"), (obs2, "pgx")] {
+            let tx = conn.transaction().unwrap();
+            handle_insert_facts(&tx, obs, &[mk(obj)]).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Active fact lane shows pgx, not the superseded diesel.
+        let hits = crate::facts::search_facts(&conn, "diesel OR pgx", 10).unwrap();
+        let objs: Vec<&str> = hits.iter().map(|f| f.object.as_str()).collect();
+        assert!(objs.contains(&"pgx"), "new value active: {objs:?}");
+        assert!(!objs.contains(&"diesel"), "stale value superseded: {objs:?}");
+
+        // Same-object re-extraction is not a contradiction → both stay active.
+        let tx = conn.transaction().unwrap();
+        handle_insert_facts(&tx, obs1, &[mk("pgx")]).unwrap();
+        tx.commit().unwrap();
+        let active = crate::facts::search_facts(&conn, "pgx", 10).unwrap();
+        assert_eq!(active.len(), 2, "both pgx facts active (same object)");
+    }
+
+    #[test]
     fn insert_facts_merges_key_expand_for_fts() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("t.db");
@@ -2048,5 +2465,285 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 1, "FTS must index key_expand tokens");
+    }
+
+    #[test]
+    fn handle_insert_embedding_quantized_writes_ann_index() {
+        // Phase 6.2: quantize=true must populate BOTH the legacy
+        // observation_embedding_meta blob (back-compat) AND the native
+        // sqlite-vec int8 ANN table (observations_vec_i8, V14) via vec_int8().
+        let (_dir, mut conn) = open_test_db();
+        let obs_id = {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input("alpha")).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+
+        let mut embedding = vec![0.0_f32; 384];
+        embedding[0] = 1.0;
+        embedding[17] = 0.5;
+
+        let tx = conn.transaction().unwrap();
+        handle_insert_embedding(&tx, obs_id, &embedding, "bge-small-en-v1.5", true).unwrap();
+        tx.commit().unwrap();
+
+        // Legacy blob still present (back-compat / fallback).
+        let quantized: bool = conn
+            .query_row(
+                "SELECT quantized FROM observation_embedding_meta WHERE observation_id = ?1",
+                params![obs_id],
+                |r| r.get::<_, i64>(0).map(|v| v == 1),
+            )
+            .unwrap();
+        assert!(quantized, "legacy quantized flag must still be set");
+
+        // ANN table has exactly one row for this observation.
+        let ann_rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM observations_vec_i8 WHERE rowid = ?1",
+                params![obs_id],
+                |r| r.get(0),
+            )
+            .expect("observations_vec_i8 must contain the inserted row");
+        assert_eq!(ann_rowid, obs_id);
+    }
+
+    #[test]
+    fn handle_insert_embedding_quantized_ann_round_trips_via_search_dense() {
+        // End-to-end: quantize=true write path -> read::search_dense (which
+        // tries the ANN table first) finds the exact-match row ranked first.
+        let (_dir, mut conn) = open_test_db();
+        let mut mk = |content: &str| -> i64 {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input(content)).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+        let id_a = mk("alpha body");
+        let id_b = mk("beta body");
+
+        let mut vec_a = vec![0.0_f32; 384];
+        vec_a[0] = 1.0;
+        let mut vec_b = vec![0.0_f32; 384];
+        vec_b[200] = 1.0;
+
+        for (id, v) in [(id_a, &vec_a), (id_b, &vec_b)] {
+            let tx = conn.transaction().unwrap();
+            handle_insert_embedding(&tx, id, v, "bge-small-en-v1.5", true).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let hits = crate::read::search_dense(&conn, &vec_a, 2).unwrap();
+        assert!(!hits.is_empty(), "ANN search must return hits");
+        assert_eq!(
+            hits[0].id, id_a,
+            "exact-match vector must rank first via the ANN index"
+        );
+    }
+
+    #[test]
+    fn handle_insert_chunks_writes_rows_and_cascades_on_delete() {
+        let (_dir, mut conn) = open_test_db();
+        let obs_id = {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input("long body")).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+
+        let mut v1 = vec![0.0_f32; 384];
+        v1[0] = 1.0;
+        let mut v2 = vec![0.0_f32; 384];
+        v2[1] = 1.0;
+        let chunks = vec![
+            ("chunk one text".to_string(), v1.clone()),
+            ("chunk two text".to_string(), v2.clone()),
+        ];
+
+        let tx = conn.transaction().unwrap();
+        handle_insert_chunks(&tx, obs_id, &chunks).unwrap();
+        tx.commit().unwrap();
+
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observations_chunks WHERE obs_id = ?1",
+                params![obs_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "both chunks inserted");
+        let n_vec: i64 = conn
+            .query_row("SELECT count(*) FROM chunk_vectors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_vec, 2, "both chunk vectors inserted");
+
+        // Re-inserting (re-embed) replaces, doesn't duplicate.
+        let tx = conn.transaction().unwrap();
+        handle_insert_chunks(&tx, obs_id, &chunks[..1]).unwrap();
+        tx.commit().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observations_chunks WHERE obs_id = ?1",
+                params![obs_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-insert replaces prior chunks");
+
+        // Cascade: deleting the observation drops its chunks + chunk vectors
+        // (V15 FK cascade + AFTER DELETE trigger).
+        conn.execute("DELETE FROM observations WHERE id = ?1", params![obs_id])
+            .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM observations_chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "chunks cascade-deleted with the observation");
+        let n_vec: i64 = conn
+            .query_row("SELECT count(*) FROM chunk_vectors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_vec, 0, "chunk vectors cleaned up by the AFTER DELETE trigger");
+    }
+
+    #[test]
+    fn chunked_dense_search_max_pools_best_chunk_per_observation() {
+        // End-to-end: an observation with TWO chunks, only one of which
+        // matches the query closely, must still surface the observation —
+        // and search_dense_chunks_scored must rank it via its best chunk,
+        // not get diluted by averaging with the irrelevant chunk.
+        let (_dir, mut conn) = open_test_db();
+        let obs_id = {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input("long body")).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+
+        let mut query = vec![0.0_f32; 384];
+        query[0] = 1.0;
+
+        let mut matching_chunk = vec![0.0_f32; 384];
+        matching_chunk[0] = 1.0; // identical to query -> distance ~0
+        let mut unrelated_chunk = vec![0.0_f32; 384];
+        unrelated_chunk[200] = 1.0; // orthogonal -> large distance
+
+        let tx = conn.transaction().unwrap();
+        handle_insert_chunks(
+            &tx,
+            obs_id,
+            &[
+                ("unrelated passage".to_string(), unrelated_chunk),
+                ("matching passage".to_string(), matching_chunk),
+            ],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let hits = crate::read::search_dense_chunks_scored(&conn, &query, 10).unwrap();
+        assert_eq!(hits.len(), 1, "one observation surfaces once, not per-chunk");
+        assert_eq!(hits[0].0.id, obs_id);
+        assert!(
+            hits[0].1 < 0.01,
+            "best-chunk distance should reflect the matching chunk, not an average: {}",
+            hits[0].1
+        );
+    }
+
+    #[test]
+    fn handle_insert_embedding_routes_768_dim_to_v16_tables() {
+        // Phase 6.3: a 768-dim embedding (e.g. a bge-base-class model) must
+        // route to the V16 parallel table set, NOT the 384-dim V4 tables —
+        // and must be independently searchable via read::search_dense.
+        let (_dir, mut conn) = open_test_db();
+        let obs_id = {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input("alpha")).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+
+        let mut embedding = vec![0.0_f32; 768];
+        embedding[0] = 1.0;
+
+        let tx = conn.transaction().unwrap();
+        handle_insert_embedding(&tx, obs_id, &embedding, "bge-base-en-v1.5", false).unwrap();
+        tx.commit().unwrap();
+
+        // Lands in the 768-dim table, NOT the 384-dim one.
+        let in_768: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observations_vec_768 WHERE rowid = ?1",
+                params![obs_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_768, 1, "768-dim vector must land in observations_vec_768");
+        let in_384: i64 = conn
+            .query_row("SELECT count(*) FROM observations_vec", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(in_384, 0, "the 384-dim table must stay empty");
+
+        // Stored dim is recorded correctly.
+        let stored_dim: i64 = conn
+            .query_row(
+                "SELECT dim FROM observation_embedding_meta WHERE observation_id = ?1",
+                params![obs_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_dim, 768);
+
+        // End-to-end: search_dense (768-dim query) finds it via the ANN path.
+        let hits = crate::read::search_dense(&conn, &embedding, 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, obs_id, "exact-match 768-dim vector found via search_dense");
+    }
+
+    #[test]
+    fn handle_insert_embedding_768_quantized_routes_to_v16_ann_table() {
+        // Same as above but for the int8-quantized ANN path (V16's
+        // observations_vec_768_i8), proving 6.2's ANN work and 6.3's
+        // dimension-routing compose correctly together.
+        let (_dir, mut conn) = open_test_db();
+        let obs_id = {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input("beta")).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+        let mut embedding = vec![0.0_f32; 768];
+        embedding[5] = 1.0;
+
+        let tx = conn.transaction().unwrap();
+        handle_insert_embedding(&tx, obs_id, &embedding, "bge-base-en-v1.5", true).unwrap();
+        tx.commit().unwrap();
+
+        let in_768_i8: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM observations_vec_768_i8 WHERE rowid = ?1",
+                params![obs_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_768_i8, 1, "768-dim quantized vector must land in observations_vec_768_i8");
+
+        let hits = crate::read::search_dense(&conn, &embedding, 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, obs_id);
+    }
+
+    #[test]
+    fn unsupported_embedding_dimension_is_rejected() {
+        let (_dir, mut conn) = open_test_db();
+        let obs_id = {
+            let tx = conn.transaction().unwrap();
+            let id = handle_save_observation_for_tests(&tx, save_input("gamma")).unwrap();
+            tx.commit().unwrap();
+            id.id
+        };
+        let bad = vec![0.0_f32; 512]; // not 384 or 768
+        let tx = conn.transaction().unwrap();
+        let err = handle_insert_embedding(&tx, obs_id, &bad, "mystery-model", false).unwrap_err();
+        assert!(format!("{err}").contains("512"), "{err}");
     }
 }

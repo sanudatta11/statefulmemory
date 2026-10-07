@@ -27,3 +27,17 @@ tempfile = { workspace = true }
 # Gate online integration tests that hit HuggingFace Hub.
 # Default `cargo test` MUST NOT trigger any network or model downloads.
 online-tests = []
+
+# Hardware acceleration backends for the BGE forward (opt-in; default is the
+# portable CPU gemm). Enable at build time, e.g.
+#   cargo build -p statefulmemory-cli --features statefulmemory-embed/accelerate
+# - accelerate: Apple Accelerate BLAS (macOS) — CPU, faster matmul.
+# - mkl:        Intel MKL (x86-64 Linux) — CPU, faster matmul.
+# - metal:      Apple Metal GPU (Apple Silicon) — runs the model on the GPU.
+accelerate = [
+    "candle-core/accelerate",
+    "candle-nn/accelerate",
+    "candle-transformers/accelerate",
+]
+mkl = ["candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
