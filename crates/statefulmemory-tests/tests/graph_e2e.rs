@@ -368,6 +368,39 @@ async fn graph_rpc_edge_cases() {
             .expect("save_observation");
     }
 
+    // Save-path graph indexing is fire-and-forget (Phase 6.4): the save reply
+    // returns before IndexGraph runs on the write thread. Poll the entity list
+    // until both observations are indexed, so the assertions below (especially
+    // the hops clamp, which compares two graph_query responses) see the
+    // complete graph rather than whatever partial state the write thread has
+    // reached.
+    //
+    // Seed: two saves -> five entities (validate/source-file/boot from t1, plus
+    // step/refresh from t2), six edges (three per observation).
+    let mut indexed = false;
+    for _ in 0..100 {
+        let entities = client
+            .list_entities(ListEntitiesRequest {
+                project_name: project.into(),
+                norm_prefix: String::new(),
+                kind_filter: String::new(),
+                limit: 50,
+            })
+            .await
+            .expect("list_entities")
+            .into_inner();
+        if entities.entities.len() >= 5 {
+            indexed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        indexed,
+        "graph indexing did not reach 5 entities within 10s; the save path must \
+         index before graph_query asserts"
+    );
+
     // Empty prefix = all entities, limit applies (ListEntities proto contract).
     let all = client
         .list_entities(ListEntitiesRequest {
