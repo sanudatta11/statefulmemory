@@ -302,23 +302,51 @@ pub fn get_entity_by_id(conn: &Connection, id: i64) -> Result<statefulmemory_cor
 }
 
 /// Batch entity fetch by primary key. Order = input order, deduped.
+///
+/// The `IN (...)` query below has no `ORDER BY`, so SQLite is free to return
+/// rows in whatever order the query plan yields — which varies by SQLite
+/// version and page layout. Callers rely on input order (`graph_query` builds
+/// its id list in traversal order, seed last, and compares whole responses
+/// across calls), so the order is re-imposed here rather than trusted from the
+/// engine.
 pub fn entities_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<statefulmemory_core::Entity>> {
     let mut out = Vec::new();
     if ids.is_empty() {
         return Ok(out);
     }
-    let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    // Dedupe the binding list so the SQL does not repeat a placeholder for an
+    // id the caller already sent.
+    let mut unique: Vec<i64> = Vec::with_capacity(ids.len());
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    for id in ids {
+        if seen.insert(*id) {
+            unique.push(*id);
+        }
+    }
+    let placeholders: String = unique.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql =
         format!("SELECT id, kind, name, norm_name FROM entities WHERE id IN ({placeholders})");
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| Error::internal(format!("entities_by_ids prepare: {e}")))?;
-    let bound: Vec<&dyn ToSql> = ids.iter().map(|id| id as &dyn ToSql).collect();
+    let bound: Vec<&dyn ToSql> = unique.iter().map(|id| id as &dyn ToSql).collect();
     let rows = stmt
         .query_map(params_from_iter(bound), entity_from_row)
         .map_err(|e| Error::internal(format!("entities_by_ids query: {e}")))?;
+
+    let mut by_id: std::collections::HashMap<i64, statefulmemory_core::Entity> =
+        std::collections::HashMap::with_capacity(unique.len());
     for r in rows {
-        out.push(r.map_err(|e| Error::internal(format!("entities_by_ids row: {e}")))?);
+        let entity = r.map_err(|e| Error::internal(format!("entities_by_ids row: {e}")))?;
+        by_id.insert(entity.id, entity);
+    }
+
+    // Emit in caller order; ids with no row are dropped rather than panicking.
+    out.reserve(unique.len());
+    for id in unique {
+        if let Some(entity) = by_id.remove(&id) {
+            out.push(entity);
+        }
     }
     Ok(out)
 }
@@ -898,6 +926,16 @@ mod tests {
         assert_eq!(list[0].id, a);
         assert!(entities_by_ids(&conn, &[]).unwrap().is_empty());
         assert!(entities_by_ids(&conn, &[999_999]).unwrap().is_empty());
+
+        // Order = input order, deduped (the contract graph_query relies on).
+        let b = upsert_entity(&conn, "concept", "keep-b", 2).unwrap();
+        let c = upsert_entity(&conn, "concept", "keep-c", 3).unwrap();
+        let ordered = entities_by_ids(&conn, &[c, a, b, c, 999_999]).unwrap();
+        assert_eq!(
+            ordered.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![c, a, b],
+            "entities_by_ids must return input order, deduped, missing dropped"
+        );
     }
 
     #[test]
