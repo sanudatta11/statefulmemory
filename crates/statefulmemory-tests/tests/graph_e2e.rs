@@ -344,7 +344,8 @@ async fn graph_rpc_edge_cases() {
         .expect("start_session");
 
     // Anchors → file + symbol entities; backticks → concept entities.
-    // Save RPC blocks until IndexGraph finishes (grx awaited in service).
+    // Save RPC does NOT block on IndexGraph (fire-and-forget, Phase 6.4); the
+    // poll below waits for it before the graph_query assertions.
     for (title, content, anchor) in [
         ("t1", "run `validate` now", "src/main.rs::boot"),
         ("t2", "then `refresh`", "src/main.rs::step"),
