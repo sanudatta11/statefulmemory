@@ -147,20 +147,17 @@ jobs:
           case "${{ inputs.dataset }}" in
             smoke)
               "$BIN" eval --smoke --benchmark locomo \
-                --mode hybrid-rerank --k 20 --evidence-window 6 \
                 --save-scorecard ./eval/scorecard.json --output json \
                 > ./eval/scorecard_output.json
               ;;
             limit50)
               "$BIN" eval --benchmark locomo --limit 50 --lexical-judge \
-                --mode hybrid-rerank --k 20 --evidence-window 6 \
                 --save-scorecard ./eval/scorecard.json --output json \
                 > ./eval/scorecard_output.json
               ;;
             full)
               # full = all non-adversarial queries (stratified limit 1540)
               "$BIN" eval --benchmark locomo --limit 1540 --lexical-judge \
-                --mode hybrid-rerank --k 20 --evidence-window 6 \
                 --save-scorecard ./eval/scorecard.json --output json \
                 > ./eval/scorecard_output.json
               ;;
@@ -200,20 +197,17 @@ jobs:
             case "${{ inputs.dataset }}" in
               smoke)
                 "$BIN" eval --smoke --benchmark locomo \
-                  --mode hybrid-rerank --k 20 --evidence-window 6 \
                   --save-scorecard ./eval/scorecard.json --output json \
                   > ./eval/scorecard_output.json
                 ;;
               limit50)
                 "$BIN" eval --benchmark locomo --limit 50 \
-                  --mode hybrid-rerank --k 20 --evidence-window 6 \
                   --save-scorecard ./eval/scorecard.json --output json \
                   > ./eval/scorecard_output.json
                 ;;
               full)
                 # full = all non-adversarial queries (stratified limit 1540)
                 "$BIN" eval --benchmark locomo --limit 1540 \
-                  --mode hybrid-rerank --k 20 --evidence-window 6 \
                   --save-scorecard ./eval/scorecard.json --output json \
                   > ./eval/scorecard_output.json
                 ;;
