@@ -14,7 +14,14 @@
 //     compare against the baseline's multi-hop slice (same ± 1.0 pt rule).
 //     Once the graph gate (+5 pts) is exercised this is where it lands.
 
-import { readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname } from 'node:path';
 
 const [, , cardPath, baselinePath] = process.argv;
 if (!cardPath || !baselinePath) {
@@ -31,10 +38,18 @@ function exit(msg, code = 1) {
   process.exit(code);
 }
 
+if (!existsSync(cardPath)) {
+  exit(
+    `scorecard not found at ${cardPath}; the benchmark step did not produce a scorecard. ` +
+      'Inspect the benchmark output and recovery artifact before debugging the gate.',
+  );
+}
+
 let baseline;
 try {
   baseline = readJson(baselinePath);
 } catch {
+  mkdirSync(dirname(baselinePath), { recursive: true });
   copyFileSync(cardPath, baselinePath);
   writeFileSync(
     baselinePath,
