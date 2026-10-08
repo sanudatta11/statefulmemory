@@ -119,10 +119,15 @@ fn is_locomo_multihop(category: Option<&str>) -> bool {
 /// Abort after this many consecutive answer-LLM failures (bad auth / model).
 const CONSECUTIVE_ANSWER_FAIL_ABORT: usize = 5;
 
-/// Publishable if skipped queries stay within this fraction of requested
-/// (integer percent: 1 → allow `total/100` skips, min 1 when total ≥ 100).
+/// Publishable if skipped queries stay within this fraction of requested.
 /// Above that the denominator is too tainted — fail before scorecard.
 const MAX_SKIPPED_PCT: usize = 1;
+
+fn max_allowed_skips(total_requested: usize) -> usize {
+    // Use floor for the explicit 1% budget, but allow one transient failure on
+    // small runs so smoke/limit50 jobs are not made needlessly brittle.
+    (total_requested * MAX_SKIPPED_PCT / 100).max(1)
+}
 
 /// True when `skipped` exceeds [`MAX_SKIPPED_PCT`] of `total_requested`.
 fn skips_exceed_tolerance(skipped: usize, total_requested: usize) -> bool {
@@ -132,10 +137,7 @@ fn skips_exceed_tolerance(skipped: usize, total_requested: usize) -> bool {
     if total_requested == 0 {
         return true;
     }
-    // Floor: never allow more than a strict 1% (min 1 skip so tiny runs
-    // can tolerate a single flake).
-    let allowed = (total_requested / 100 * MAX_SKIPPED_PCT).max(1);
-    skipped > allowed
+    skipped > max_allowed_skips(total_requested)
 }
 
 /// Resolve eval query concurrency from env (default 4, clamp 1..=16).
@@ -1544,6 +1546,7 @@ mod tests {
     #[test]
     fn skip_tolerance_allows_one_percent() {
         assert!(!skips_exceed_tolerance(0, 1540));
+        assert!(!skips_exceed_tolerance(2, 1540));
         assert!(!skips_exceed_tolerance(1, 1540));
         assert!(!skips_exceed_tolerance(15, 1540));
         assert!(skips_exceed_tolerance(16, 1540));

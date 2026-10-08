@@ -176,24 +176,39 @@ jobs:
           export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
           BIN=target/release/statefulmemory
           mkdir -p ./eval
-          case "${{ inputs.dataset }}" in
-            smoke)
-              "$BIN" eval --smoke --benchmark locomo \
-                --save-scorecard ./eval/scorecard.json --output json \
-                > ./eval/scorecard_output.json
-              ;;
-            limit50)
-              "$BIN" eval --benchmark locomo --limit 50 \
-                --save-scorecard ./eval/scorecard.json --output json \
-                > ./eval/scorecard_output.json
-              ;;
-            full)
-              # full = all non-adversarial queries (stratified limit 1540)
-              "$BIN" eval --benchmark locomo --limit 1540 \
-                --save-scorecard ./eval/scorecard.json --output json \
-                > ./eval/scorecard_output.json
-              ;;
-          esac
+          for attempt in 1 2; do
+            echo "LLM benchmark attempt ${attempt}/2"
+            set +e
+            case "${{ inputs.dataset }}" in
+              smoke)
+                "$BIN" eval --smoke --benchmark locomo \
+                  --save-scorecard ./eval/scorecard.json --output json \
+                  > ./eval/scorecard_output.json
+                ;;
+              limit50)
+                "$BIN" eval --benchmark locomo --limit 50 \
+                  --save-scorecard ./eval/scorecard.json --output json \
+                  > ./eval/scorecard_output.json
+                ;;
+              full)
+                # full = all non-adversarial queries (stratified limit 1540)
+                "$BIN" eval --benchmark locomo --limit 1540 \
+                  --save-scorecard ./eval/scorecard.json --output json \
+                  > ./eval/scorecard_output.json
+                ;;
+            esac
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -eq 2 ]; then
+              echo "LLM benchmark failed after ${attempt} attempts" >&2
+              exit "$status"
+            fi
+            echo "Transient LLM/provider failure (exit ${status}); retrying in 30s" >&2
+            sleep 30
+          done
           cat ./eval/scorecard.json
 
       # Regression gate (Stage 0b): fail the run if accuracy drops > 1 pt or
