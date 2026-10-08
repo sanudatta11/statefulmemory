@@ -146,6 +146,7 @@ pub async fn prewarm_project_embeddings(
     embedder: Arc<dyn Embedder>,
     cache: Arc<EmbeddingCache>,
 ) -> Result<()> {
+    let chunks_enabled = eval_chunks_enabled();
     std::env::set_var("STATEFULMEMORY_DATA_DIR", data_dir);
     paths::ensure_dirs(data_dir).ok();
     let registry = ProjectRegistry::new(64, 1, Duration::from_millis(50));
@@ -170,7 +171,7 @@ pub async fn prewarm_project_embeddings(
                 |row| row.get(0),
             )
             .unwrap_or(0);
-        if live_count > 0 && stored_count >= live_count {
+        if live_count > 0 && stored_count >= live_count && !chunks_enabled {
             continue;
         }
 
@@ -250,8 +251,63 @@ pub async fn prewarm_project_embeddings(
                 .context("await project embedding write")?
                 .with_context(|| format!("store project embedding for '{project}'"))?;
         }
+
+        if chunks_enabled {
+            let chunk_words = std::env::var("STATEFULMEMORY_EVAL_CHUNK_WORDS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(350)
+                .max(1);
+            let chunk_overlap = std::env::var("STATEFULMEMORY_EVAL_CHUNK_OVERLAP_WORDS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(50);
+            let mut chunk_replies = Vec::new();
+            for (observation_id, _, content) in &rows {
+                let chunks = statefulmemory_embed::chunker::chunk_by_words(
+                    content,
+                    chunk_words,
+                    chunk_overlap,
+                );
+                if chunks.len() <= 1 {
+                    continue;
+                }
+                let refs = chunks.iter().map(String::as_str).collect::<Vec<_>>();
+                let vectors = embedder
+                    .embed(&refs)
+                    .with_context(|| format!("embed chunks for observation {observation_id}"))?;
+                let chunk_rows = chunks.into_iter().zip(vectors).collect::<Vec<_>>();
+                let (reply, receiver) = oneshot::channel();
+                state
+                    .write
+                    .send(WriteRequest::InsertChunks {
+                        obs_id: *observation_id,
+                        chunks: chunk_rows,
+                        reply,
+                    })
+                    .with_context(|| format!("queue chunks for observation {observation_id}"))?;
+                chunk_replies.push(receiver);
+            }
+            for receiver in chunk_replies {
+                receiver
+                    .await
+                    .context("await chunk write")?
+                    .context("store chunk vectors")?;
+            }
+        }
     }
     Ok(())
+}
+
+fn eval_chunks_enabled() -> bool {
+    std::env::var("STATEFULMEMORY_EVAL_CHUNKS")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn embed_query_cached(
@@ -306,9 +362,31 @@ fn retrieve_hybrid_sync(
     // 3. BM25 + ANN (sequential under the project lock).
     let bm25_ids = bm25_top_n(registry.clone(), project, query, 100).context("bm25 top-n")?;
     let ann_ids = ann_top_n(data_dir, project, &query_vec, 100).context("ann top-n")?;
+    let chunk_ids = if eval_chunks_enabled() {
+        let state = registry
+            .get_or_open(project)
+            .with_context(|| format!("open project '{project}' for chunk search"))?;
+        let conn = state
+            .open_read_conn()
+            .context("open project DB for chunk search")?;
+        statefulmemory_storage::read::search_dense_chunks_scored(&conn, &query_vec, 100)
+            .context("search chunk vectors")?
+            .into_iter()
+            .map(|(observation, _)| observation.id as u64)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let graph_ids = if eval_graph_enabled() {
+        graph_candidate_ids(&registry, project, query).context("search graph candidates")?
+    } else {
+        Vec::new()
+    };
+    let mut auxiliary_ids = chunk_ids;
+    auxiliary_ids.extend(graph_ids);
 
     // 4. Fuse — or fall back to BM25 if dense returned nothing (EH-6).
-    let fused: Vec<u64> = if ann_ids.is_empty() {
+    let fused: Vec<u64> = if ann_ids.is_empty() && auxiliary_ids.is_empty() {
         tracing::warn!(
             target: "statefulmemory_eval::retrieve_hybrid",
             project = %project,
@@ -316,7 +394,8 @@ fn retrieve_hybrid_sync(
         );
         bm25_ids
     } else {
-        hybrid::fuse_candidate_trace(&bm25_ids, &ann_ids, &[], hybrid::DEFAULT_RRF_K).ids()
+        hybrid::fuse_candidate_trace(&bm25_ids, &ann_ids, &auxiliary_ids, hybrid::DEFAULT_RRF_K)
+            .ids()
     };
     let candidate_ids = fused.clone();
     let top_k: Vec<u64> = fused.into_iter().take(k.max(0) as usize).collect();
@@ -329,6 +408,75 @@ fn retrieve_hybrid_sync(
         latency: t0.elapsed(),
         candidate_ids,
     })
+}
+
+fn eval_graph_enabled() -> bool {
+    std::env::var("STATEFULMEMORY_EVAL_GRAPH")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn graph_candidate_ids(registry: &ProjectRegistry, project: &str, query: &str) -> Result<Vec<u64>> {
+    let mut names = statefulmemory_extract::entity_resolve::query_entities(query);
+    for token in query.split_whitespace() {
+        let token = token.trim_matches(|c: char| !c.is_ascii_alphabetic());
+        let mut chars = token.chars();
+        let Some(first) = chars.next() else { continue };
+        if first.is_ascii_uppercase()
+            && chars.clone().all(|c| c.is_ascii_lowercase())
+            && (2..=32).contains(&token.len())
+            && !matches!(token, "What" | "When" | "Where" | "Which" | "How")
+            && !names.iter().any(|name| name == token)
+        {
+            names.push(token.to_string());
+        }
+    }
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let state = registry
+        .get_or_open(project)
+        .with_context(|| format!("open project '{project}' for graph search"))?;
+    let conn = state
+        .open_read_conn()
+        .context("open graph search connection")?;
+    let mut seed_ids = Vec::new();
+    for name in names {
+        let norm = statefulmemory_core::config::normalize_entity_name(&name);
+        if let Some(entity) = statefulmemory_storage::graph::entity_lookup(&conn, &norm, 8)
+            .into_iter()
+            .find(|entity| entity.norm_name == norm)
+        {
+            seed_ids.push(entity.id);
+        }
+    }
+    seed_ids.sort_unstable();
+    seed_ids.dedup();
+    if seed_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut entity_ids = seed_ids.clone();
+    for seed in seed_ids {
+        entity_ids.extend(
+            statefulmemory_storage::graph::neighbors(&conn, seed, 2, &["mentions"], 256)
+                .into_iter()
+                .map(|(entity_id, _)| entity_id),
+        );
+    }
+    entity_ids.sort_unstable();
+    entity_ids.dedup();
+    Ok(
+        statefulmemory_storage::graph::observations_for_entities(&conn, &entity_ids, 100)
+            .into_iter()
+            .map(|id| id as u64)
+            .collect(),
+    )
 }
 
 fn retrieve_hybrid_production_profile_sync(

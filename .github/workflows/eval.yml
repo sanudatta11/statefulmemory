@@ -132,6 +132,10 @@ jobs:
         if: inputs.judge == 'lexical'
         env:
           STATEFULMEMORY_EVAL_DATA: ${{ github.workspace }}/data
+          STATEFULMEMORY_EVAL_CHUNKS: "true"
+          STATEFULMEMORY_EVAL_CHUNK_WORDS: "350"
+          STATEFULMEMORY_EVAL_CHUNK_OVERLAP_WORDS: "50"
+          STATEFULMEMORY_EVAL_GRAPH: "true"
         run: |
           set -euo pipefail
           export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
@@ -167,6 +171,11 @@ jobs:
           STATEFULMEMORY_LLM_PROVIDER: opencode
           STATEFULMEMORY_LLM_BIN: opencode
           STATEFULMEMORY_LLM_MODEL: openai/gpt-4o-mini
+          STATEFULMEMORY_EVAL_HYDE: "true"
+          STATEFULMEMORY_EVAL_CHUNKS: "true"
+          STATEFULMEMORY_EVAL_CHUNK_WORDS: "350"
+          STATEFULMEMORY_EVAL_CHUNK_OVERLAP_WORDS: "50"
+          STATEFULMEMORY_EVAL_GRAPH: "true"
           # 8 thrashed OpenAI 200k TPM (e2e 98–319s, ~1.6 q/min). 6 balances
           # fan-out vs backoff; clamp allows 16.
           STATEFULMEMORY_EVAL_CONCURRENCY: "6"

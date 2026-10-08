@@ -60,6 +60,7 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                         rerank: false,
                         production_profile: false,
                         decay_lambda: 0.0,
+                        hyde: false,
                     },
                     eval_data_dir,
                     true,
@@ -77,6 +78,7 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                         rerank: false,
                         production_profile: false,
                         decay_lambda: 0.0,
+                        hyde: false,
                     },
                     eval_data_dir,
                     true,
@@ -105,6 +107,14 @@ async fn run_eval(args: EvalArgs, output_fmt: Option<OutputFormat>) -> Result<()
                 }
             }
             retrieval.production_profile = args.production_profile;
+            retrieval.hyde = std::env::var("STATEFULMEMORY_EVAL_HYDE")
+                .map(|v| {
+                    matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false);
 
             let shards = if matches!(
                 benchmark_kind,

@@ -57,9 +57,13 @@ pub async fn ingest_memories(
     let mut session_replies: Vec<
         oneshot::Receiver<statefulmemory_core::Result<statefulmemory_storage::Session>>,
     > = Vec::new();
-    let mut obs_replies: Vec<
+    let mut obs_replies: Vec<(
+        Arc<ProjectState>,
+        String,
+        String,
         oneshot::Receiver<statefulmemory_core::Result<statefulmemory_storage::Observation>>,
-    > = Vec::new();
+    )> = Vec::new();
+    let graph_enabled = eval_graph_enabled();
 
     // Phase 1: fire all writes, collecting reply receivers.
     for (idx, mem) in memories.iter().enumerate() {
@@ -131,7 +135,7 @@ pub async fn ingest_memories(
                 reply: reply_tx,
             })
             .context("send SaveObservation")?;
-        obs_replies.push(reply_rx);
+        obs_replies.push((project, mem.title.clone(), mem.content.clone(), reply_rx));
     }
 
     // Phase 2: drain replies. Sessions first (FK ordering is guaranteed by
@@ -141,13 +145,58 @@ pub async fn ingest_memories(
         rx.await.context("await UpsertSession reply")??;
     }
     let mut total_written = 0usize;
-    for rx in obs_replies {
-        rx.await.context("await SaveObservation reply")??;
+    for (project, title, content, rx) in obs_replies {
+        let observation = rx.await.context("await SaveObservation reply")??;
+        if graph_enabled {
+            let anchors = eval_graph_name_anchors(&content);
+            let (reply_tx, reply_rx) = oneshot::channel();
+            project
+                .write
+                .send(WriteRequest::IndexGraph {
+                    observation_id: observation.id,
+                    title,
+                    content,
+                    anchors,
+                    created_at_epoch: 0,
+                    reply: reply_tx,
+                })
+                .context("send IndexGraph")?;
+            reply_rx.await.context("await IndexGraph reply")??;
+        }
         total_written += 1;
     }
 
     info!(total = total_written, "ingest complete");
     Ok(total_written)
+}
+
+fn eval_graph_enabled() -> bool {
+    std::env::var("STATEFULMEMORY_EVAL_GRAPH")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn eval_graph_name_anchors(content: &str) -> Vec<String> {
+    content
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphabetic()))
+        .filter(|token| {
+            let mut chars = token.chars();
+            let Some(first) = chars.next() else {
+                return false;
+            };
+            first.is_ascii_uppercase()
+                && chars.clone().all(|c| c.is_ascii_lowercase())
+                && (2..=32).contains(&token.len())
+                && !matches!(*token, "The" | "This" | "That" | "What" | "When" | "Where")
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// Stream-ingest a large BEAM-scale dataset without materialising the full

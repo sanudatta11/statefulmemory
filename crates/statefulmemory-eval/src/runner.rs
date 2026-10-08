@@ -906,6 +906,39 @@ async fn eval_one_query(
         retrieval.decay_lambda
     };
 
+    // HyDE is retrieval-only: it may improve dense recall, but the answer and
+    // judge must continue to see the original benchmark question. A failed
+    // expansion is non-fatal because the normal query remains valid.
+    let retrieval_query = if retrieval.hyde && !lexical_judge {
+        if let Some(judge_client) = judge {
+            let prompt = format!(
+                "Write a concise factual passage that could answer this question. \
+                 Output only the passage and do not mention this instruction.\n\nQuestion: {}",
+                q.question
+            );
+            match judge_client
+                .answer(
+                    "You generate short hypothetical evidence for retrieval.",
+                    &prompt,
+                )
+                .await
+            {
+                Ok(hypothesis) if !hypothesis.trim().is_empty() => {
+                    format!("{}\n{}", q.question, hypothesis.trim())
+                }
+                Ok(_) => q.question.clone(),
+                Err(error) => {
+                    tracing::debug!(query_id = %q.id, %error, "eval HyDE failed; using original query");
+                    q.question.clone()
+                }
+            }
+        } else {
+            q.question.clone()
+        }
+    } else {
+        q.question.clone()
+    };
+
     let mut rerank_skipped = false;
     let mut rerank_timed_out = false;
     let mut candidate_profile = match retrieval.mode {
@@ -917,7 +950,7 @@ async fn eval_one_query(
     let mut fact_candidate_ids = Vec::new();
     let (hits, retrieval_us, rerank_us) = match retrieval.mode {
         RetrievalMode::Bm25 => {
-            let ret = retrieve(data_dir, &project, &q.question, k)
+            let ret = retrieve(data_dir, &project, &retrieval_query, k)
                 .with_context(|| format!("retrieve for query '{}'", q.id))?;
             (ret.hits, ret.latency.as_micros() as u64, None)
         }
@@ -935,15 +968,16 @@ async fn eval_one_query(
                 k
             };
             let facts_db_path = facts_db_path_for(benchmark, data_dir);
-            // multi-hop + configured rerank: always rerank (selection is the
-            // failure mode). Other queries: ambiguity gate (top1−top2 < 0.15).
-            let force_rerank = retrieval.rerank && multihop;
+            // Multi-hop and temporal questions always rerank: selection and
+            // event-version choice are the failure modes. Other queries use
+            // the ambiguity gate (top1−top2 < 0.15).
+            let force_rerank = retrieval.rerank && (multihop || temporal);
             let mut rerank_ambiguous = true;
             let (raw_hits, raw_retrieval_us) = if retrieval.production_profile {
                 let ret = crate::retrieve_hybrid::retrieve_hybrid_production_profile(
                     data_dir,
                     &project,
-                    &q.question,
+                    &retrieval_query,
                     retrieve_k,
                     embedder.clone(),
                     cache.clone(),
@@ -958,7 +992,7 @@ async fn eval_one_query(
                     data_dir,
                     &facts_db_path,
                     &project,
-                    &q.question,
+                    &retrieval_query,
                     retrieve_k,
                     evidence_window,
                     embedder.clone(),
@@ -985,7 +1019,7 @@ async fn eval_one_query(
                     let fallback = crate::retrieve_hybrid::retrieve_hybrid(
                         data_dir,
                         &project,
-                        &q.question,
+                        &retrieval_query,
                         retrieve_k,
                         embedder.clone(),
                         cache.clone(),
@@ -1005,7 +1039,7 @@ async fn eval_one_query(
                     let obs = crate::retrieve_hybrid::retrieve_hybrid(
                         data_dir,
                         &project,
-                        &q.question,
+                        &retrieval_query,
                         retrieve_k,
                         embedder.clone(),
                         cache.clone(),
@@ -1037,6 +1071,11 @@ async fn eval_one_query(
                 (ret.hits, ret.latency.as_micros() as u64)
             };
 
+            let raw_hits = if temporal {
+                temporal_reorder_hits(raw_hits, &q.question)
+            } else {
+                raw_hits
+            };
             if let Some(claude) = rerank_claude {
                 if force_rerank || rerank_ambiguous {
                     let bounded = crate::rerank::rerank_with_budget(
@@ -1206,6 +1245,54 @@ async fn eval_one_query(
         stale_served,
         rerank_skipped,
     })
+}
+
+fn temporal_reorder_hits(mut hits: Vec<String>, question: &str) -> Vec<String> {
+    let terms = question
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|token| {
+            token.len() >= 3
+                && (token.chars().all(|c| c.is_ascii_digit())
+                    || matches!(
+                        token.as_str(),
+                        "before"
+                            | "after"
+                            | "earlier"
+                            | "later"
+                            | "latest"
+                            | "first"
+                            | "last"
+                            | "when"
+                            | "date"
+                            | "day"
+                            | "week"
+                            | "month"
+                            | "year"
+                            | "january"
+                            | "february"
+                            | "march"
+                            | "april"
+                            | "may"
+                            | "june"
+                            | "july"
+                            | "august"
+                            | "september"
+                            | "october"
+                            | "november"
+                            | "december"
+                    ))
+        })
+        .collect::<std::collections::HashSet<_>>();
+    if terms.is_empty() {
+        return hits;
+    }
+    hits.sort_by_key(|hit| {
+        let lower = hit.to_ascii_lowercase();
+        let matched = terms.iter().filter(|term| lower.contains(*term)).count();
+        std::cmp::Reverse(matched)
+    });
+    hits
 }
 
 fn is_locomo_temporal(category: Option<&str>) -> bool {
@@ -1541,6 +1628,16 @@ mod tests {
         assert_eq!(evidence_window_for_question(2, "When did Caroline go?"), 4);
         assert_eq!(evidence_window_for_question(2, "What is her job?"), 2);
         assert_eq!(evidence_window_for_question(5, "the date of the trip"), 5);
+    }
+
+    #[test]
+    fn temporal_reorder_prefers_hits_matching_question_time_terms() {
+        let hits = vec![
+            "[2022-05-01] Caroline visited the museum".into(),
+            "[2023-06-12] Caroline visited the park".into(),
+        ];
+        let reordered = temporal_reorder_hits(hits, "What happened in 2023?");
+        assert!(reordered[0].contains("2023"));
     }
 
     #[test]

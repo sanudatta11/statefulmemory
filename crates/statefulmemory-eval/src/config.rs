@@ -38,6 +38,9 @@ pub struct RetrievalConfig {
     /// `combined *= exp(-decay_lambda * age_days)`. Default 0.005 gives
     /// a half-life of ~138 days. Set to 0.0 to disable decay entirely.
     pub decay_lambda: f64,
+    /// Generate a hypothetical answer and append it only to the retrieval
+    /// query. The benchmark answer/judge still receives the original question.
+    pub hyde: bool,
 }
 
 impl Default for RetrievalConfig {
@@ -49,6 +52,7 @@ impl Default for RetrievalConfig {
             rerank: false,
             production_profile: false,
             decay_lambda: statefulmemory_retrieval::scoring::DEFAULT_DECAY_LAMBDA,
+            hyde: false,
         }
     }
 }
@@ -73,6 +77,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             rerank: true,
             production_profile: false,
             decay_lambda: statefulmemory_retrieval::scoring::DEFAULT_DECAY_LAMBDA,
+            hyde: false,
         },
         BenchmarkKind::Longmemeval => RetrievalConfig {
             mode: RetrievalMode::HybridRerank,
@@ -81,6 +86,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             rerank: true,
             production_profile: false,
             decay_lambda: statefulmemory_retrieval::scoring::DEFAULT_DECAY_LAMBDA,
+            hyde: false,
         },
         BenchmarkKind::Beam1m | BenchmarkKind::Beam10m => RetrievalConfig {
             mode: RetrievalMode::Hybrid,
@@ -89,6 +95,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             rerank: false,
             production_profile: false,
             decay_lambda: 0.0,
+            hyde: false,
         },
         BenchmarkKind::Staleness => RetrievalConfig {
             mode: RetrievalMode::Bm25,
@@ -97,6 +104,7 @@ pub fn default_profile(b: BenchmarkKind) -> RetrievalConfig {
             rerank: false,
             production_profile: false,
             decay_lambda: 0.0,
+            hyde: false,
         },
     }
 }
