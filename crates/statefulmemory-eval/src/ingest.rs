@@ -30,6 +30,13 @@ use statefulmemory_storage::{
 
 use crate::datasets::EvalMemory;
 
+type PendingObservation = (
+    Arc<ProjectState>,
+    String,
+    String,
+    oneshot::Receiver<statefulmemory_core::Result<statefulmemory_storage::Observation>>,
+);
+
 /// Ingest a slice of memories into a fresh registry rooted at `data_dir`.
 ///
 /// Returns the total number of observations written.
@@ -57,12 +64,7 @@ pub async fn ingest_memories(
     let mut session_replies: Vec<
         oneshot::Receiver<statefulmemory_core::Result<statefulmemory_storage::Session>>,
     > = Vec::new();
-    let mut obs_replies: Vec<(
-        Arc<ProjectState>,
-        String,
-        String,
-        oneshot::Receiver<statefulmemory_core::Result<statefulmemory_storage::Observation>>,
-    )> = Vec::new();
+    let mut obs_replies: Vec<PendingObservation> = Vec::new();
     let graph_enabled = eval_graph_enabled();
 
     // Phase 1: fire all writes, collecting reply receivers.
