@@ -16,7 +16,7 @@ on:
       judge:
         description: "Scoring — lexical = retrieval-only (free), llm = agent answer + LLM judge (needs OPENAI_API_KEY secret, hybrid+rerank)"
         type: choice
-        default: lexical
+        default: llm
         options:
           - lexical
           - llm
@@ -136,6 +136,9 @@ jobs:
           STATEFULMEMORY_EVAL_CHUNK_WORDS: "350"
           STATEFULMEMORY_EVAL_CHUNK_OVERLAP_WORDS: "50"
           STATEFULMEMORY_EVAL_GRAPH: "true"
+          STATEFULMEMORY_GRAPH_ENABLED: "true"
+          STATEFULMEMORY_GRAPH_HOPS: "2"
+          STATEFULMEMORY_GRAPH_RANKER: ppr
         run: |
           set -euo pipefail
           export STATEFULMEMORY_BGE_MODEL_DIR="${HOME}/.statefulmemory-models/bge-small"
@@ -144,17 +147,20 @@ jobs:
           case "${{ inputs.dataset }}" in
             smoke)
               "$BIN" eval --smoke --benchmark locomo \
+                --mode hybrid-rerank --k 20 --evidence-window 6 \
                 --save-scorecard ./eval/scorecard.json --output json \
                 > ./eval/scorecard_output.json
               ;;
             limit50)
               "$BIN" eval --benchmark locomo --limit 50 --lexical-judge \
+                --mode hybrid-rerank --k 20 --evidence-window 6 \
                 --save-scorecard ./eval/scorecard.json --output json \
                 > ./eval/scorecard_output.json
               ;;
             full)
               # full = all non-adversarial queries (stratified limit 1540)
               "$BIN" eval --benchmark locomo --limit 1540 --lexical-judge \
+                --mode hybrid-rerank --k 20 --evidence-window 6 \
                 --save-scorecard ./eval/scorecard.json --output json \
                 > ./eval/scorecard_output.json
               ;;
@@ -176,6 +182,9 @@ jobs:
           STATEFULMEMORY_EVAL_CHUNK_WORDS: "350"
           STATEFULMEMORY_EVAL_CHUNK_OVERLAP_WORDS: "50"
           STATEFULMEMORY_EVAL_GRAPH: "true"
+          STATEFULMEMORY_GRAPH_ENABLED: "true"
+          STATEFULMEMORY_GRAPH_HOPS: "2"
+          STATEFULMEMORY_GRAPH_RANKER: ppr
           # 8 thrashed OpenAI 200k TPM (e2e 98–319s, ~1.6 q/min). 6 balances
           # fan-out vs backoff; clamp allows 16.
           STATEFULMEMORY_EVAL_CONCURRENCY: "6"
@@ -191,17 +200,20 @@ jobs:
             case "${{ inputs.dataset }}" in
               smoke)
                 "$BIN" eval --smoke --benchmark locomo \
+                  --mode hybrid-rerank --k 20 --evidence-window 6 \
                   --save-scorecard ./eval/scorecard.json --output json \
                   > ./eval/scorecard_output.json
                 ;;
               limit50)
                 "$BIN" eval --benchmark locomo --limit 50 \
+                  --mode hybrid-rerank --k 20 --evidence-window 6 \
                   --save-scorecard ./eval/scorecard.json --output json \
                   > ./eval/scorecard_output.json
                 ;;
               full)
                 # full = all non-adversarial queries (stratified limit 1540)
                 "$BIN" eval --benchmark locomo --limit 1540 \
+                  --mode hybrid-rerank --k 20 --evidence-window 6 \
                   --save-scorecard ./eval/scorecard.json --output json \
                   > ./eval/scorecard_output.json
                 ;;
