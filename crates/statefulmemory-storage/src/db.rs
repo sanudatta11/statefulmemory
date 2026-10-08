@@ -71,7 +71,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "2");
+        assert_eq!(v, "17");
     }
 
     #[test]

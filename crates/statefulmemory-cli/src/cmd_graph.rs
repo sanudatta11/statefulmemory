@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use statefulmemory_proto as p;
 use statefulmemory_storage::graph;
 
-use crate::cli::{GraphQueryArgs, GraphVerb};
+use crate::cli::{GraphExplainArgs, GraphQueryArgs, GraphVerb};
 use crate::cmd_obs::Client;
 use crate::exit;
 use crate::formatter::Formatter;
@@ -44,6 +44,7 @@ pub async fn dispatch(
                 "error: graph query requires the daemon".into(),
             )),
         },
+        GraphVerb::Explain(a) => explain(project_name, fmt, a),
         GraphVerb::Stats => stats(project_name, fmt),
         GraphVerb::Rebuild(a) => rebuild(project_name, a.quiet),
     };
@@ -62,6 +63,109 @@ pub async fn dispatch(
             ExitCode::from(exit::from_status(s.code()))
         }
     }
+}
+
+fn explain(project_name: &str, fmt: Formatter, args: GraphExplainArgs) -> Result<(), VerbErr> {
+    let db_path = project_db_path(project_name);
+    if !db_path.exists() {
+        return Err(VerbErr::Local(format!(
+            "project database not found at {}",
+            db_path.display()
+        )));
+    }
+    let conn = statefulmemory_storage::db::open_read(&db_path)
+        .map_err(|e| VerbErr::Local(e.to_string()))?;
+    let norm = normalize_name(&args.entity);
+    let seeds = statefulmemory_storage::memory_graph::nodes_by_norm(&conn, &norm, 8)
+        .map_err(|e| VerbErr::Local(e.to_string()))?;
+    let seed = seeds
+        .iter()
+        .find(|n| n.norm_key == norm)
+        .or_else(|| seeds.first())
+        .ok_or_else(|| {
+            VerbErr::Usage(format!("error: graph node not found: \"{}\"", args.entity))
+        })?;
+    let relations = [
+        "mentions",
+        "co_occurs",
+        "contains",
+        "derived_from",
+        "subject",
+        "object",
+        "about",
+        "related_to",
+        "supports",
+        "contradicts",
+        "supersedes",
+        "follows",
+        "before",
+        "after",
+        "caused_by",
+        "part_of",
+        "same_as",
+    ];
+    let paths = statefulmemory_storage::memory_graph::bounded_walk(
+        &conn,
+        &[seed.id],
+        &relations,
+        args.hops.min(2),
+        256,
+        96,
+    )
+    .map_err(|e| VerbErr::Local(e.to_string()))?;
+    let mut rendered = Vec::new();
+    for path in paths {
+        let mut nodes = Vec::new();
+        for id in &path.node_ids {
+            if let Some(node) = statefulmemory_storage::memory_graph::node_by_id(&conn, *id)
+                .map_err(|e| VerbErr::Local(e.to_string()))?
+            {
+                nodes.push(serde_json::json!({"id": node.id, "kind": node.kind, "ref_key": node.ref_key, "label": node.label, "confidence": node.confidence}));
+            }
+        }
+        let mut edges = Vec::new();
+        for id in &path.edge_ids {
+            if let Some(edge) = statefulmemory_storage::memory_graph::edge_by_id(&conn, *id)
+                .map_err(|e| VerbErr::Local(e.to_string()))?
+            {
+                edges.push(serde_json::json!({"id": edge.id, "from": edge.from_node, "to": edge.to_node, "relation": edge.relation, "weight": edge.weight, "confidence": edge.confidence, "source": edge.source, "src_observation_id": edge.src_observation_id}));
+            }
+        }
+        rendered.push(serde_json::json!({"score": path.score, "hops": path.hops, "nodes": nodes, "edges": edges}));
+    }
+    let output = serde_json::json!({"seed": {"id": seed.id, "kind": seed.kind, "ref_key": seed.ref_key, "label": seed.label}, "paths": rendered});
+    match fmt {
+        Formatter::Text if !args.json => {
+            println!("graph explanation for {}", args.entity);
+            for path in output["paths"].as_array().into_iter().flatten() {
+                let labels = path["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|n| n["label"].as_str())
+                    .collect::<Vec<_>>();
+                println!(
+                    "  score={:.3} hops={} {}",
+                    path["score"].as_f64().unwrap_or(0.0),
+                    path["hops"].as_u64().unwrap_or(0),
+                    labels.join(" -> ")
+                );
+                for edge in path["edges"].as_array().into_iter().flatten() {
+                    println!(
+                        "    --[{} conf={:.2} src={}]--",
+                        edge["relation"].as_str().unwrap_or("?"),
+                        edge["confidence"].as_f64().unwrap_or(0.0),
+                        edge["src_observation_id"].to_string()
+                    );
+                }
+            }
+        }
+        _ => println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        ),
+    }
+    Ok(())
 }
 
 enum VerbErr {

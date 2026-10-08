@@ -8,9 +8,12 @@
 use anyhow::Result;
 use tracing::debug;
 
-use statefulmemory_extract::claude_cli::{
-    ClaudeCliClient, ClaudeClient, HAIKU_MODEL, SONNET_MODEL,
-};
+use statefulmemory_extract::claude_cli::{ClaudeCliClient, ClaudeClient};
+
+/// LoCoMo answer and judge calls use the same disclosed model. Retrieval and
+/// extraction may use other roles, but benchmark scoring must not drift with
+/// the host agent's default model.
+pub const LOCOMO_SCORING_MODEL: &str = "openai/gpt-4o-mini";
 
 pub struct JudgeClient {
     inner: ClaudeCliClient,
@@ -26,13 +29,13 @@ impl JudgeClient {
     /// Call the answer model with the assembled system + user prompt.
     pub async fn answer(&self, system: &str, question: &str) -> Result<String> {
         let full_prompt = format!("{system}\n\n{question}");
-        self.inner.ask(&full_prompt, SONNET_MODEL).await
+        self.inner.ask(&full_prompt, LOCOMO_SCORING_MODEL).await
     }
 
     /// Call the judge model; returns `true` if verdict is YES.
     pub async fn judge(&self, judge_prompt: &str) -> Result<bool> {
         let prompt = format!("You are a strict judge. Reply only YES or NO.\n\n{judge_prompt}");
-        let verdict = self.inner.ask(&prompt, HAIKU_MODEL).await?;
+        let verdict = self.inner.ask(&prompt, LOCOMO_SCORING_MODEL).await?;
         let verdict = verdict.trim().to_uppercase();
         debug!(verdict = %verdict, "judge verdict");
         Ok(verdict.starts_with("YES"))

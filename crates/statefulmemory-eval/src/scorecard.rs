@@ -225,7 +225,7 @@ fn llm_model_disclosure() -> (Option<String>, Option<String>) {
         (Some(p), Some(m)) => Some(format!("{p}/{m}")),
         (None, Some(m)) => Some(m),
         (Some(p), None) => Some(p),
-        (None, None) => None,
+        (None, None) => Some(crate::judge::LOCOMO_SCORING_MODEL.to_string()),
     };
     // Same pin for both roles unless split env is added later; disclose once each.
     (pin.clone(), pin)

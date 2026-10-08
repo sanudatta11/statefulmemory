@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 use crate::config::{RetrievalConfig, RetrievalMode};
 use crate::datasets::{EvalMemory, EvalQuery};
+use crate::diagnostics::FailureClass;
 use crate::judge::JudgeClient;
 use crate::prompt::{build_answer_prompt, build_judge_prompt};
 use crate::retrieve::retrieve;
@@ -253,6 +254,15 @@ pub struct QueryResult {
     /// True when LLM rerank was configured but skipped (ambiguity gate).
     #[serde(default)]
     pub rerank_skipped: bool,
+    /// Number of structured facts and raw observations supplied to the answer model.
+    #[serde(default)]
+    pub fact_count: usize,
+    #[serde(default)]
+    pub observation_count: usize,
+    #[serde(default)]
+    pub evidence_retrieved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<FailureClass>,
 }
 
 /// Per-category accuracy rollup.
@@ -417,12 +427,21 @@ impl RunReport {
         }
         md.push('\n');
         md.push_str("## Per-query results\n\n");
-        md.push_str("| id | correct | ret_ms | rerank_ms | answer_ms | judge_ms | e2e_ms | tokens |\n|---|---|---:|---:|---:|---:|---:|---:|\n");
+        md.push_str("| id | category | correct | evidence_rank | facts | observations | failure | ret_ms | rerank_ms | answer_ms | judge_ms | e2e_ms | tokens |\n|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|\n");
         for q in &self.query_results {
             md.push_str(&format!(
-                "| {} | {} | {:.1} | {} | {:.1} | {:.1} | {:.1} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {:.1} | {} | {:.1} | {:.1} | {:.1} | {} |\n",
                 q.id,
+                q.category.as_deref().unwrap_or("-"),
                 if q.correct { "✓" } else { "✗" },
+                q.gold_rank
+                    .map(|rank| rank.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                q.fact_count,
+                q.observation_count,
+                q.failure_class
+                    .map(|class| format!("{class:?}"))
+                    .unwrap_or_else(|| "-".into()),
                 q.retrieval_us as f64 / 1000.0,
                 q.rerank_us
                     .map(|value| format!("{:.1}", value as f64 / 1000.0))
@@ -1116,8 +1135,19 @@ async fn eval_one_query(
         }
     };
 
+    // Facts are the primary answer representation; raw observations remain
+    // attached as supporting excerpts for source verification and fallbacks.
+    let answer_hits = crate::context::pack_fact_context(&hits, 24_000);
+    let fact_count = answer_hits
+        .iter()
+        .filter(|h| h.starts_with("[Fact "))
+        .count();
+    let observation_count = answer_hits
+        .iter()
+        .filter(|h| h.starts_with("[Supporting observation]") || h.contains("supporting excerpts:"))
+        .count();
     let (system, user_msg, prompt_tokens) =
-        build_answer_prompt(&hits, &q.question, q.category.as_deref());
+        build_answer_prompt(&answer_hits, &q.question, q.category.as_deref());
     let gold_sub_rank = gold_substring_rank(&q.gold_answer, &hits);
     let primary_rank = primary_retrieval_rank(q, &hits);
 
@@ -1177,6 +1207,14 @@ async fn eval_one_query(
     };
 
     let end_to_end_us = t_start.elapsed().as_micros() as u64;
+    let evidence_retrieved = primary_rank.is_some();
+    let failure_class = crate::diagnostics::classify(
+        q.category.as_deref(),
+        evidence_retrieved,
+        fact_count,
+        observation_count,
+        correct,
+    );
 
     if let Some(w) = trace_writer {
         use std::io::Write;
@@ -1244,54 +1282,16 @@ async fn eval_one_query(
         hits_count: hits.len(),
         stale_served,
         rerank_skipped,
+        fact_count,
+        observation_count,
+        evidence_retrieved,
+        failure_class,
     })
 }
 
 fn temporal_reorder_hits(mut hits: Vec<String>, question: &str) -> Vec<String> {
-    let terms = question
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .map(str::to_ascii_lowercase)
-        .filter(|token| {
-            token.len() >= 3
-                && (token.chars().all(|c| c.is_ascii_digit())
-                    || matches!(
-                        token.as_str(),
-                        "before"
-                            | "after"
-                            | "earlier"
-                            | "later"
-                            | "latest"
-                            | "first"
-                            | "last"
-                            | "when"
-                            | "date"
-                            | "day"
-                            | "week"
-                            | "month"
-                            | "year"
-                            | "january"
-                            | "february"
-                            | "march"
-                            | "april"
-                            | "may"
-                            | "june"
-                            | "july"
-                            | "august"
-                            | "september"
-                            | "october"
-                            | "november"
-                            | "december"
-                    ))
-        })
-        .collect::<std::collections::HashSet<_>>();
-    if terms.is_empty() {
-        return hits;
-    }
-    hits.sort_by_key(|hit| {
-        let lower = hit.to_ascii_lowercase();
-        let matched = terms.iter().filter(|term| lower.contains(*term)).count();
-        std::cmp::Reverse(matched)
-    });
+    let constraint = crate::temporal::detect(question);
+    hits.sort_by_key(|hit| std::cmp::Reverse(crate::temporal::score(&constraint, hit)));
     hits
 }
 

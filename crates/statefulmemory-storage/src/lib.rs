@@ -22,6 +22,7 @@ pub mod global;
 pub mod graph;
 pub mod jobs;
 pub mod models;
+pub mod memory_graph;
 pub mod pragmas;
 pub mod projects_admin;
 pub mod prompts;

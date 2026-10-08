@@ -542,7 +542,6 @@ fn handle_save_observation(
                          code_anchor = COALESCE(?7, code_anchor),
                          exported_at = NULL
                    WHERE id = ?1",
-
                     params![
                         existing.id,
                         &input.title,
@@ -568,12 +567,11 @@ fn handle_save_observation(
             fetch_active_obs_by_hash_in_window(tx, &normalized_hash, input.dedupe_window_secs)?
         {
             tx.execute(
-                    "UPDATE observations
+                "UPDATE observations
                         SET duplicate_count = duplicate_count + 1,
                             last_seen_at = ?2,
                             exported_at = NULL
                       WHERE id = ?1",
-
                 params![existing.id, &now],
             )
             .map_err(|e| Error::internal(format!("hash-dedupe update: {e}")))?;
@@ -736,7 +734,6 @@ fn handle_save_session_summary(
     let n = tx
         .execute(
             "UPDATE sessions          SET summary = ?2, exported_at = NULL WHERE id = ?1",
-
             params![id, summary],
         )
         .map_err(|e| Error::internal(format!("update session summary: {e}")))?;
@@ -826,10 +823,7 @@ pub fn invalidate_observation_content(
     Ok(())
 }
 
-fn observation_id_for_key(
-    tx: &rusqlite::Transaction<'_>,
-    key: &ObservationKey,
-) -> Result<i64> {
+fn observation_id_for_key(tx: &rusqlite::Transaction<'_>, key: &ObservationKey) -> Result<i64> {
     match key {
         ObservationKey::Id(id) => Ok(*id),
         ObservationKey::SyncId(sync_id) => tx
@@ -917,7 +911,6 @@ fn handle_update_obs(
                  updated_at = ?9,
                  exported_at = NULL
             WHERE id = ?1",
-
         params![
             existing.id,
             title,
@@ -1003,7 +996,9 @@ fn handle_insert_embedding(
         // Best-effort: V14/V16 may not have run yet on a DB opened by an
         // older binary mid-rollout — log and continue rather than failing.
         if let Err(e) = tx.execute(
-            &format!("INSERT OR REPLACE INTO {vec_i8_table}(rowid, embedding) VALUES (?1, vec_int8(?2))"),
+            &format!(
+                "INSERT OR REPLACE INTO {vec_i8_table}(rowid, embedding) VALUES (?1, vec_int8(?2))"
+            ),
             params![obs_id, blob],
         ) {
             tracing::debug!(obs_id, dim, error = %e, "ANN int8 index insert failed (ANN index unavailable, legacy blob still written)");
@@ -1117,6 +1112,98 @@ fn handle_insert_facts(
         ])
         .map_err(|e| Error::internal(format!("insert fact: {e}")))?;
         let new_id = tx.last_insert_rowid();
+        // Keep the heterogeneous graph projection in the same write
+        // transaction as the authoritative fact. This makes fact chains
+        // immediately explainable even when async extraction finishes later.
+        let fact_node = crate::memory_graph::upsert_node(
+            tx,
+            "fact",
+            &format!("fact:{new_id}"),
+            &format!("{} {} {}", f.subject, f.predicate, f.object),
+            &format!(
+                "{}|{}|{}",
+                statefulmemory_core::config::normalize_entity_name(&f.subject),
+                statefulmemory_core::config::normalize_entity_name(&f.predicate),
+                statefulmemory_core::config::normalize_entity_name(&f.object)
+            ),
+            None,
+            salience,
+            "llm",
+        )?;
+        let observation_node = crate::memory_graph::upsert_node(
+            tx,
+            "observation",
+            &format!("observation:{obs_id}"),
+            &format!("observation:{obs_id}"),
+            &format!("observation:{obs_id}"),
+            None,
+            1.0,
+            "deterministic",
+        )?;
+        crate::memory_graph::insert_edge(
+            tx,
+            fact_node,
+            observation_node,
+            "derived_from",
+            1.0,
+            salience,
+            f.temporal.as_deref(),
+            None,
+            "llm",
+            Some(obs_id),
+            None,
+            None,
+        )?;
+        for (relation, value) in [
+            ("subject", f.subject.as_str()),
+            ("object", f.object.as_str()),
+        ] {
+            let norm = statefulmemory_core::config::normalize_entity_name(value);
+            if norm.is_empty() {
+                continue;
+            }
+            let existing_entity_id: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM entities WHERE norm_name=?1",
+                    [&norm],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| Error::internal(format!("lookup fact entity: {e}")))?;
+            let entity_id = match existing_entity_id {
+                Some(id) => id,
+                None => crate::graph::upsert_entity(
+                    tx,
+                    "concept",
+                    value,
+                    chrono::Utc::now().timestamp(),
+                )?,
+            };
+            let entity_node = crate::memory_graph::upsert_node(
+                tx,
+                "entity",
+                &format!("entity:{entity_id}"),
+                value,
+                &norm,
+                None,
+                salience,
+                "llm",
+            )?;
+            crate::memory_graph::insert_edge(
+                tx,
+                fact_node,
+                entity_node,
+                relation,
+                1.0,
+                salience,
+                f.temporal.as_deref(),
+                None,
+                "llm",
+                Some(obs_id),
+                None,
+                None,
+            )?;
+        }
         supersede_stmt
             .execute(params![new_id, f.subject, f.predicate, f.object])
             .map_err(|e| Error::internal(format!("supersede prior facts: {e}")))?;
@@ -1161,13 +1248,69 @@ fn handle_index_graph(
 ) -> Result<()> {
     use statefulmemory_core::config::MentionSource;
 
-    let entities = statefulmemory_extract::entity_resolve::extract_entities(title, content, anchors);
+    crate::memory_graph::remove_observation_projection(tx, observation_id)?;
+    let observation_node = crate::memory_graph::upsert_node(
+        tx,
+        "observation",
+        &format!("observation:{observation_id}"),
+        title,
+        &statefulmemory_core::config::normalize_entity_name(title),
+        None,
+        1.0,
+        "deterministic",
+    )?;
+    let session_id: Option<String> = tx
+        .query_row(
+            "SELECT session_id FROM observations WHERE id=?1",
+            [observation_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::internal(format!("lookup graph observation session: {e}")))?;
+    if let Some(session_id) = session_id {
+        let session_node = crate::memory_graph::upsert_node(
+            tx,
+            "session",
+            &format!("session:{session_id}"),
+            &session_id,
+            &statefulmemory_core::config::normalize_entity_name(&session_id),
+            None,
+            1.0,
+            "deterministic",
+        )?;
+        crate::memory_graph::insert_edge(
+            tx,
+            session_node,
+            observation_node,
+            "contains",
+            1.0,
+            1.0,
+            None,
+            None,
+            "deterministic",
+            Some(observation_id),
+            None,
+            None,
+        )?;
+    }
+    let entities =
+        statefulmemory_extract::entity_resolve::extract_entities(title, content, anchors);
     if entities.is_empty() {
         return Ok(());
     }
     let mut entity_ids: Vec<i64> = Vec::with_capacity(entities.len());
     for e in &entities {
         let id = crate::graph::upsert_entity(tx, e.kind.as_str(), &e.name, created_at_epoch)?;
+        let graph_entity = crate::memory_graph::upsert_node(
+            tx,
+            "entity",
+            &format!("entity:{id}"),
+            &e.name,
+            &statefulmemory_core::config::normalize_entity_name(&e.name),
+            None,
+            1.0,
+            "deterministic",
+        )?;
         let offsets = match e.source {
             MentionSource::Backtick | MentionSource::Token => {
                 Some(format!("[{},{}]", e.offsets.0, e.offsets.1))
@@ -1182,6 +1325,22 @@ fn handle_index_graph(
             e.source.as_str(),
         )?;
         entity_ids.push(id);
+        crate::memory_graph::insert_edge(
+            tx,
+            observation_node,
+            graph_entity,
+            "mentions",
+            1.0,
+            1.0,
+            None,
+            None,
+            "deterministic",
+            Some(observation_id),
+            (e.offsets != statefulmemory_extract::entity_resolve::NOT_IN_TEXT)
+                .then(|| format!("[{},{}]", e.offsets.0, e.offsets.1))
+                .as_deref(),
+            None,
+        )?;
     }
     for i in 0..entity_ids.len() {
         for j in (i + 1)..entity_ids.len() {
@@ -1195,6 +1354,34 @@ fn handle_index_graph(
                 created_at_epoch,
                 Some(observation_id),
             )?;
+            let from = crate::memory_graph::node_by_ref(
+                tx,
+                "entity",
+                &format!("entity:{}", entity_ids[i]),
+            )?
+            .map(|n| n.id);
+            let to = crate::memory_graph::node_by_ref(
+                tx,
+                "entity",
+                &format!("entity:{}", entity_ids[j]),
+            )?
+            .map(|n| n.id);
+            if let (Some(from), Some(to)) = (from, to) {
+                crate::memory_graph::insert_edge(
+                    tx,
+                    from,
+                    to,
+                    "co_occurs",
+                    1.0,
+                    1.0,
+                    None,
+                    None,
+                    "deterministic",
+                    Some(observation_id),
+                    None,
+                    None,
+                )?;
+            }
         }
     }
     Ok(())
@@ -1475,7 +1662,8 @@ mod tests {
         (dir, conn)
     }
 
-    fn save_input(content: &str) -> SaveObservationInput {        SaveObservationInput {
+    fn save_input(content: &str) -> SaveObservationInput {
+        SaveObservationInput {
             sync_id: None,
             session_id: "s1".into(),
             r#type: "note".into(),
@@ -1689,8 +1877,18 @@ mod tests {
     fn fallback_supersede_type_set() {
         assert!(fallback_supersede("decision"));
         assert!(fallback_supersede("policy"));
-        for ty in ["note", "fact", "pattern", "preference", "context", "resolution"] {
-            assert!(!fallback_supersede(ty), "type `{ty}` must keep both on fallback");
+        for ty in [
+            "note",
+            "fact",
+            "pattern",
+            "preference",
+            "context",
+            "resolution",
+        ] {
+            assert!(
+                !fallback_supersede(ty),
+                "type `{ty}` must keep both on fallback"
+            );
         }
     }
 
@@ -2339,10 +2537,7 @@ mod tests {
             "stale backtick entity mention must survive content change (additive contract)"
         );
         assert!(has("gadget"), "new backtick entity must be indexed");
-        assert!(
-            has("run"),
-            "anchor-derived mentions must survive re-index"
-        );
+        assert!(has("run"), "anchor-derived mentions must survive re-index");
         let widget_mentions: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM entity_mentions m
@@ -2365,8 +2560,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("t.db");
         let mut conn = crate::db::open_write(&path).unwrap();
-        conn.execute("INSERT INTO sessions (id, directory) VALUES ('s1','/tmp')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, directory) VALUES ('s1','/tmp')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO observations (sync_id, session_id, type, title, content) VALUES ('o1','s1','note','t','c')",
             [],
@@ -2398,7 +2596,10 @@ mod tests {
         let hits = crate::facts::search_facts(&conn, "diesel OR pgx", 10).unwrap();
         let objs: Vec<&str> = hits.iter().map(|f| f.object.as_str()).collect();
         assert!(objs.contains(&"pgx"), "new value active: {objs:?}");
-        assert!(!objs.contains(&"diesel"), "stale value superseded: {objs:?}");
+        assert!(
+            !objs.contains(&"diesel"),
+            "stale value superseded: {objs:?}"
+        );
 
         // Same-object re-extraction is not a contradiction → both stay active.
         let tx = conn.transaction().unwrap();
@@ -2426,9 +2627,14 @@ mod tests {
             )
             .unwrap();
         }
-        let handle =
-            spawn_write_thread("fproj".into(), db_path.clone(), 8, Duration::from_millis(5), None)
-                .unwrap();
+        let handle = spawn_write_thread(
+            "fproj".into(),
+            db_path.clone(),
+            8,
+            Duration::from_millis(5),
+            None,
+        )
+        .unwrap();
         let (tx, rx) = oneshot::channel();
         handle
             .send(WriteRequest::InsertFacts {
@@ -2602,7 +2808,10 @@ mod tests {
         let n_vec: i64 = conn
             .query_row("SELECT count(*) FROM chunk_vectors", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n_vec, 0, "chunk vectors cleaned up by the AFTER DELETE trigger");
+        assert_eq!(
+            n_vec, 0,
+            "chunk vectors cleaned up by the AFTER DELETE trigger"
+        );
     }
 
     #[test]
@@ -2640,7 +2849,11 @@ mod tests {
         tx.commit().unwrap();
 
         let hits = crate::read::search_dense_chunks_scored(&conn, &query, 10).unwrap();
-        assert_eq!(hits.len(), 1, "one observation surfaces once, not per-chunk");
+        assert_eq!(
+            hits.len(),
+            1,
+            "one observation surfaces once, not per-chunk"
+        );
         assert_eq!(hits[0].0.id, obs_id);
         assert!(
             hits[0].1 < 0.01,
@@ -2677,7 +2890,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(in_768, 1, "768-dim vector must land in observations_vec_768");
+        assert_eq!(
+            in_768, 1,
+            "768-dim vector must land in observations_vec_768"
+        );
         let in_384: i64 = conn
             .query_row("SELECT count(*) FROM observations_vec", [], |r| r.get(0))
             .unwrap();
@@ -2696,7 +2912,10 @@ mod tests {
         // End-to-end: search_dense (768-dim query) finds it via the ANN path.
         let hits = crate::read::search_dense(&conn, &embedding, 5).unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, obs_id, "exact-match 768-dim vector found via search_dense");
+        assert_eq!(
+            hits[0].id, obs_id,
+            "exact-match 768-dim vector found via search_dense"
+        );
     }
 
     #[test]
@@ -2725,7 +2944,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(in_768_i8, 1, "768-dim quantized vector must land in observations_vec_768_i8");
+        assert_eq!(
+            in_768_i8, 1,
+            "768-dim quantized vector must land in observations_vec_768_i8"
+        );
 
         let hits = crate::read::search_dense(&conn, &embedding, 5).unwrap();
         assert_eq!(hits.len(), 1);

@@ -1,0 +1,7 @@
+{"id":"offline-retrieval-miss","category":"single_hop","failure_class":"retrieval_miss","question":"Where did A go?","evidence_retrieved":false,"fact_count":0,"observation_count":0}
+{"id":"offline-temporal-version","category":"temporal","failure_class":"wrong_temporal_version","question":"What was the latest plan?","evidence_retrieved":true,"fact_count":2,"observation_count":2}
+{"id":"offline-multihop-chain","category":"multi_hop","failure_class":"incomplete_multi_hop_chain","question":"What did A buy after meeting B?","evidence_retrieved":true,"fact_count":1,"observation_count":1}
+{"id":"offline-fact-extraction","category":"single_hop","failure_class":"fact_extraction_failure","question":"What does A like?","evidence_retrieved":true,"fact_count":0,"observation_count":2}
+{"id":"offline-context-packing","category":"open_domain","failure_class":"context_packing_failure","question":"What happened?","evidence_retrieved":true,"fact_count":2,"observation_count":0}
+{"id":"offline-answer-synthesis","category":"single_hop","failure_class":"answer_synthesis_failure","question":"Who helped A?","evidence_retrieved":true,"fact_count":2,"observation_count":2}
+{"id":"offline-judge-provider","category":"single_hop","failure_class":"judge_provider_failure","question":"Who helped A?","evidence_retrieved":true,"fact_count":2,"observation_count":2}

@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusqlite::OptionalExtension;
 use parking_lot::Mutex;
+use rusqlite::OptionalExtension;
 use tonic::{Request, Response, Status};
 use tracing::{debug, instrument};
 
@@ -187,13 +187,9 @@ impl DaemonState {
                     let cwd = std::env::current_dir().ok()?;
                     statefulmemory_core::git::is_repo(&cwd).then_some(cwd)
                 });
-            if let Err(e) = stamp_observation_anchors(
-                project,
-                repo.as_deref(),
-                obs.id,
-                &[anchor.to_string()],
-            )
-            .await
+            if let Err(e) =
+                stamp_observation_anchors(project, repo.as_deref(), obs.id, &[anchor.to_string()])
+                    .await
             {
                 tracing::warn!(error = %e, obs_id = obs.id, "anchor refresh failed");
             }
@@ -368,17 +364,11 @@ fn canonicalize_candidate(path: &Path) -> std::io::Result<PathBuf> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let name = existing.file_name().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "path has no file name",
-                    )
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
                 })?;
                 missing.push(name.to_os_string());
                 existing = existing.parent().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "path has no parent",
-                    )
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
                 })?;
             }
             Err(e) => return Err(e),
@@ -518,9 +508,7 @@ impl StatefulMemoryService {
             Some(_) => Err(Status::permission_denied(
                 "this RPC requires an admin bearer token",
             )),
-            None => Err(Status::unauthenticated(
-                "this RPC requires authentication",
-            )),
+            None => Err(Status::unauthenticated("this RPC requires authentication")),
         }
     }
 
@@ -878,8 +866,10 @@ impl StatefulMemoryService {
             pool.len(),
         );
         tracing::debug!(?dur, n = pool.len(), "local CE rerank");
-        let mut out: Vec<Observation> =
-            idxs.into_iter().filter_map(|i| pool.get(i).cloned()).collect();
+        let mut out: Vec<Observation> = idxs
+            .into_iter()
+            .filter_map(|i| pool.get(i).cloned())
+            .collect();
         for o in pool {
             if !out.iter().any(|x| x.id == o.id) {
                 out.push(o);
@@ -1061,7 +1051,9 @@ pub(crate) fn entity_to_proto(e: statefulmemory_core::Entity) -> statefulmemory_
     }
 }
 
-pub(crate) fn edge_to_proto(e: statefulmemory_storage::graph::GraphEdge) -> statefulmemory_proto::GraphEdge {
+pub(crate) fn edge_to_proto(
+    e: statefulmemory_storage::graph::GraphEdge,
+) -> statefulmemory_proto::GraphEdge {
     statefulmemory_proto::GraphEdge {
         from_id: e.from_id,
         to_id: e.to_id,
@@ -1222,6 +1214,15 @@ fn graph_expansion(
     use statefulmemory_core::config::normalize_entity_name;
     use statefulmemory_retrieval::graph_rank::{graph_score, GraphHit};
 
+    // Prefer the heterogeneous conversation graph when the V17 projection is
+    // present. The legacy entity graph remains a compatibility fallback for
+    // databases created before the projection was populated.
+    if let Some(expanded) =
+        graph_expansion_v2(conn, query, project_name, include_stale, cfg, budget)
+    {
+        return expanded;
+    }
+
     let mut out = Vec::new();
     let seed_names = statefulmemory_extract::entity_resolve::query_entities(query);
     if seed_names.is_empty() {
@@ -1273,8 +1274,13 @@ fn graph_expansion(
     let mut cand: Vec<(i64, i64, u8)> = Vec::new();
     for &seed in &seed_ids {
         entity_ids.push(seed);
-        let nb =
-            statefulmemory_storage::graph::neighbors(conn, seed, cfg.hops, &edge_types, cfg.degree_cap);
+        let nb = statefulmemory_storage::graph::neighbors(
+            conn,
+            seed,
+            cfg.hops,
+            &edge_types,
+            cfg.degree_cap,
+        );
         for (entity_id, hop) in nb {
             entity_ids.push(entity_id);
             cand.push((entity_id, seed, hop as u8));
@@ -1336,9 +1342,9 @@ fn graph_expansion(
         let Ok(o) = statefulmemory_storage::read::get(conn, &obskey) else {
             continue;
         };
-        let est =
-            statefulmemory_core::tokens::estimate_observation_tokens(&o.r#type, &o.title, &o.content)
-                as usize;
+        let est = statefulmemory_core::tokens::estimate_observation_tokens(
+            &o.r#type, &o.title, &o.content,
+        ) as usize;
         if est > budget {
             continue;
         }
@@ -1352,7 +1358,9 @@ fn graph_expansion(
 
         let score = if let Some(ref ppr) = ppr_scores {
             let mut s = 0.0;
-            for (entity_id, _, _) in cand.iter().filter(|(eid, _, _)| mentions_entity(conn, *eid, obs_id))
+            for (entity_id, _, _) in cand
+                .iter()
+                .filter(|(eid, _, _)| mentions_entity(conn, *eid, obs_id))
             {
                 s += ppr.get(entity_id).copied().unwrap_or(0.0);
             }
@@ -1400,6 +1408,185 @@ fn graph_expansion(
         }
     }
     out
+}
+
+/// V17 graph expansion over sessions, observations, facts, and entities.
+/// Returns `None` only when no projected seed exists, allowing old databases
+/// and hand-built compatibility fixtures to use the V11 path above.
+fn graph_expansion_v2(
+    conn: &rusqlite::Connection,
+    query: &str,
+    project_name: &str,
+    include_stale: bool,
+    cfg: &statefulmemory_core::config::GraphConfig,
+    budget: usize,
+) -> Option<Vec<statefulmemory_proto::Observation>> {
+    use statefulmemory_core::config::normalize_entity_name;
+
+    let mut names = statefulmemory_extract::entity_resolve::query_entities(query);
+    // Conversation entities are often plain names/concepts rather than
+    // backticks or file paths. Probe short content tokens as exact graph keys,
+    // while excluding question glue words and keeping the seed cap bounded.
+    const QUERY_STOPWORDS: &[&str] = &[
+        "what", "when", "where", "which", "who", "whom", "why", "how", "does", "did", "the", "and",
+        "for", "from", "with", "about", "after", "before", "between", "relate", "related",
+        "latest", "first", "last",
+    ];
+    for token in query.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '/') {
+        let token = token.trim();
+        let lower = token.to_ascii_lowercase();
+        if token.len() < 3 || QUERY_STOPWORDS.contains(&lower.as_str()) {
+            continue;
+        }
+        if !names.iter().any(|name| name.eq_ignore_ascii_case(token)) {
+            names.push(token.to_string());
+        }
+        if names.len() >= usize::from(cfg.max_query_entities).max(1) {
+            break;
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    let mut seed_ids = Vec::new();
+    for name in names
+        .iter()
+        .take(usize::from(cfg.max_query_entities).max(1))
+    {
+        let norm = normalize_entity_name(name);
+        let Ok(nodes) = statefulmemory_storage::memory_graph::nodes_by_norm(conn, &norm, 8) else {
+            continue;
+        };
+        if let Some(node) = nodes
+            .iter()
+            .find(|n| n.kind == "entity" && n.norm_key == norm)
+            .or_else(|| nodes.iter().find(|n| n.kind == "entity"))
+        {
+            seed_ids.push(node.id);
+        }
+    }
+    seed_ids.sort_unstable();
+    seed_ids.dedup();
+    if seed_ids.is_empty() {
+        return None;
+    }
+
+    let mut relation_names = cfg
+        .edge_types
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    for relation in [
+        "mentions",
+        "co_occurs",
+        "contains",
+        "derived_from",
+        "subject",
+        "object",
+        "about",
+        "related_to",
+        "supports",
+        "contradicts",
+        "supersedes",
+        "follows",
+        "before",
+        "after",
+        "caused_by",
+        "part_of",
+        "same_as",
+    ] {
+        if !relation_names.contains(&relation) {
+            relation_names.push(relation);
+        }
+    }
+    let Ok(paths) = statefulmemory_storage::memory_graph::bounded_walk(
+        conn,
+        &seed_ids,
+        &relation_names,
+        cfg.hops.max(1),
+        cfg.degree_cap,
+        96,
+    ) else {
+        return Some(Vec::new());
+    };
+    if paths.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let serve_stale = statefulmemory_core::config::load_resolved(Some(project_name))
+        .verify
+        .serve_stale;
+    let mut scored = std::collections::HashMap::<i64, f64>::new();
+    for path in paths {
+        for node_id in path.node_ids {
+            let Ok(Some(node)) = statefulmemory_storage::memory_graph::node_by_id(conn, node_id)
+            else {
+                continue;
+            };
+            if node.kind != "observation" {
+                continue;
+            }
+            let Ok(obs_id) = node
+                .ref_key
+                .strip_prefix("observation:")
+                .unwrap_or_default()
+                .parse::<i64>()
+            else {
+                continue;
+            };
+            let Ok(obs) = statefulmemory_storage::read::get(
+                conn,
+                &statefulmemory_storage::write::ObservationKey::Id(obs_id),
+            ) else {
+                continue;
+            };
+            if !crate::context_filter::context_allows(&obs.verify_state, serve_stale, include_stale)
+            {
+                continue;
+            }
+            if !token_overlap_nonzero(query, &obs.title, &obs.content) {
+                continue;
+            }
+            let estimated = statefulmemory_core::tokens::estimate_observation_tokens(
+                &obs.r#type,
+                &obs.title,
+                &obs.content,
+            ) as usize;
+            if estimated > budget {
+                continue;
+            }
+            let entry = scored.entry(obs_id).or_default();
+            *entry = entry.max(path.score);
+        }
+    }
+    let mut ranked = scored.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for (obs_id, score) in ranked {
+        let Ok(obs) = statefulmemory_storage::read::get(
+            conn,
+            &statefulmemory_storage::write::ObservationKey::Id(obs_id),
+        ) else {
+            continue;
+        };
+        let estimated = statefulmemory_core::tokens::estimate_observation_tokens(
+            &obs.r#type,
+            &obs.title,
+            &obs.content,
+        ) as usize;
+        if used + estimated > budget {
+            continue;
+        }
+        used += estimated;
+        tracing::debug!(project=%project_name, obs_id, score, "selected heterogeneous graph observation");
+        out.push(obs_to_proto(obs));
+    }
+    Some(out)
 }
 
 /// True when `entity_id` has a mention row for `observation_id`.
@@ -1820,14 +2007,13 @@ impl StatefulMemory for StatefulMemoryService {
                         "content": task.content,
                     }))
                     .unwrap_or_else(|_| "{}".into());
-                    self.state
-                        .persist_job(
-                            &project,
-                            "embed",
-                            Some(task.obs_id),
-                            format!("embed:{}", task.obs_id),
-                            payload,
-                        );
+                    self.state.persist_job(
+                        &project,
+                        "embed",
+                        Some(task.obs_id),
+                        format!("embed:{}", task.obs_id),
+                        payload,
+                    );
                 }
                 crate::embed_worker::QueueResult::Disconnected => {
                     warnings.push("embed_dropped".into());
@@ -1838,14 +2024,13 @@ impl StatefulMemory for StatefulMemoryService {
                         "content": task.content,
                     }))
                     .unwrap_or_else(|_| "{}".into());
-                    self.state
-                        .persist_job(
-                            &project,
-                            "embed",
-                            Some(task.obs_id),
-                            format!("embed:{}", task.obs_id),
-                            payload,
-                        );
+                    self.state.persist_job(
+                        &project,
+                        "embed",
+                        Some(task.obs_id),
+                        format!("embed:{}", task.obs_id),
+                        payload,
+                    );
                 }
                 crate::embed_worker::QueueResult::Queued => {}
             }
@@ -1853,43 +2038,42 @@ impl StatefulMemory for StatefulMemoryService {
         // Extract is opt-in: only queue when this project's resolved
         // config has extract.enabled = true. SC-7 guarantees zero LLM
         // calls otherwise.
-            if let Some(pool) = &self.state.extract_pool {
-                if crate::extract_worker::resolved_model_for(&r.project_name).is_some() {
-                    let task = crate::extract_worker::ExtractTask {
-                        project_name: r.project_name.clone(),
-                        obs_id: obs.id,
-                        title: obs.title.clone(),
-                        content: obs.content.clone(),
-                        session_id: Some(obs.session_id.clone()),
-                    };
-                    let queued = pool.try_queue(task.clone());
-                    if !matches!(queued, crate::extract_worker::QueueResult::Queued) {
-                        warnings.push("extract_dropped".into());
-                        let payload = serde_json::to_string(&serde_json::json!({
-                            "project_name": task.project_name,
-                            "obs_id": task.obs_id,
-                            "title": task.title,
-                            "content": task.content,
-                            "session_id": task.session_id,
-                        }))
-                        .unwrap_or_else(|_| "{}".into());
-                        self.state
-                            .persist_job(
-                                &project,
-                                "extract",
-                                Some(task.obs_id),
-                                format!("extract:{}", task.obs_id),
-                            payload,
-                        );
-
-                    }
+        if let Some(pool) = &self.state.extract_pool {
+            if crate::extract_worker::resolved_model_for(&r.project_name).is_some() {
+                let task = crate::extract_worker::ExtractTask {
+                    project_name: r.project_name.clone(),
+                    obs_id: obs.id,
+                    title: obs.title.clone(),
+                    content: obs.content.clone(),
+                    session_id: Some(obs.session_id.clone()),
+                };
+                let queued = pool.try_queue(task.clone());
+                if !matches!(queued, crate::extract_worker::QueueResult::Queued) {
+                    warnings.push("extract_dropped".into());
+                    let payload = serde_json::to_string(&serde_json::json!({
+                        "project_name": task.project_name,
+                        "obs_id": task.obs_id,
+                        "title": task.title,
+                        "content": task.content,
+                        "session_id": task.session_id,
+                    }))
+                    .unwrap_or_else(|_| "{}".into());
+                    self.state.persist_job(
+                        &project,
+                        "extract",
+                        Some(task.obs_id),
+                        format!("extract:{}", task.obs_id),
+                        payload,
+                    );
                 }
             }
-
+        }
 
         if let Some(pool) = &self.state.resolve_pool {
             if let Ok(conn) = project.checkout_read() {
-                if let Ok(rels) = statefulmemory_storage::get_relations_for_observation(&conn, obs.id) {
+                if let Ok(rels) =
+                    statefulmemory_storage::get_relations_for_observation(&conn, obs.id)
+                {
                     for rel in rels
                         .into_iter()
                         .filter(|r| r.relation_type == "conflicts_with")
@@ -1912,14 +2096,13 @@ impl StatefulMemory for StatefulMemoryService {
                                 "new_id": job.new_id,
                             }))
                             .unwrap_or_else(|_| "{}".into());
-                            self.state
-                                .persist_job(
-                                    &project,
-                                    "resolve",
-                                    Some(job.new_id),
-                                    format!("resolve:{}:{}", job.old_id, job.new_id),
-                                    payload,
-                                );
+                            self.state.persist_job(
+                                &project,
+                                "resolve",
+                                Some(job.new_id),
+                                format!("resolve:{}:{}", job.old_id, job.new_id),
+                                payload,
+                            );
                         }
                     }
                 }
@@ -2263,7 +2446,12 @@ impl StatefulMemory for StatefulMemoryService {
             let other_paths: Vec<(String, std::path::PathBuf)> = projects
                 .into_iter()
                 .filter(|(name, _)| name != &project.normalized)
-                .map(|(name, _)| (name.clone(), statefulmemory_core::paths::project_db_path(&name)))
+                .map(|(name, _)| {
+                    (
+                        name.clone(),
+                        statefulmemory_core::paths::project_db_path(&name),
+                    )
+                })
                 .collect();
             let (hits, warning) = map(read_q::search_all_projects(
                 &conn,
@@ -2515,8 +2703,7 @@ impl StatefulMemory for StatefulMemoryService {
                     let project2 = project.clone();
                     let query2 = q.to_string();
                     let pname2 = r.project_name.clone();
-                    let use_hybrid = self
-                        .resolved_search_mode(r.mode.as_deref(), &r.project_name)
+                    let use_hybrid = self.resolved_search_mode(r.mode.as_deref(), &r.project_name)
                         == statefulmemory_retrieval::hybrid::HybridMode::Hybrid;
                     let joined = tokio::task::spawn_blocking(
                         move || -> std::result::Result<Vec<Observation>, statefulmemory_core::error::Error> {
@@ -2833,11 +3020,15 @@ impl StatefulMemory for StatefulMemoryService {
                     f: Box::new(|conn| {
                         conn.execute("DELETE FROM observations_vec", [])
                             .map_err(|e| {
-                                statefulmemory_core::error::Error::internal(format!("delete vec: {e}"))
+                                statefulmemory_core::error::Error::internal(format!(
+                                    "delete vec: {e}"
+                                ))
                             })?;
                         conn.execute("DELETE FROM observation_embedding_meta", [])
                             .map_err(|e| {
-                                statefulmemory_core::error::Error::internal(format!("delete meta: {e}"))
+                                statefulmemory_core::error::Error::internal(format!(
+                                    "delete meta: {e}"
+                                ))
                             })?;
                         Ok(())
                     }),
@@ -3509,7 +3700,9 @@ impl StatefulMemory for StatefulMemoryService {
             .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
         let project = map(statefulmemory_core::project::normalize(&r.project))?;
         map(store.revoke_grant(&project, &r.principal))?;
-        Ok(Response::new(statefulmemory_proto::RevokeProjectGrantResponse {}))
+        Ok(Response::new(
+            statefulmemory_proto::RevokeProjectGrantResponse {},
+        ))
     }
 
     async fn list_project_grants(
@@ -3525,16 +3718,18 @@ impl StatefulMemory for StatefulMemoryService {
             .ok_or_else(|| Status::failed_precondition("grant admin requires TCP mode"))?;
         let grants = map(store.list_grants())?
             .into_iter()
-            .map(|g| statefulmemory_proto::list_project_grants_response::Grant {
-                project: g.project,
-                principal: g.principal,
-                role: g.role,
-                granted_at: g.granted_at,
-            })
+            .map(
+                |g| statefulmemory_proto::list_project_grants_response::Grant {
+                    project: g.project,
+                    principal: g.principal,
+                    role: g.role,
+                    granted_at: g.granted_at,
+                },
+            )
             .collect();
-        Ok(Response::new(statefulmemory_proto::ListProjectGrantsResponse {
-            grants,
-        }))
+        Ok(Response::new(
+            statefulmemory_proto::ListProjectGrantsResponse { grants },
+        ))
     }
 
     // ---- Daemon ops ----
@@ -3713,10 +3908,12 @@ impl StatefulMemory for StatefulMemoryService {
         self.authorize_project(auth_ctx.as_ref(), &inner.project_name, false)?;
         let project = map(self.open_project(&inner.project_name))?;
         let conn = map(project.checkout_read())?;
-        let rels = map(statefulmemory_storage::relations::get_relations_for_observation(
-            &conn,
-            inner.observation_id,
-        ))?;
+        let rels = map(
+            statefulmemory_storage::relations::get_relations_for_observation(
+                &conn,
+                inner.observation_id,
+            ),
+        )?;
         let proto_rels = rels
             .into_iter()
             .map(|r| statefulmemory_proto::ObservationRelation {
@@ -3777,8 +3974,7 @@ impl StatefulMemory for StatefulMemoryService {
             }
             let conn = map(project.checkout_read())?;
             for mut finding in map(statefulmemory_storage::doctor::audit_and_repair(
-                &conn,
-                false,
+                &conn, false,
             ))? {
                 finding.code = format!("{project_name}:{}", finding.code);
                 findings.push(finding);
@@ -4148,8 +4344,10 @@ mod tests {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         statefulmemory_storage::run_migrations(&mut conn).unwrap();
         // Seed concepts matching backtick cues our query_entities will extract.
-        let e1 = statefulmemory_storage::graph::upsert_entity(&conn, "concept", "validate", 1).unwrap();
-        let e2 = statefulmemory_storage::graph::upsert_entity(&conn, "concept", "refresh", 1).unwrap();
+        let e1 =
+            statefulmemory_storage::graph::upsert_entity(&conn, "concept", "validate", 1).unwrap();
+        let e2 =
+            statefulmemory_storage::graph::upsert_entity(&conn, "concept", "refresh", 1).unwrap();
         conn.execute(
             "INSERT INTO sessions (id, directory) VALUES ('x', '/tmp')",
             [],
@@ -4166,8 +4364,17 @@ mod tests {
             .unwrap();
         statefulmemory_storage::graph::insert_mention(&conn, e1, obs_id, None, "backtick").unwrap();
         statefulmemory_storage::graph::insert_mention(&conn, e2, obs_id, None, "backtick").unwrap();
-        statefulmemory_storage::graph::insert_edge(&conn, e1, e2, "mentions", 1.0, 1, 1, Some(obs_id))
-            .unwrap();
+        statefulmemory_storage::graph::insert_edge(
+            &conn,
+            e1,
+            e2,
+            "mentions",
+            1.0,
+            1,
+            1,
+            Some(obs_id),
+        )
+        .unwrap();
 
         let cfg = statefulmemory_core::config::GraphConfig {
             enabled: true,

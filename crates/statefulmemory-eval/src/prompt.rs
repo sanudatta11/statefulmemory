@@ -70,7 +70,9 @@ pub fn build_answer_prompt(
          Answer the question using ONLY the provided memories.\n\
          \n\
          Memory format notes:\n\
-         - Each memory is a fact in the form: subject - predicate - object.\n\
+         - Facts are the primary evidence and expose subject, predicate, object,\n\
+           temporal metadata, and source observation/dialogue ids.\n\
+         - Supporting excerpts are included only to verify those facts.\n\
          - Bracketed dates like [2023-05-20] are when the fact happened (the\n\
            event date), NOT today.\n\
          - Lines like '[9:55 am on 22 October, 2023] Caroline (...): ...' are\n\
@@ -78,8 +80,9 @@ pub fn build_answer_prompt(
          - Bracketed dialogue ids like [D1:3] label the source turn.\n\
          \n\
          Answering rules:\n\
-         1. Prefer short answers grounded in quoted or paraphrased spans from\n\
-            the memories. Do not invent details that are not supported.\n\
+         1. Answer only from the supplied evidence. Prefer short answers\n\
+            grounded in the structured facts and their supporting excerpts.\n\
+            Do not invent details that are not supported.\n\
          2. If the memories do not contain enough information to answer, say\n\
             exactly: unknown\n\
          3. For questions like 'how long ago' or 'when', anchor to the LATEST\n\

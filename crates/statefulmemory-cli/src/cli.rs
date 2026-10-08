@@ -275,10 +275,24 @@ pub struct GraphArgs {
 pub enum GraphVerb {
     /// Print graph edges around an entity.
     Query(GraphQueryArgs),
+    /// Explain bounded heterogeneous graph paths around an entity.
+    Explain(GraphExplainArgs),
     /// Backfill graph entities from code anchors (works with the daemon down).
     Rebuild(GraphRebuildArgs),
     /// Print entity / mention / edge totals for this project.
     Stats,
+}
+
+#[derive(Args, Debug)]
+pub struct GraphExplainArgs {
+    /// Entity or concept name used as the graph seed.
+    pub entity: String,
+    /// Maximum traversal depth.
+    #[arg(long, default_value_t = 2)]
+    pub hops: u8,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]

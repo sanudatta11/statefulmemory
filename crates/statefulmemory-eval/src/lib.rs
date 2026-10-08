@@ -6,7 +6,10 @@
 //! directly via `ProjectRegistry` + `read::search`.
 
 pub mod config;
+pub mod context;
 pub mod datasets;
+pub mod decompose;
+pub mod diagnostics;
 pub mod entities_writer;
 pub mod entity_walk;
 pub mod extract_pipeline;
@@ -25,6 +28,7 @@ pub mod runner;
 pub mod sampling;
 pub mod scorecard;
 pub mod sharding;
+pub mod temporal;
 pub mod vec_index;
 
 pub use runner::{BenchmarkKind, CategoryStats, RunConfig, RunReport};
